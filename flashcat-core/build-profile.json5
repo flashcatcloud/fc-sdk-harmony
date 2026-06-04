@@ -1,0 +1,20 @@
+{
+  apiType: "stageMode",
+  buildOption: {},
+  buildOptionSet: [
+    {
+      name: "release",
+      // Keep sourcemap + nameCache so crashes can be symbolicated server-side (fc-rum).
+      arkOptions: {
+        obfuscation: {
+          ruleOptions: { enable: true, files: ["./obfuscation-rules.txt"] },
+          // consumerFiles propagate the -keep rules to apps that depend on this HAR.
+          consumerFiles: ["./obfuscation-rules.txt"]
+        }
+      }
+    }
+  ],
+  targets: [
+    { name: "default", runtimeOS: "HarmonyOS" }
+  ]
+}

@@ -1,0 +1,8 @@
+{
+  // ArkTS code linter config (the HarmonyOS equivalent of ktlint/detekt on Android).
+  // Run via DevEco Studio "Code Linter" or `hvigorw codeLinter`.
+  files: ["**/*.ets", "**/*.ts"],
+  ignore: ["**/node_modules/**", "**/build/**", "**/oh_modules/**"],
+  ruleSet: ["plugin:@performance/recommended", "plugin:@typescript-eslint/recommended"],
+  rules: {}
+}

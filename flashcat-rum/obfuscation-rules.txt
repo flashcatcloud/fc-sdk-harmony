@@ -1,0 +1,4 @@
+# Keep RUM public entry points readable for integrators.
+-keep-global-name
+  FlashcatRum
+  GlobalRumMonitor

@@ -1,0 +1,7 @@
+{
+  module: {
+    name: "flashcat_rum",
+    type: "har",
+    deviceTypes: ["default", "phone", "tablet", "2in1", "tv", "wearable", "car"]
+  }
+}
