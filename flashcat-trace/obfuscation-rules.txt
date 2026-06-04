@@ -1,0 +1,3 @@
+# Keep Trace public entry points readable for integrators.
+-keep-global-name
+  FlashcatTrace

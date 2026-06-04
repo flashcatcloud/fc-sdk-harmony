@@ -1,0 +1,43 @@
+{
+  // Project-level build profile. Lists the buildable products and the modules
+  // that make up the SDK. New feature modules (logs, trace, ndk...) get added
+  // to the `modules` array as they are scaffolded.
+  app: {
+    signingConfigs: [],
+    products: [
+      {
+        name: "default",
+        signingConfig: "default",
+        compatibleSdkVersion: "5.0.0(12)",
+        runtimeOS: "HarmonyOS"
+      }
+    ],
+    buildModeSet: [
+      { name: "debug" },
+      { name: "release" }
+    ]
+  },
+  modules: [
+    {
+      name: "flashcat_core",
+      srcPath: "./flashcat-core",
+      targets: [
+        { name: "default", applyToProducts: ["default"] }
+      ]
+    },
+    {
+      name: "flashcat_rum",
+      srcPath: "./flashcat-rum",
+      targets: [
+        { name: "default", applyToProducts: ["default"] }
+      ]
+    },
+    {
+      name: "flashcat_trace",
+      srcPath: "./flashcat-trace",
+      targets: [
+        { name: "default", applyToProducts: ["default"] }
+      ]
+    }
+  ]
+}

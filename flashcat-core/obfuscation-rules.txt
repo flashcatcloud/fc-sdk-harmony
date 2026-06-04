@@ -1,0 +1,8 @@
+# Obfuscation rules consumed by apps that depend on @flashcatcloud/core.
+# Keep the public SDK entry points readable so integrators' stack traces and
+# API calls aren't mangled. The SDK's own internals may still be obfuscated.
+-keep-global-name
+  Flashcat
+-keep-property-name
+  initialize
+  getInstance

@@ -1,0 +1,9 @@
+{
+  name: "@flashcatcloud/core",
+  version: "0.1.0",
+  description: "FlashCat HarmonyOS SDK core: init, configuration, context, message bus, storage and batched upload.",
+  main: "Index.ets",
+  license: "Apache-2.0",
+  author: "FlashCat",
+  dependencies: {}
+}
