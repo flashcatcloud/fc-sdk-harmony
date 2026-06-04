@@ -1,0 +1,179 @@
+import { FlashcatContext } from '@flashcatcloud/core';
+
+/**
+ * Builds RUM event objects (View / Error) for phase 1. Fields follow the shared
+ * `rum-events-format` ViewEvent / ErrorEvent shapes.
+ *
+ * NOTE: the rum-events-format schema submodule is not yet wired into this repo,
+ * so these objects are hand-assembled. When schema-driven model generation is
+ * added, validate field names/nesting against the generated models.
+ *
+ * Built as explicit `Record<string, Object>` sub-objects (not nested literals)
+ * to satisfy ArkTS's strict object-literal typing.
+ */
+export class RumEventAssembler {
+  static view(
+    context: FlashcatContext,
+    applicationId: string,
+    sessionId: string,
+    viewId: string,
+    name: string,
+    dateMs: number,
+    timeSpentNs: number,
+    actionCount: number,
+    errorCount: number,
+    documentVersion: number,
+    isActive: boolean,
+    attributes: Record<string, Object>
+  ): Record<string, Object> {
+    const event: Record<string, Object> = {};
+    event['type'] = 'view';
+    event['date'] = dateMs; // view START time — stable across all updates of this view.id
+    event['_dd'] = RumEventAssembler.dd(documentVersion);
+    event['application'] = RumEventAssembler.idObj(applicationId);
+    event['session'] = RumEventAssembler.session(sessionId);
+
+    const view: Record<string, Object> = {};
+    view['id'] = viewId;
+    view['url'] = name;
+    view['name'] = name;
+    view['time_spent'] = timeSpentNs;
+    view['is_active'] = isActive;
+    view['action'] = RumEventAssembler.count(actionCount);
+    view['error'] = RumEventAssembler.count(errorCount);
+    view['resource'] = RumEventAssembler.count(0);
+    event['view'] = view;
+
+    RumEventAssembler.applyContext(event, context, attributes);
+    return event;
+  }
+
+  static error(
+    context: FlashcatContext,
+    applicationId: string,
+    sessionId: string,
+    viewId: string | undefined,
+    viewName: string | undefined,
+    message: string,
+    source: string,
+    stack: string | undefined,
+    isCrash: boolean,
+    handling: string,
+    dateMs: number,
+    attributes: Record<string, Object>
+  ): Record<string, Object> {
+    const event: Record<string, Object> = {};
+    event['type'] = 'error';
+    event['date'] = dateMs;
+    event['_dd'] = RumEventAssembler.dd(0);
+    event['application'] = RumEventAssembler.idObj(applicationId);
+    event['session'] = RumEventAssembler.session(sessionId);
+    if (viewId !== undefined) {
+      const view: Record<string, Object> = {};
+      view['id'] = viewId;
+      view['url'] = viewName ?? '';
+      view['name'] = viewName ?? '';
+      event['view'] = view;
+    }
+
+    const error: Record<string, Object> = {};
+    error['message'] = message;
+    error['source'] = source;
+    if (stack !== undefined) {
+      error['stack'] = stack;
+    }
+    error['is_crash'] = isCrash;
+    error['handling'] = handling; // 'handled' | 'unhandled'
+    event['error'] = error;
+
+    RumEventAssembler.applyContext(event, context, attributes);
+    return event;
+  }
+
+  // ---- shared sub-objects ----
+
+  private static dd(documentVersion: number): Record<string, Object> {
+    const dd: Record<string, Object> = {};
+    dd['format_version'] = 2;
+    if (documentVersion > 0) {
+      dd['document_version'] = documentVersion;
+    }
+    return dd;
+  }
+
+  private static idObj(id: string): Record<string, Object> {
+    const o: Record<string, Object> = {};
+    o['id'] = id;
+    return o;
+  }
+
+  private static session(sessionId: string): Record<string, Object> {
+    const s: Record<string, Object> = {};
+    s['id'] = sessionId;
+    s['type'] = 'user';
+    return s;
+  }
+
+  private static count(n: number): Record<string, Object> {
+    const c: Record<string, Object> = {};
+    c['count'] = n;
+    return c;
+  }
+
+  /** Adds source/service/version/os/device/connectivity/user/context + trace link. */
+  private static applyContext(
+    event: Record<string, Object>,
+    context: FlashcatContext,
+    attributes: Record<string, Object>
+  ): void {
+    event['source'] = context.source;
+    event['service'] = context.service;
+    event['version'] = context.version;
+
+    const os: Record<string, Object> = {};
+    os['name'] = context.device.osName;
+    os['version'] = context.device.osVersion;
+    event['os'] = os;
+
+    const device: Record<string, Object> = {};
+    device['type'] = context.device.deviceType;
+    device['brand'] = context.device.brand;
+    device['model'] = context.device.model;
+    event['device'] = device;
+
+    const connectivity: Record<string, Object> = {};
+    connectivity['status'] = context.network.connectivity;
+    event['connectivity'] = connectivity;
+
+    if (context.user.id !== undefined || context.user.name !== undefined
+      || context.user.email !== undefined || context.user.extraInfo !== undefined) {
+      const usr: Record<string, Object> = {};
+      if (context.user.id !== undefined) {
+        usr['id'] = context.user.id;
+      }
+      if (context.user.name !== undefined) {
+        usr['name'] = context.user.name;
+      }
+      if (context.user.email !== undefined) {
+        usr['email'] = context.user.email;
+      }
+      if (context.user.extraInfo !== undefined) {
+        const extra: Record<string, Object> = context.user.extraInfo;
+        for (const k of Object.keys(extra)) {
+          usr[k] = extra[k];
+        }
+      }
+      event['usr'] = usr;
+    }
+
+    // Custom attributes. NOTE: RUM↔Trace correlation is intentionally NOT done here
+    // in phase 1 — stamping "the last request's trace id" onto a View/Error is racy
+    // and meaningless. Proper correlation belongs on ResourceEvents (phase 2) via
+    // _dd.trace_id / _dd.span_id.
+    const ctx: Record<string, Object> = {};
+    for (const k of Object.keys(attributes)) {
+      ctx[k] = attributes[k];
+    }
+    event['context'] = ctx;
+  }
+}
