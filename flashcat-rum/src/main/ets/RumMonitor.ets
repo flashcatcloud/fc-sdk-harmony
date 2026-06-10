@@ -16,6 +16,9 @@ export interface RumMonitor {
   startResource(key: string, method: RumResourceMethod, url: string, attributes?: Record<string, Object>): void;
   stopResource(key: string, statusCode: number, size: number, kind: RumResourceKind,
     attributes?: Record<string, Object>): void;
+  /** Report the resource as failed: emits a `source: network` error event instead. */
+  stopResourceWithError(key: string, message: string, statusCode?: number,
+    attributes?: Record<string, Object>): void;
 
   addError(message: string, source: RumErrorSource, stack?: string, attributes?: Record<string, Object>): void;
 
@@ -56,6 +59,8 @@ class NoOpRumMonitor implements RumMonitor {
   stopAction(type: RumActionType, name: string, attributes?: Record<string, Object>): void {}
   startResource(key: string, method: RumResourceMethod, url: string, attributes?: Record<string, Object>): void {}
   stopResource(key: string, statusCode: number, size: number, kind: RumResourceKind,
+    attributes?: Record<string, Object>): void {}
+  stopResourceWithError(key: string, message: string, statusCode?: number,
     attributes?: Record<string, Object>): void {}
   addError(message: string, source: RumErrorSource, stack?: string, attributes?: Record<string, Object>): void {}
   addAttribute(key: string, value: Object): void {}
