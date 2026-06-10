@@ -8,11 +8,11 @@ import { RumRawEvent } from '../scope/RumScope';
 
 /**
  * Default RumMonitor. Translates the public API into RumRawEvents fed to the
- * application scope, which assembles + writes View / Error events.
+ * application scope, which assembles + writes View / Error / Resource events.
  * Equivalent to Android's DatadogRumMonitor.
  *
- * Phase 1 scope: View + Error. Action/Resource methods exist for API parity but
- * actions only bump the view's action count and resources are no-ops.
+ * Phase 1 scope: View + Error + Resource. Action methods exist for API parity
+ * but only bump the view's action count (no ActionEvents yet).
  */
 export class DefaultRumMonitor implements RumMonitor {
   private readonly applicationScope: RumApplicationScope;
@@ -51,14 +51,31 @@ export class DefaultRumMonitor implements RumMonitor {
     // no-op in phase 1
   }
 
-  // Resources are out of scope for phase 1 (no network performance events yet).
   startResource(key: string, method: RumResourceMethod, url: string, attributes?: Record<string, Object>): void {
-    // no-op in phase 1
+    const e: RumRawEvent = this.raw('startResource', attributes);
+    e.key = key;
+    e.method = method as string;
+    e.url = url;
+    this.applicationScope.handleEvent(e);
   }
 
   stopResource(key: string, statusCode: number, size: number, kind: RumResourceKind,
     attributes?: Record<string, Object>): void {
-    // no-op in phase 1
+    const e: RumRawEvent = this.raw('stopResource', attributes);
+    e.key = key;
+    e.statusCode = statusCode;
+    e.sizeBytes = size;
+    e.resourceKind = kind as string;
+    this.applicationScope.handleEvent(e);
+  }
+
+  stopResourceWithError(key: string, message: string, statusCode?: number,
+    attributes?: Record<string, Object>): void {
+    const e: RumRawEvent = this.raw('stopResourceWithError', attributes);
+    e.key = key;
+    e.errorMessage = message;
+    e.statusCode = statusCode;
+    this.applicationScope.handleEvent(e);
   }
 
   addError(message: string, source: RumErrorSource, stack?: string, attributes?: Record<string, Object>): void {
