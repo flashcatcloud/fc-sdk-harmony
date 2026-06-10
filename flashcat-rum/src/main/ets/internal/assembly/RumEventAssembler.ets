@@ -1,8 +1,8 @@
 import { FlashcatContext } from '@flashcatcloud/core';
 
 /**
- * Builds RUM event objects (View / Error) for phase 1. Fields follow the shared
- * `rum-events-format` ViewEvent / ErrorEvent shapes.
+ * Builds RUM event objects (View / Error / Resource) for phase 1. Fields follow
+ * the shared `rum-events-format` ViewEvent / ErrorEvent / ResourceEvent shapes.
  *
  * NOTE: the rum-events-format schema submodule is not yet wired into this repo,
  * so these objects are hand-assembled. When schema-driven model generation is
@@ -60,7 +60,10 @@ export class RumEventAssembler {
     isCrash: boolean,
     handling: string,
     dateMs: number,
-    attributes: Record<string, Object>
+    attributes: Record<string, Object>,
+    resourceMethod?: string,
+    resourceStatusCode?: number,
+    resourceUrl?: string
   ): Record<string, Object> {
     const event: Record<string, Object> = {};
     event['type'] = 'error';
@@ -84,7 +87,70 @@ export class RumEventAssembler {
     }
     error['is_crash'] = isCrash;
     error['handling'] = handling; // 'handled' | 'unhandled'
+    // Failed-resource errors (source 'network') carry the request that failed.
+    if (resourceUrl !== undefined) {
+      const errResource: Record<string, Object> = {};
+      errResource['method'] = resourceMethod ?? 'GET';
+      errResource['status_code'] = resourceStatusCode ?? 0;
+      errResource['url'] = resourceUrl;
+      error['resource'] = errResource;
+    }
     event['error'] = error;
+
+    RumEventAssembler.applyContext(event, context, attributes);
+    return event;
+  }
+
+  static resource(
+    context: FlashcatContext,
+    applicationId: string,
+    sessionId: string,
+    viewId: string,
+    viewName: string,
+    resourceId: string,
+    url: string,
+    method: string,
+    kind: string,
+    statusCode: number,
+    sizeBytes: number,
+    dateMs: number,
+    durationNs: number,
+    traceId: string | undefined,
+    spanId: string | undefined,
+    attributes: Record<string, Object>
+  ): Record<string, Object> {
+    const event: Record<string, Object> = {};
+    event['type'] = 'resource';
+    event['date'] = dateMs; // resource START time
+    // RUM↔APM correlation: the trace context that was injected into this exact
+    // request (as `traceparent`) rides along in _dd.
+    const dd: Record<string, Object> = {};
+    dd['format_version'] = 2;
+    if (traceId !== undefined) {
+      dd['trace_id'] = traceId;
+    }
+    if (spanId !== undefined) {
+      dd['span_id'] = spanId;
+    }
+    event['_dd'] = dd;
+    event['application'] = RumEventAssembler.idObj(applicationId);
+    event['session'] = RumEventAssembler.session(sessionId);
+
+    const view: Record<string, Object> = {};
+    view['id'] = viewId;
+    view['url'] = viewName;
+    view['name'] = viewName;
+    event['view'] = view;
+
+    const resource: Record<string, Object> = {};
+    resource['id'] = resourceId;
+    resource['type'] = kind;
+    resource['url'] = url;
+    resource['method'] = method;
+    resource['status_code'] = statusCode;
+    resource['size'] = sizeBytes;
+    resource['duration'] = durationNs;
+    event['resource'] = resource;
 
     RumEventAssembler.applyContext(event, context, attributes);
     return event;
@@ -166,10 +232,9 @@ export class RumEventAssembler {
       event['usr'] = usr;
     }
 
-    // Custom attributes. NOTE: RUM↔Trace correlation is intentionally NOT done here
-    // in phase 1 — stamping "the last request's trace id" onto a View/Error is racy
-    // and meaningless. Proper correlation belongs on ResourceEvents (phase 2) via
-    // _dd.trace_id / _dd.span_id.
+    // Custom attributes. NOTE: RUM↔Trace correlation lives on ResourceEvents only
+    // (_dd.trace_id / _dd.span_id, see resource()). Stamping "the last request's
+    // trace id" onto a View/Error would be racy and meaningless — keep it out.
     const ctx: Record<string, Object> = {};
     for (const k of Object.keys(attributes)) {
       ctx[k] = attributes[k];
