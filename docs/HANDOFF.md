@@ -21,7 +21,7 @@ This effort adds ResourceEvents, correlated to the injected W3C `traceparent` vi
 - [x] Task 1: Handoff log scaffolding (this file + plan)
 - [x] Task 2: RumRawEvent resource fields + RumMonitor.stopResourceWithError
 - [x] Task 3: RumEventAssembler.resource() + error() resource variant
-- [ ] Task 4: RumResourceScope (new file)
+- [x] Task 4: RumResourceScope (new file)
 - [ ] Task 5: RumViewScope integration + real resource counts
 - [ ] Task 6: DefaultRumMonitor resource methods
 - [ ] Task 7: RumFeature bus translation (network_request_* → monitor)
@@ -39,11 +39,11 @@ locally anyway).
 
 ## Next step
 
-Task 4: create `flashcat-rum/src/main/ets/internal/scope/RumResourceScope.ets`
-(full source is in the plan, Task 4 Step 1). Note `RumEventAssembler.error` now
-takes 3 trailing optional params (resourceMethod/resourceStatusCode/resourceUrl)
-— existing call sites unchanged; `RumEventAssembler.resource` is a 16-param
-positional call, order documented in the plan.
+Task 5: integrate into `RumViewScope.ets` — pendingResources Map (cap 100),
+`startResource`/`stopResource`/`stopResourceWithError` cases, real resource
+count, clear pending on stop/forceStop — and add the `resourceCount` param to
+`RumEventAssembler.view` (replacing the hardcoded `count(0)`). Code in plan
+Task 5. `RumResourceScope.ets` exists but is unused until then.
 
 ## Gotchas / context a fresh session needs
 
