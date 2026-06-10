@@ -5,17 +5,25 @@
  */
 export interface RumRawEvent {
   kind: string;                 // 'startView' | 'stopView' | 'addAction' | 'addError'
-  key?: string;
+                                // | 'startResource' | 'stopResource' | 'stopResourceWithError'
+  key?: string;                 // view key, or resource key
   name?: string;
   attributes: Record<string, Object>;
   timestampMs: number;          // epoch ms
 
-  // error specifics (kind === 'addError')
+  // error specifics (kind === 'addError' | 'stopResourceWithError')
   errorMessage?: string;
   errorSource?: string;
   errorStack?: string;
   errorHandling?: string;       // 'handled' | 'unhandled'
   isCrash?: boolean;
+
+  // resource specifics (kind === 'startResource' | 'stopResource')
+  url?: string;
+  method?: string;              // 'GET' | 'POST' | ...
+  statusCode?: number;
+  sizeBytes?: number;
+  resourceKind?: string;        // RumResourceKind value, e.g. 'native'
 }
 
 /**

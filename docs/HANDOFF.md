@@ -19,7 +19,7 @@ This effort adds ResourceEvents, correlated to the injected W3C `traceparent` vi
 ## Task checklist
 
 - [x] Task 1: Handoff log scaffolding (this file + plan)
-- [ ] Task 2: RumRawEvent resource fields + RumMonitor.stopResourceWithError
+- [x] Task 2: RumRawEvent resource fields + RumMonitor.stopResourceWithError
 - [ ] Task 3: RumEventAssembler.resource() + error() resource variant
 - [ ] Task 4: RumResourceScope (new file)
 - [ ] Task 5: RumViewScope integration + real resource counts
@@ -30,13 +30,19 @@ This effort adds ResourceEvents, correlated to the injected W3C `traceparent` vi
 
 ## Current state
 
-Plan + handoff committed. No source files touched yet.
+API surface ready: `RumRawEvent` carries resource fields (url/method/statusCode/
+sizeBytes/resourceKind), `RumMonitor` + `NoOpRumMonitor` have
+`stopResourceWithError(key, message, statusCode?, attributes?)`.
+`DefaultRumMonitor` does NOT implement it yet — that lands in Task 6, so the rum
+module would not compile between Tasks 2 and 6 (known, fine: nothing compiles
+locally anyway).
 
 ## Next step
 
-Task 2: edit `flashcat-rum/src/main/ets/internal/scope/RumScope.ets` (add resource
-fields to RumRawEvent) and `flashcat-rum/src/main/ets/RumMonitor.ets` (add
-`stopResourceWithError` to interface + NoOp). Exact code is in the plan.
+Task 3: add `RumEventAssembler.resource(...)` and extend `error(...)` with
+trailing optional `resourceMethod?/resourceStatusCode?/resourceUrl?` params in
+`flashcat-rum/src/main/ets/internal/assembly/RumEventAssembler.ets`. Exact code
+is in the plan.
 
 ## Gotchas / context a fresh session needs
 
