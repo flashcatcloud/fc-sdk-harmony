@@ -25,7 +25,7 @@ This effort adds ResourceEvents, correlated to the injected W3C `traceparent` vi
 - [x] Task 5: RumViewScope integration + real resource counts
 - [x] Task 6: DefaultRumMonitor resource methods
 - [x] Task 7: RumFeature bus translation (network_request_* → monitor)
-- [ ] Task 8: TraceInterceptor reports resources + doc updates
+- [x] Task 8: TraceInterceptor reports resources + doc updates
 - [ ] Task 9: Wrap-up (device checklist, memory)
 
 ## Current state
@@ -39,16 +39,8 @@ locally anyway).
 
 ## Next step
 
-Task 8: producer side — in
-`flashcat-trace/src/main/ets/internal/TraceInterceptor.ets`, time the request
-around `next.handle`, generate a per-request key (`util.generateRandomUUID`),
-and publish `network_request_started/completed/failed` via
-`core.getFeature(RUM_FEATURE_NAME)?.sendEvent(...)`; also refresh the
-`FlashcatTrace.ets` doc comment (correlation no longer "phase 2"). Code in plan
-Task 8. Bus message contract (already consumed by RumFeature):
-started = {type, key, url, method, trace_id?, span_id?};
-completed = {type, key, status_code, size};
-failed = {type, key, message}.
+Task 9: wrap-up — finalize this doc with the on-device verification checklist,
+then update the session auto-memory (`fc-sdk-harmony.md`, outside the repo).
 
 ## Gotchas / context a fresh session needs
 

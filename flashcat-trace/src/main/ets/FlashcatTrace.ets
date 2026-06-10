@@ -9,9 +9,10 @@ import { TraceInterceptor, publishTraceId, isInjectionAllowed } from './internal
  *
  * Generates W3C `traceparent` and injects it into outgoing requests so the
  * server-side APM picks up and reports the trace. The client itself reports no
- * span data — only the header. RUM correlation is intentionally deferred to
- * phase-2 ResourceEvents, where `_dd.trace_id` / `_dd.span_id` can identify the
- * exact network request.
+ * span data — only the header. When the RUM feature is enabled, the interceptor
+ * additionally reports each request as a RUM resource, with the generated
+ * `_dd.trace_id` / `_dd.span_id` on the ResourceEvent identifying the exact
+ * network request (RUM↔APM correlation).
  *
  * ```ets
  * FlashcatTrace.enable(new TraceConfigurationBuilder().build());
