@@ -22,6 +22,7 @@ export class RumEventAssembler {
     timeSpentNs: number,
     actionCount: number,
     errorCount: number,
+    resourceCount: number,
     documentVersion: number,
     isActive: boolean,
     attributes: Record<string, Object>
@@ -41,7 +42,7 @@ export class RumEventAssembler {
     view['is_active'] = isActive;
     view['action'] = RumEventAssembler.count(actionCount);
     view['error'] = RumEventAssembler.count(errorCount);
-    view['resource'] = RumEventAssembler.count(0);
+    view['resource'] = RumEventAssembler.count(resourceCount);
     event['view'] = view;
 
     RumEventAssembler.applyContext(event, context, attributes);

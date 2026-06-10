@@ -1,15 +1,17 @@
 import { FeatureScope, FlashcatContext, EventWriter, SdkCore } from '@flashcatcloud/core';
 import { RumScope, RumRawEvent } from './RumScope';
+import { RumResourceScope } from './RumResourceScope';
 import { RumEventAssembler } from '../assembly/RumEventAssembler';
 
 const MS_TO_NS: number = 1e6;
+const MAX_PENDING_RESOURCES: number = 100;
 
 /**
- * Tracks the lifetime of a single view (page): its action/error counts and
- * time-spent. Emits a ViewEvent on start (document_version 1) and on each update
- * (final version when stopped) — `date` stays the view start, `time_spent` and
- * `document_version` advance. Also assembles ErrorEvents for errors raised while
- * it is active.
+ * Tracks the lifetime of a single view (page): its action/error/resource counts
+ * and time-spent. Emits a ViewEvent on start (document_version 1) and on each
+ * update (final version when stopped) — `date` stays the view start, `time_spent`
+ * and `document_version` advance. Also assembles ErrorEvents for errors raised
+ * while it is active, and owns the in-flight RumResourceScopes.
  */
 export class RumViewScope implements RumScope {
   private readonly featureScope: FeatureScope;
@@ -23,8 +25,10 @@ export class RumViewScope implements RumScope {
   private readonly attributes: Record<string, Object>;
   private actionCount: number = 0;
   private errorCount: number = 0;
+  private resourceCount: number = 0;
   private documentVersion: number = 0;
   private active: boolean = true;
+  private readonly pendingResources: Map<string, RumResourceScope> = new Map<string, RumResourceScope>();
 
   constructor(
     featureScope: FeatureScope,
@@ -59,6 +63,9 @@ export class RumViewScope implements RumScope {
       case 'stopView':
         if (event.key === this.key) {
           this.active = false;
+          // Phase-1 simplification: in-flight resources die with the view (Android
+          // keeps the view alive until its resources settle).
+          this.pendingResources.clear();
           this.writeViewEvent(event.timestampMs);
           return null;
         }
@@ -72,6 +79,35 @@ export class RumViewScope implements RumScope {
         this.writeError(event);
         this.writeViewEvent(event.timestampMs);
         return this;
+      case 'startResource': {
+        const key: string = event.key ?? '';
+        if (key !== '' && this.pendingResources.size < MAX_PENDING_RESOURCES) {
+          this.pendingResources.set(key, new RumResourceScope(
+            this.featureScope, this.applicationId, this.sessionId,
+            this.viewId, this.viewName, event));
+        }
+        return this;
+      }
+      case 'stopResource': {
+        const scope: RumResourceScope | undefined = this.pendingResources.get(event.key ?? '');
+        if (scope !== undefined) {
+          this.pendingResources.delete(event.key ?? '');
+          scope.stop(event);
+          this.resourceCount += 1;
+          this.writeViewEvent(event.timestampMs);
+        }
+        return this;
+      }
+      case 'stopResourceWithError': {
+        const scope: RumResourceScope | undefined = this.pendingResources.get(event.key ?? '');
+        if (scope !== undefined) {
+          this.pendingResources.delete(event.key ?? '');
+          scope.stopWithError(event);
+          this.errorCount += 1;
+          this.writeViewEvent(event.timestampMs);
+        }
+        return this;
+      }
       default:
         return this;
     }
@@ -83,6 +119,7 @@ export class RumViewScope implements RumScope {
       return;
     }
     this.active = false;
+    this.pendingResources.clear(); // drop in-flight resources with the view
     this.writeViewEvent(nowMs);
   }
 
@@ -100,11 +137,12 @@ export class RumViewScope implements RumScope {
     const version: number = this.documentVersion;
     const actions: number = this.actionCount;
     const errors: number = this.errorCount;
+    const resources: number = this.resourceCount;
     const isActive: boolean = this.active;
     this.featureScope.withWriteContext((context: FlashcatContext, writer: EventWriter) => {
       const event: Record<string, Object> = RumEventAssembler.view(
         context, this.applicationId, this.sessionId, this.viewId, this.viewName,
-        this.startedAtMs, timeSpentNs, actions, errors, version, isActive, this.attributes);
+        this.startedAtMs, timeSpentNs, actions, errors, resources, version, isActive, this.attributes);
       writer.write(event);
     });
   }
