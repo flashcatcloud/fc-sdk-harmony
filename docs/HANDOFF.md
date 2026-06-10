@@ -26,21 +26,58 @@ This effort adds ResourceEvents, correlated to the injected W3C `traceparent` vi
 - [x] Task 6: DefaultRumMonitor resource methods
 - [x] Task 7: RumFeature bus translation (network_request_* → monitor)
 - [x] Task 8: TraceInterceptor reports resources + doc updates
-- [ ] Task 9: Wrap-up (device checklist, memory)
+- [x] Task 9: Wrap-up (device checklist, memory)
 
-## Current state
+## Current state — ALL TASKS DONE (2026-06-10)
 
-API surface ready: `RumRawEvent` carries resource fields (url/method/statusCode/
-sizeBytes/resourceKind), `RumMonitor` + `NoOpRumMonitor` have
-`stopResourceWithError(key, message, statusCode?, attributes?)`.
-`DefaultRumMonitor` does NOT implement it yet — that lands in Task 6, so the rum
-module would not compile between Tasks 2 and 6 (known, fine: nothing compiles
-locally anyway).
+Phase-1 feature list is now code-complete (UNCOMPILED — no local toolchain):
+init → session → manual view → **resource + traceparent correlation** → error →
+NDJSON batches → /api/v2/rum. Commits `262d0aa..` on the default branch.
+
+How resource tracking works end-to-end:
+1. `FlashcatTrace.interceptor()` on an rcp session injects `traceparent`
+   (consent-gated) and publishes `network_request_started/completed/failed`
+   bus messages with a per-request UUID key (`TraceInterceptor.ets`).
+2. `RumFeature.onReceive` translates them into
+   `startResource` / `stopResource` / `stopResourceWithError` monitor calls,
+   carrying trace ids as `_dd.trace_id`/`_dd.span_id` start attributes.
+3. `RumViewScope` owns pending `RumResourceScope`s (cap 100, dropped on view
+   stop); completion emits a ResourceEvent (`_dd.trace_id`/`_dd.span_id`,
+   `resource.{id,type,url,method,status_code,size,duration}`), failure emits a
+   `source:'network'` ErrorEvent with `error.resource`; view events now carry
+   real `resource.count`.
+Manual API works without the interceptor: `GlobalRumMonitor.get().startResource(...)`.
 
 ## Next step
 
-Task 9: wrap-up — finalize this doc with the on-device verification checklist,
-then update the session auto-memory (`fc-sdk-harmony.md`, outside the repo).
+None for this effort. Follow-ups (separate efforts, NOT started):
+- On-device verification (checklist below) — blocked on DevEco/hvigor/ohpm env.
+- P2 schema alignment (deferred pending backend confirm): view.url should = key
+  not name; `_dd.session.plan`; `source='harmony'` enum in fc-rum.
+- Phase 2: crash via hiAppEvent, nav auto-tracking (UIObserver), compile-time
+  AOP for http.createHttp, ActionEvents.
+
+## On-device verification checklist (first DevEco session)
+
+API points never compiled — verify each:
+- [ ] rcp shapes: `context.request.url.toString()`, `request.method`,
+      `response.statusCode`, `response.body?.byteLength` (streamed responses may
+      have undefined body → size 0), catch-param works with `instanceof Error`.
+- [ ] `traceparent` header actually on the wire (proxy/charles), format
+      `00-{32hex}-{16hex}-01`.
+- [ ] NDJSON batch file contains a `"type":"resource"` line whose
+      `_dd.trace_id` matches the injected header, with plausible `duration` (ns)
+      and `view.id` of the active view.
+- [ ] ViewEvent `view.resource.count` increments after each completed request.
+- [ ] Failed request (airplane mode / bad host) → `"type":"error"` line with
+      `error.source:"network"` + `error.resource.{method,status_code,url}`,
+      force-flushed.
+- [ ] Resource before any `startView` is silently dropped (expected).
+- [ ] >100 concurrent in-flight requests in one view: 101st+ ignored (expected).
+- [ ] fc-rum ingest accepts the batch at `/api/v2/rum` (NDJSON, text/plain) and
+      the platform aggregates by Session / View / Resource / Error.
+- [ ] Earlier phase-1 verify points in plan/memory (bundleManager, deviceInfo,
+      @ohos.file.fs, errorManager, cryptoFramework) still apply.
 
 ## Gotchas / context a fresh session needs
 
