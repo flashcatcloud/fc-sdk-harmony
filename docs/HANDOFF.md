@@ -24,7 +24,7 @@ This effort adds ResourceEvents, correlated to the injected W3C `traceparent` vi
 - [x] Task 4: RumResourceScope (new file)
 - [x] Task 5: RumViewScope integration + real resource counts
 - [x] Task 6: DefaultRumMonitor resource methods
-- [ ] Task 7: RumFeature bus translation (network_request_* → monitor)
+- [x] Task 7: RumFeature bus translation (network_request_* → monitor)
 - [ ] Task 8: TraceInterceptor reports resources + doc updates
 - [ ] Task 9: Wrap-up (device checklist, memory)
 
@@ -39,14 +39,16 @@ locally anyway).
 
 ## Next step
 
-Task 7: implement `onReceive` in
-`flashcat-rum/src/main/ets/internal/RumFeature.ets` — translate
-`network_request_started/completed/failed` bus events into monitor calls,
-mapping bus `trace_id`/`span_id` into `_dd.trace_id`/`_dd.span_id` start
-attributes. Code in plan Task 7 (incl. asString/asNumber/toMethod helpers;
-extend the RumTypes import with RumResourceKind + RumResourceMethod usage).
-Manual API (start/stopResource/stopResourceWithError) is now fully wired
-end-to-end; only auto-instrumentation remains.
+Task 8: producer side — in
+`flashcat-trace/src/main/ets/internal/TraceInterceptor.ets`, time the request
+around `next.handle`, generate a per-request key (`util.generateRandomUUID`),
+and publish `network_request_started/completed/failed` via
+`core.getFeature(RUM_FEATURE_NAME)?.sendEvent(...)`; also refresh the
+`FlashcatTrace.ets` doc comment (correlation no longer "phase 2"). Code in plan
+Task 8. Bus message contract (already consumed by RumFeature):
+started = {type, key, url, method, trace_id?, span_id?};
+completed = {type, key, status_code, size};
+failed = {type, key, message}.
 
 ## Gotchas / context a fresh session needs
 
