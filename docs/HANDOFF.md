@@ -28,9 +28,9 @@ This effort adds ResourceEvents, correlated to the injected W3C `traceparent` vi
 - [x] Task 8: TraceInterceptor reports resources + doc updates
 - [x] Task 9: Wrap-up (device checklist, memory)
 
-## Current state — ALL TASKS DONE (2026-06-10)
+## Current state — ALL TASKS DONE + local toolchain verified (2026-06-11)
 
-Phase-1 feature list is now code-complete (UNCOMPILED — no local toolchain):
+Phase-1 feature list is now code-complete and locally compiled with DevEco/hvigor:
 init → session → manual view → **resource + traceparent correlation** → error →
 NDJSON batches → /api/v2/rum. Commits `262d0aa..` on the default branch.
 
@@ -48,10 +48,41 @@ How resource tracking works end-to-end:
    real `resource.count`.
 Manual API works without the interceptor: `GlobalRumMonitor.get().startResource(...)`.
 
+## Local verification
+
+Toolchain used:
+- `ohpm 6.1.2.268`
+- `hvigor 6.24.2`
+- `hdc 3.2.0d`
+- DevEco Studio SDK at `/Applications/DevEco-Studio.app/Contents/sdk`
+
+Verified commands:
+
+```sh
+export PATH="/Users/fiona/Downloads/command-line-tools/bin:/Users/fiona/Downloads/command-line-tools/ohpm/bin:/Applications/DevEco-Studio.app/Contents/sdk/default/openharmony/toolchains:$PATH"
+export DEVECO_SDK_HOME="/Applications/DevEco-Studio.app/Contents/sdk"
+export HOS_SDK_HOME="/Applications/DevEco-Studio.app/Contents/sdk"
+export OHOS_SDK_HOME="/Applications/DevEco-Studio.app/Contents/sdk"
+
+ohpm install
+node /Users/fiona/Downloads/command-line-tools/hvigor/bin/hvigorw.js clean assembleHar --no-daemon --stacktrace
+node /Users/fiona/Downloads/command-line-tools/hvigor/bin/hvigorw.js test --no-daemon --stacktrace
+codelinter -c code-linter.json5 -f default -e error .
+ohpm prepublish flashcat-core/build/default/outputs/default/flashcat_core.har --log_level info
+ohpm prepublish flashcat-rum/build/default/outputs/default/flashcat_rum.har --log_level info
+ohpm prepublish flashcat-trace/build/default/outputs/default/flashcat_trace.har --log_level info
+```
+
+Notes:
+- Run `assembleHar` and `test` as separate hvigor invocations. Combining them in one command can make generated `.test` intermediates interfere with HAR compilation.
+- `@flashcatcloud/rum` and `@flashcatcloud/trace` declare `@flashcatcloud/core: "0.1.0"` for publishable manifests; the root `overrides` maps core to `file:./flashcat-core` for local multi-module builds.
+- `ohpm prepublish` warns that HAR files contain source code. This is not a prepublish failure, but review the source-distribution policy before public registry release.
+- ArkTS still warns on rcp syscap availability and the core HTTP permission in dependency compile output. The build and tests pass; on-device validation should confirm the intended target devices support the rcp APIs.
+
 ## Next step
 
 None for this effort. Follow-ups (separate efforts, NOT started):
-- On-device verification (checklist below) — blocked on DevEco/hvigor/ohpm env.
+- On-device verification (checklist below) — no longer blocked by local CLI compilation, still needs a HarmonyOS device/emulator + proxy/intake environment.
 - P2 schema alignment (deferred pending backend confirm): view.url should = key
   not name; `_dd.session.plan`; `source='harmony'` enum in fc-rum.
 - Phase 2: crash via hiAppEvent, nav auto-tracking (UIObserver), compile-time
@@ -81,10 +112,10 @@ API points never compiled — verify each:
 
 ## Gotchas / context a fresh session needs
 
-- **No hvigor/ohpm toolchain in this dev env** — nothing here compiles locally.
-  Each task ends with an ArkTS self-check (no `{...}` spread, no bare `delete` on
-  Record, no `any`, explicit Record<string, Object> event assembly) instead of a
-  test run. On-device verification points accumulate in Task 9.
+- Local CLI compilation is available via DevEco Studio + command-line tools. Keep
+  the ArkTS constraints in mind (no `{...}` spread, no bare `delete` on Record,
+  no `any`, explicit `Record<string, Object>` event assembly), but run hvigor
+  before handoff/release.
 - Repo is local-only (no remote); commits go straight onto the default branch,
   same as the previous five commits.
 - Decisions already locked (don't relitigate — rationale in the plan header):

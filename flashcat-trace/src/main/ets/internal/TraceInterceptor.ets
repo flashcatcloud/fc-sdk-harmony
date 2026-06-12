@@ -32,6 +32,9 @@ export class TraceInterceptor implements rcp.Interceptor {
     let tc: TraceContext | null = null;
     if (isInjectionAllowed(this.core)) {
       tc = TraceContext.generate(this.configuration.sampleRate);
+      if (context.request.headers === undefined) {
+        context.request.headers = {};
+      }
       context.request.headers['traceparent'] = tc.traceparent();
       publishTraceId(this.core, tc.traceId);
     }
@@ -42,8 +45,9 @@ export class TraceInterceptor implements rcp.Interceptor {
       notifyRequestCompleted(this.core, requestKey, response);
       return response;
     } catch (e) {
-      notifyRequestFailed(this.core, requestKey, e);
-      throw e;
+      const error: Error = e instanceof Error ? e : new Error('network request failed');
+      notifyRequestFailed(this.core, requestKey, error);
+      throw error;
     }
   }
 }

@@ -2,6 +2,9 @@
   module: {
     name: "flashcat_core",
     type: "har",
-    deviceTypes: ["default", "phone", "tablet", "2in1", "tv", "wearable", "car"]
+    deviceTypes: ["default", "phone", "tablet", "2in1", "tv", "wearable", "car"],
+    requestPermissions: [
+      { name: "ohos.permission.INTERNET" }
+    ]
   }
 }
