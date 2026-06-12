@@ -6,8 +6,6 @@
   license: "Apache-2.0",
   author: "FlashCat",
   dependencies: {
-    // Local path link so the multi-HAR project builds before core is published to ohpm.
-    // Switch to a registry version ("0.1.0") at release time.
-    "@flashcatcloud/core": "file:../flashcat-core"
+    "@flashcatcloud/core": "0.1.0"
   }
 }

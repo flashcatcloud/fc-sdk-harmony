@@ -36,24 +36,28 @@ export class RumFeature implements Feature, FeatureEventReceiver {
     // CRITICAL: this runs inside the global exception handler — it must NEVER throw
     // (that would crash the host app), and must guard against re-entrancy (an error
     // raised while reporting an error must not be re-processed into a loop).
-    this.errorObserverId = errorManager.on('error', {
-      onUnhandledException: (errMsg: string) => {
-        if (this.handlingError) {
-          return;
-        }
-        this.handlingError = true;
-        try {
-          const m: DefaultRumMonitor | null = this.monitor;
-          if (m !== null) {
-            m.reportError(RumFeature.firstLine(errMsg), RumErrorSource.SOURCE, errMsg, false, 'unhandled');
+    try {
+      this.errorObserverId = errorManager.on('error', {
+        onUnhandledException: (errMsg: string) => {
+          if (this.handlingError) {
+            return;
           }
-        } catch (_e) {
-          // Swallow — the error handler must not throw.
-        } finally {
-          this.handlingError = false;
+          this.handlingError = true;
+          try {
+            const m: DefaultRumMonitor | null = this.monitor;
+            if (m !== null) {
+              m.reportError(RumFeature.firstLine(errMsg), RumErrorSource.SOURCE, errMsg, false, 'unhandled');
+            }
+          } catch (_e) {
+            // Swallow — the error handler must not throw.
+          } finally {
+            this.handlingError = false;
+          }
         }
-      }
-    });
+      });
+    } catch (_e) {
+      this.errorObserverId = -1;
+    }
 
     // Network auto-instrumentation arrives via the bus (Trace interceptor →
     // onReceive). TODO phase 2: navigation auto-tracking, compile-time AOP.

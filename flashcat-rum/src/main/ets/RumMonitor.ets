@@ -28,6 +28,26 @@ export interface RumMonitor {
   getCurrentSessionId(callback: (sessionId: string | undefined) => void): void;
 }
 
+/** No-op fallback used before RUM is enabled. */
+class NoOpRumMonitor implements RumMonitor {
+  startView(key: string, name: string, attributes?: Record<string, Object>): void {}
+  stopView(key: string, attributes?: Record<string, Object>): void {}
+  addAction(type: RumActionType, name: string, attributes?: Record<string, Object>): void {}
+  startAction(type: RumActionType, name: string, attributes?: Record<string, Object>): void {}
+  stopAction(type: RumActionType, name: string, attributes?: Record<string, Object>): void {}
+  startResource(key: string, method: RumResourceMethod, url: string, attributes?: Record<string, Object>): void {}
+  stopResource(key: string, statusCode: number, size: number, kind: RumResourceKind,
+    attributes?: Record<string, Object>): void {}
+  stopResourceWithError(key: string, message: string, statusCode?: number,
+    attributes?: Record<string, Object>): void {}
+  addError(message: string, source: RumErrorSource, stack?: string, attributes?: Record<string, Object>): void {}
+  addAttribute(key: string, value: Object): void {}
+  removeAttribute(key: string): void {}
+  getCurrentSessionId(callback: (sessionId: string | undefined) => void): void {
+    callback(undefined);
+  }
+}
+
 /**
  * Holds the active RumMonitor. Set by FlashcatRum.enable; a no-op monitor is
  * returned before enable so call sites never crash.
@@ -47,25 +67,5 @@ export class GlobalRumMonitor {
   /** @internal */
   static reset(): void {
     GlobalRumMonitor.monitor = new NoOpRumMonitor();
-  }
-}
-
-/** No-op fallback used before RUM is enabled. */
-class NoOpRumMonitor implements RumMonitor {
-  startView(key: string, name: string, attributes?: Record<string, Object>): void {}
-  stopView(key: string, attributes?: Record<string, Object>): void {}
-  addAction(type: RumActionType, name: string, attributes?: Record<string, Object>): void {}
-  startAction(type: RumActionType, name: string, attributes?: Record<string, Object>): void {}
-  stopAction(type: RumActionType, name: string, attributes?: Record<string, Object>): void {}
-  startResource(key: string, method: RumResourceMethod, url: string, attributes?: Record<string, Object>): void {}
-  stopResource(key: string, statusCode: number, size: number, kind: RumResourceKind,
-    attributes?: Record<string, Object>): void {}
-  stopResourceWithError(key: string, message: string, statusCode?: number,
-    attributes?: Record<string, Object>): void {}
-  addError(message: string, source: RumErrorSource, stack?: string, attributes?: Record<string, Object>): void {}
-  addAttribute(key: string, value: Object): void {}
-  removeAttribute(key: string): void {}
-  getCurrentSessionId(callback: (sessionId: string | undefined) => void): void {
-    callback(undefined);
   }
 }

@@ -29,12 +29,28 @@ export class TraceContext {
   }
 
   private static randomHex(byteLength: number): string {
-    const rand = cryptoFramework.createRandom();
-    const blob = rand.generateRandomSync(byteLength); // { data: Uint8Array }
-    const bytes: Uint8Array = blob.data;
+    try {
+      const rand = cryptoFramework.createRandom();
+      const blob = rand.generateRandomSync(byteLength); // { data: Uint8Array }
+      return TraceContext.bytesToHex(blob.data);
+    } catch (_e) {
+      return TraceContext.fallbackRandomHex(byteLength);
+    }
+  }
+
+  private static bytesToHex(bytes: Uint8Array): string {
     let hex: string = '';
     for (let i: number = 0; i < bytes.length; i++) {
       const b: number = bytes[i];
+      hex += (b < 16 ? '0' : '') + b.toString(16);
+    }
+    return hex;
+  }
+
+  private static fallbackRandomHex(byteLength: number): string {
+    let hex: string = '';
+    for (let i: number = 0; i < byteLength; i++) {
+      const b: number = Math.floor(Math.random() * 256);
       hex += (b < 16 ? '0' : '') + b.toString(16);
     }
     return hex;

@@ -1,0 +1,8 @@
+{
+  app: {
+    bundleName: "com.flashcat.sdk.harmony",
+    vendor: "FlashCat",
+    versionCode: 10000,
+    versionName: "0.1.0"
+  }
+}
