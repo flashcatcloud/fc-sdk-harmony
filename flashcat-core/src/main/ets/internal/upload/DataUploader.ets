@@ -31,7 +31,10 @@ export class DataUploader {
   }
 
   private endpoint(): string {
-    return `${intakeEndpoint(this.configuration.site)}${this.trackPath}`;
+    const host: string = this.configuration.customEndpoint.length > 0
+      ? this.configuration.customEndpoint
+      : intakeEndpoint(this.configuration.site);
+    return `${host}${this.trackPath}`;
   }
 
   async upload(batch: Batch): Promise<UploadStatus> {

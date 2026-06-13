@@ -13,6 +13,12 @@ export class Configuration {
   readonly batchUploadFrequencyMs: number;
   /** When true, the SDK emits internal HiLog (tag "Flashcat") for debugging. */
   readonly verbose: boolean;
+  /**
+   * Overrides the intake host (e.g. "http://10.0.2.2:8080" for a local capture
+   * server / proxy during debugging). Empty → use {@link site}. The track path
+   * (/api/v2/rum) is still appended.
+   */
+  readonly customEndpoint: string;
 
   constructor(
     clientToken: string,
@@ -21,7 +27,8 @@ export class Configuration {
     service: string | undefined,
     site: FlashcatSite,
     batchUploadFrequencyMs: number,
-    verbose: boolean
+    verbose: boolean,
+    customEndpoint: string
   ) {
     this.clientToken = clientToken;
     this.env = env;
@@ -30,6 +37,7 @@ export class Configuration {
     this.site = site;
     this.batchUploadFrequencyMs = batchUploadFrequencyMs;
     this.verbose = verbose;
+    this.customEndpoint = customEndpoint;
   }
 }
 
@@ -41,6 +49,7 @@ export class ConfigurationBuilder {
   private site: FlashcatSite = FlashcatSite.CN;
   private batchUploadFrequencyMs: number = 5000;
   private verbose: boolean = false;
+  private customEndpoint: string = '';
 
   constructor(clientToken: string, env: string) {
     this.clientToken = clientToken;
@@ -73,6 +82,15 @@ export class ConfigurationBuilder {
     return this;
   }
 
+  /**
+   * Override the intake host for local debugging, e.g. "http://10.0.2.2:8080"
+   * (emulator → host loopback) pointed at a capture server / proxy. Empty → site.
+   */
+  setCustomEndpoint(endpoint: string): ConfigurationBuilder {
+    this.customEndpoint = endpoint;
+    return this;
+  }
+
   build(): Configuration {
     return new Configuration(
       this.clientToken,
@@ -81,7 +99,8 @@ export class ConfigurationBuilder {
       this.service,
       this.site,
       this.batchUploadFrequencyMs,
-      this.verbose
+      this.verbose,
+      this.customEndpoint
     );
   }
 }
