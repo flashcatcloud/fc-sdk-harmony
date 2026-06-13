@@ -116,6 +116,30 @@ Driving spec: `docs/superpowers/specs/2026-06-13-harmony-crash-symbolication-des
   succeed; plugin `npm pack` clean + `prepublishOnly` build guard; `sdk/CLAUDE.md`
   repo map updated to include `fc-sdk-harmony/`.
 
+## On-device verification — PARTIALLY DONE (2026-06-13)
+
+Ran the demo on a **local emulator** and confirmed the full upload chain works:
+`upload: POST /api/v2/rum -> 202` for view/error/resource batches (real
+`batch-<epochms>-…` filenames, NDJSON to `/api/v2/rum`).
+
+Two real bugs were found + fixed during this (commit on dev):
+1. `systemDateTime.getTime()` returned `0` on the runtime → batches never aged,
+   event `date`=0. Switched persistence + monitor to `Date.now()`.
+2. `ensureDir` swallowed `fs.accessSync`'s throw-on-missing → dir never created →
+   writes + `listFileSync` failed (`onDisk=0`). Made `ensureDir` robust + self-heal.
+
+**Hard-won environment lesson (don't repeat):** the DevEco **Previewer stubs all
+native kit APIs** (fs/time/network/hiAppEvent) — the SDK CANNOT run there; it shows
+`getTime()=0`, `onDisk=0`, no uploads. Use a **local emulator** (macOS-ARM/Windows;
+needs a Huawei **real-name** account, effectively China-mainland identity) or a
+**real device**. Verbose SDK logging: `ConfigurationBuilder.setVerbose(true)` →
+HiLog tag `Flashcat` (domain 0xF1A7).
+
+Still NOT verified on-device (needs a real device, not just emulator):
+- native `.so` crash + freeze delivery via `hiAppEvent` and next-launch replay;
+- end-to-end symbolication (needs the hvigor plugin to upload symbols to a fc-rum
+  with the `feat/harmony-symbolication` branch + the real obfuscated artifacts).
+
 ## ALL 7 ROUNDS COMPLETE — remaining work is the user's
 
 Everything is implemented and locally green (build/test/lint/fuzz). The only

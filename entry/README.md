@@ -4,6 +4,23 @@ A single-screen ArkUI app to **manually verify** the SDK on a real device or
 emulator. Every button maps to one telemetry path: views, resources, errors, and
 crashes (native + ArkTS + freeze).
 
+## ⚠️ Must run on an emulator or real device — NOT the Previewer
+
+The DevEco **Previewer** only renders ArkUI; it stubs native kit APIs (file system,
+`systemDateTime`, network, `hiAppEvent`, `errorManager`), so the SDK cannot write
+batches or upload there. Symptoms in the Previewer: `systemDateTime.getTime()`
+returns `0`, file writes fail (`onDisk=0`), no `upload:` logs. This is expected —
+**run on a real runtime instead.**
+
+- **Local emulator** (macOS Apple Silicon / Windows): enough to verify RUM views,
+  resources, errors, and uploads (`upload: POST /api/v2/rum -> 202`). Note: creating
+  the HarmonyOS NEXT emulator requires a Huawei developer account with **real-name
+  authentication (实名认证)**, which in practice needs a **China-mainland identity**.
+- **Real device**: required to reliably verify native (`.so`) crash + freeze
+  capture via `hiAppEvent` (and crash replay on next launch).
+
+Verified working on the local emulator (2026-06-13): `upload: POST /api/v2/rum -> 202`.
+
 ## One-time setup
 
 1. Open the repo root in **DevEco Studio**.

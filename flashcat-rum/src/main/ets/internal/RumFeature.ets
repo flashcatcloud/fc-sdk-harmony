@@ -1,4 +1,4 @@
-import { SdkCore, Feature, FeatureEventReceiver, RUM_FEATURE_NAME } from '@flashcatcloud/core';
+import { SdkCore, Feature, FeatureEventReceiver, RUM_FEATURE_NAME, FlashcatLog } from '@flashcatcloud/core';
 import { errorManager } from '@kit.AbilityKit';
 import { RumConfiguration } from '../RumConfiguration';
 import { RumErrorSource, RumResourceKind, RumResourceMethod } from '../RumTypes';
@@ -26,10 +26,12 @@ export class RumFeature implements Feature, FeatureEventReceiver {
   /** Set by FlashcatRum.enable once the monitor is built (after registration). */
   attachMonitor(monitor: DefaultRumMonitor): void {
     this.monitor = monitor;
+    FlashcatLog.d('rum: monitor attached');
   }
 
   onInitialize(): void {
     this.core.setEventReceiver(RUM_FEATURE_NAME, this);
+    FlashcatLog.d('rum: event receiver registered');
 
     // Auto Error capture: turn uncaught ArkTS exceptions into RUM error events.
     // The callback reads `this.monitor` at error-time, by which point it is set.
@@ -39,14 +41,19 @@ export class RumFeature implements Feature, FeatureEventReceiver {
     try {
       this.errorObserverId = errorManager.on('error', {
         onUnhandledException: (errMsg: string) => {
+          FlashcatLog.d(`rum.error: onUnhandledException len=${errMsg.length}`);
           this.reportUnhandledError(errMsg);
         },
         onException: (errObject: Error) => {
-          this.reportUnhandledError(RumFeature.unhandledErrorText(errObject));
+          const text: string = RumFeature.unhandledErrorText(errObject);
+          FlashcatLog.d(`rum.error: onException len=${text.length}`);
+          this.reportUnhandledError(text);
         }
       });
-    } catch (_e) {
+      FlashcatLog.d(`rum.error: observer registered id=${this.errorObserverId}`);
+    } catch (e) {
       this.errorObserverId = -1;
+      FlashcatLog.e(`rum.error: observer registration failed: ${RumFeature.errorText(e)}`);
     }
 
     // Network auto-instrumentation arrives via the bus (Trace interceptor →
@@ -92,8 +99,10 @@ export class RumFeature implements Feature, FeatureEventReceiver {
   private onCrashReport(event: Record<string, Object>): void {
     const m: DefaultRumMonitor | null = this.monitor;
     if (m === null) {
+      FlashcatLog.d('rum.crash: dropped because monitor is null');
       return;
     }
+    FlashcatLog.d(`rum.crash: reporting crash kind=${RumFeature.asString(event['crash_kind'])}`);
     m.reportError(
       RumFeature.asString(event['message']),
       RumErrorSource.SOURCE,
@@ -168,16 +177,21 @@ export class RumFeature implements Feature, FeatureEventReceiver {
 
   private reportUnhandledError(stackText: string): void {
     if (this.handlingError) {
+      FlashcatLog.d('rum.error: skipped re-entrant unhandled error');
       return;
     }
     this.handlingError = true;
     try {
       const m: DefaultRumMonitor | null = this.monitor;
       if (m !== null) {
+        FlashcatLog.d(`rum.error: report unhandled isCrash=true firstLine="${RumFeature.firstLine(stackText)}"`);
         m.reportError(RumFeature.firstLine(stackText), RumErrorSource.SOURCE, stackText, true, 'unhandled');
+      } else {
+        FlashcatLog.d('rum.error: dropped because monitor is null');
       }
-    } catch (_e) {
+    } catch (e) {
       // Swallow — the error handler must not throw.
+      FlashcatLog.e(`rum.error: report failed: ${RumFeature.errorText(e)}`);
     } finally {
       this.handlingError = false;
     }
@@ -213,5 +227,9 @@ export class RumFeature implements Feature, FeatureEventReceiver {
   private static firstLine(text: string): string {
     const idx: number = text.indexOf('\n');
     return idx >= 0 ? text.substring(0, idx) : text;
+  }
+
+  private static errorText(value: Object): string {
+    return value instanceof Error ? value.message : `${value}`;
   }
 }

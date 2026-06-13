@@ -67,7 +67,7 @@ export class UploadScheduler {
     }
     const batch: Batch | null = this.persistence.readNextBatch();
     if (batch === null) {
-      FlashcatLog.d('drain: no ready batch (active not rolled yet)');
+      // Idle tick — nothing to drain. Silent (was a debug log) to avoid per-tick spam.
       this.currentDelayMs = this.baseDelayMs;
       this.scheduleNext(this.baseDelayMs);
       return;

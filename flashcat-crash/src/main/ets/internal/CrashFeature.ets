@@ -1,4 +1,4 @@
-import { SdkCore, Feature, FeatureScope, CRASH_FEATURE_NAME, RUM_FEATURE_NAME } from '@flashcatcloud/core';
+import { SdkCore, Feature, FeatureScope, CRASH_FEATURE_NAME, RUM_FEATURE_NAME, FlashcatLog } from '@flashcatcloud/core';
 import { hiAppEvent } from '@kit.PerformanceAnalysisKit';
 import { CrashConfiguration } from '../CrashConfiguration';
 import { CrashEventMapper } from './CrashEventMapper';
@@ -38,6 +38,7 @@ export class CrashFeature implements Feature {
       names.push(hiAppEvent.event.APP_FREEZE);
     }
     if (names.length === 0) {
+      FlashcatLog.d('crash: watcher disabled by configuration');
       return;
     }
     try {
@@ -49,31 +50,39 @@ export class CrashFeature implements Feature {
         }
       });
       this.watching = true;
-    } catch (_e) {
+      FlashcatLog.d(`crash: watcher registered names=${names.join(',')}`);
+    } catch (e) {
       this.watching = false;
+      FlashcatLog.e(`crash: watcher registration failed: ${CrashFeature.errorText(e)}`);
     }
   }
 
   private handle(groups: Array<hiAppEvent.AppEventGroup>): void {
     try {
+      FlashcatLog.d(`crash: received groups=${groups.length}`);
       const rum: FeatureScope | null = this.core.getFeature(RUM_FEATURE_NAME);
       if (rum === null) {
+        FlashcatLog.d('crash: dropped because RUM feature is missing');
         return; // RUM not enabled — nothing to report through.
       }
       for (const group of groups) {
         const isFreeze: boolean = group.name === hiAppEvent.event.APP_FREEZE;
+        FlashcatLog.d(`crash: group name=${group.name} events=${group.appEventInfos.length}`);
         for (const info of group.appEventInfos) {
           if (!CrashFeature.sampled(this.configuration.sampleRate)) {
+            FlashcatLog.d('crash: dropped by sample rate');
             continue;
           }
           const params: Record<string, Object> = info.params as Record<string, Object>;
           const ev: Record<string, Object> =
             isFreeze ? CrashEventMapper.fromAppFreeze(params) : CrashEventMapper.fromAppCrash(params);
+          FlashcatLog.d(`crash: send to RUM kind=${ev['crash_kind']} message=${ev['message']}`);
           rum.sendEvent(ev);
         }
       }
-    } catch (_e) {
+    } catch (e) {
       // Crash reporting must never crash the app.
+      FlashcatLog.e(`crash: handle failed: ${CrashFeature.errorText(e)}`);
     }
   }
 
@@ -97,5 +106,9 @@ export class CrashFeature implements Feature {
       }
       this.watching = false;
     }
+  }
+
+  private static errorText(value: Object): string {
+    return value instanceof Error ? value.message : `${value}`;
   }
 }

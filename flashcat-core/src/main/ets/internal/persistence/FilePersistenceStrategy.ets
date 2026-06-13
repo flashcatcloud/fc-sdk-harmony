@@ -33,8 +33,10 @@ export class FilePersistenceStrategy {
   private seq: number = 0;
 
   constructor(context: common.Context, featureName: string) {
-    this.rootDir = `${context.filesDir}/flashcat/${featureName}`;
+    const filesDir: string = context.filesDir;
+    this.rootDir = `${filesDir}/flashcat/${featureName}`;
     this.pendingDir = `${this.rootDir}/${PENDING_DIR}`;
+    FlashcatLog.d(`persistence[${featureName}]: filesDir=${filesDir} rootDir=${this.rootDir}`);
     this.ensureDir(this.rootDir);
   }
 
@@ -82,6 +84,9 @@ export class FilePersistenceStrategy {
     const ok: boolean = FilePersistenceStrategy.append(`${this.rootDir}/${name}`, line);
     if (ok) {
       this.activeBytes += line.length;
+    } else {
+      this.activeName = null;
+      this.activeBytes = 0;
     }
     FlashcatLog.d(`persist.write: ok=${ok} forceRoll=${forceRoll} batch=${name} dir=${this.rootDir}`);
     if (forceRoll) {
@@ -160,8 +165,7 @@ export class FilePersistenceStrategy {
     const all: string[] = this.listBatches();
     const ready: string[] = all.filter((n: string) => n !== this.activeName);
     if (ready.length === 0) {
-      FlashcatLog.d(`readNextBatch: none — onDisk=${all.length} active=${this.activeName ?? 'null'}`);
-      return null;
+      return null; // idle — silent to avoid per-tick spam
     }
     const name: string = ready[0];
     const path: string = `${this.rootDir}/${name}`;
@@ -227,7 +231,8 @@ export class FilePersistenceStrategy {
       } finally {
         fs.closeSync(file);
       }
-    } catch (_e) {
+    } catch (e) {
+      FlashcatLog.e(`append failed path=${path}: ${FilePersistenceStrategy.errorText(e)}`);
       return false;
     }
   }
@@ -238,5 +243,12 @@ export class FilePersistenceStrategy {
     } catch (_e) {
       return 0;
     }
+  }
+
+  private static errorText(value: Object): string {
+    if (value instanceof Error) {
+      return value.message;
+    }
+    return `${value}`;
   }
 }

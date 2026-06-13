@@ -13,3 +13,4 @@ export { Feature, FeatureScope, FeatureEventReceiver, EventWriter,
   RUM_FEATURE_NAME, LOGS_FEATURE_NAME, TRACE_FEATURE_NAME, CRASH_FEATURE_NAME } from './src/main/ets/api/feature/Feature';
 export { FlashcatContext, DeviceInfo, UserInfo, NetworkInfo } from './src/main/ets/api/context/FlashcatContext';
 export { DataWriter } from './src/main/ets/api/storage/DataWriter';
+export { FlashcatLog } from './src/main/ets/internal/FlashcatLog';
