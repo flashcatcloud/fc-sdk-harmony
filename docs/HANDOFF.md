@@ -112,8 +112,17 @@ Driving spec: `docs/superpowers/specs/2026-06-13-harmony-crash-symbolication-des
   gating / credential hygiene / account-scoped storage verified safe; hardened ELF
   parser (never-throw + bounds + 200-case fuzz) and ParseHarmony (>8KB line guard
   + Go fuzz). Plugin 12/12; fc-rum fuzz clean.
-- **Round 7 — NEXT (final).** Release packaging: HAR ohpm prepublish dry-run,
-  plugin publish flow, update workspace CLAUDE.md repo map, finalize memory.
+- **Round 7 — DONE (final).** Release packaging: all 4 HARs `ohpm prepublish`
+  succeed; plugin `npm pack` clean + `prepublishOnly` build guard; `sdk/CLAUDE.md`
+  repo map updated to include `fc-sdk-harmony/`.
+
+## ALL 7 ROUNDS COMPLETE — remaining work is the user's
+
+Everything is implemented and locally green (build/test/lint/fuzz). The only
+open step is on-device + staging validation per `docs/E2E-RUNBOOK.md`, then:
+1. confirm/adjust `CrashEventMapper` to the real hiAppEvent `params` shape,
+2. merge fc-rum `feat/harmony-symbolication` (commit `afccf23`+),
+3. publish the 4 HARs to ohpm and `@flashcatcloud/hvigor-plugin` to npm.
   (`SourceHarmony`, `HarmonyProcessor`, `stack.ParseHarmony`) → e2e + hardening →
   security review → release packaging.
 

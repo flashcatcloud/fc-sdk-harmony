@@ -312,3 +312,26 @@ account-scoped behind `APIKeyAuth`; the plugin never logs the API key.
 - `logic/stack/parse_harmony_shared.go` (fc-rum, commit on
   `feat/harmony-symbolication`) — skip >8 KB lines before regex matching;
   `FuzzParseHarmony` added (32k execs/5s clean).
+
+### Round 7 — release packaging (DONE, 2026-06-13)
+
+- **HAR prepublish dry-run**: `ohpm prepublish` succeeds for all four HARs
+  (`@flashcatcloud/core` / `rum` / `trace` / `crash`). The only warning is "har
+  contains source code" — a deliberate, documented policy choice (kept for now;
+  revisit before any public-registry release).
+- **Plugin packaging**: `@flashcatcloud/hvigor-plugin` packs cleanly
+  (`npm pack --dry-run`); added a `prepublishOnly: npm run build` guard so it can
+  never be published without `dist/`. Tests run with zero install via
+  `node --experimental-strip-types`.
+- **Workspace map**: `sdk/CLAUDE.md` repo table now lists `fc-sdk-harmony/`
+  (modules + demo + plugin; flagged as FlashCat-original, not a Datadog fork).
+- Memory updated.
+
+## Status: all 7 rounds complete
+
+What's delivered and locally green: crash module (native+ArkTS+freeze), demo HAP,
+hvigor symbol-upload plugin, fc-rum HarmonyOS symbolicator, hardening, security
+review, packaging. **The one remaining step is the user's:** run
+`docs/E2E-RUNBOOK.md` on a device + staging fc-rum to confirm on-device
+`hiAppEvent` delivery and real-artifact symbolication, then merge the fc-rum
+`feat/harmony-symbolication` branch and publish the HARs + plugin.
