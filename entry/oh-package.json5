@@ -1,0 +1,15 @@
+{
+  name: "entry",
+  version: "1.0.0",
+  description: "FlashCat HarmonyOS SDK integration demo (manual verification harness)",
+  main: "",
+  author: "FlashCat",
+  license: "Apache-2.0",
+  dependencies: {
+    "@flashcatcloud/core": "file:../flashcat-core",
+    "@flashcatcloud/rum": "file:../flashcat-rum",
+    "@flashcatcloud/trace": "file:../flashcat-trace",
+    "@flashcatcloud/crash": "file:../flashcat-crash",
+    "libentry.so": "file:./src/main/cpp/types/libentry"
+  }
+}

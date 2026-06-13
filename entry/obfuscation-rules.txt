@@ -1,0 +1,3 @@
+# Demo app — keep parameter names off; nothing to expose.
+-enable-property-obfuscation
+-enable-toplevel-obfuscation
