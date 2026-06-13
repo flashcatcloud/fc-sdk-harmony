@@ -108,11 +108,12 @@ Driving spec: `docs/superpowers/specs/2026-06-13-harmony-crash-symbolication-des
 - **Round 5 — DONE.** Hardening (crash payload caps 2k/50k/100k + sample rate) +
   `docs/E2E-RUNBOOK.md` for staging+device validation. Build/test/lint green. The
   actual on-device + backend e2e run is the user's step (env-blocked here).
-- **Round 6 — NEXT.** Security & stability review: consent gating audit, no
-  clientToken leakage, symbol-file ACL, crash-path never-throw/re-entrancy audit,
-  stack-parser fuzz.
-- **Round 7.** Release packaging: HAR ohpm prepublish dry-run, plugin publish
-  flow, update workspace CLAUDE.md repo map, finalize memory.
+- **Round 6 — DONE.** Security review (`docs/SECURITY-REVIEW.md`): consent
+  gating / credential hygiene / account-scoped storage verified safe; hardened ELF
+  parser (never-throw + bounds + 200-case fuzz) and ParseHarmony (>8KB line guard
+  + Go fuzz). Plugin 12/12; fc-rum fuzz clean.
+- **Round 7 — NEXT (final).** Release packaging: HAR ohpm prepublish dry-run,
+  plugin publish flow, update workspace CLAUDE.md repo map, finalize memory.
   (`SourceHarmony`, `HarmonyProcessor`, `stack.ParseHarmony`) → e2e + hardening →
   security review → release packaging.
 

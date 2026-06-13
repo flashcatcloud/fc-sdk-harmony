@@ -295,3 +295,20 @@ shape" and key-format fallbacks for the two unit-unverifiable assumptions.
 
 **Verified locally:** `clean assembleHar` + `test` (crash module now 6 mapper +
 3 sampling + RUM crash tests) + `codelinter` all green.
+
+### Round 6 — security & stability review (DONE, 2026-06-13)
+
+Full review in `docs/SECURITY-REVIEW.md`. Audited consent gating, credential
+hygiene, crash-path never-throw, untrusted-input parsing, and backend access
+control. Verified safe: crash writes are consent-gated via the core writer; no
+token/PII in crash events; crash callback never throws; backend storage is
+account-scoped behind `APIKeyAuth`; the plugin never logs the API key.
+
+**Fixes applied (untrusted input):**
+- `hvigor-plugin/src/elf.ts` — wrapped the ELF parse to return null (never throw)
+  on malformed `.so`, bounds-checked the section table against EOF, clamped note
+  iteration. New 200-case fuzz test (`extractElfBuildId never throws`). Plugin
+  tests now **12/12**.
+- `logic/stack/parse_harmony_shared.go` (fc-rum, commit on
+  `feat/harmony-symbolication`) — skip >8 KB lines before regex matching;
+  `FuzzParseHarmony` added (32k execs/5s clean).
