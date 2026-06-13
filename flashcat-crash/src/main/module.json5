@@ -1,0 +1,7 @@
+{
+  module: {
+    name: "flashcat_crash",
+    type: "har",
+    deviceTypes: ["default", "phone", "tablet", "2in1", "tv", "wearable", "car"]
+  }
+}

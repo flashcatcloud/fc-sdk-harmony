@@ -1,0 +1,3 @@
+# Keep Crash public entry points readable for integrators.
+-keep-global-name
+  FlashcatCrash
