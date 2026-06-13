@@ -39,6 +39,13 @@
       targets: [
         { name: "default", applyToProducts: ["default"] }
       ]
+    },
+    {
+      name: "flashcat_crash",
+      srcPath: "./flashcat-crash",
+      targets: [
+        { name: "default", applyToProducts: ["default"] }
+      ]
     }
   ]
 }

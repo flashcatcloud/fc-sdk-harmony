@@ -79,7 +79,8 @@ export class RumFeature implements Feature, FeatureEventReceiver {
     GlobalRumMonitor.reset();
   }
 
-  /** Bus handler — network request events from the Trace interceptor, crash events (phase 2). */
+  /** Bus handler — network request events from the Trace interceptor; crash/freeze
+   * events from the Crash feature (hiAppEvent → CrashEventMapper). */
   onReceive(event: Record<string, Object>): void {
     const type: Object | undefined = event['type'];
     if (type === 'network_request_started') {
@@ -88,8 +89,46 @@ export class RumFeature implements Feature, FeatureEventReceiver {
       this.onNetworkRequestCompleted(event);
     } else if (type === 'network_request_failed') {
       this.onNetworkRequestFailed(event);
+    } else if (type === 'crash_report') {
+      this.onCrashReport(event);
     }
-    // TODO phase 2: map hiAppEvent crash payloads (JS/C++/Freeze) → RUM error.
+  }
+
+  /**
+   * Crash/freeze event published by the Crash feature. Reported as an unhandled
+   * `is_crash` error. Native symbolication metadata (binary images, arch) rides
+   * along as internal `_dd.crash.*` attributes for the backend symbolicator.
+   */
+  private onCrashReport(event: Record<string, Object>): void {
+    const m: DefaultRumMonitor | null = this.monitor;
+    if (m === null) {
+      return;
+    }
+    m.reportError(
+      RumFeature.asString(event['message']),
+      RumErrorSource.SOURCE,
+      RumFeature.asString(event['stack']),
+      true,
+      'unhandled',
+      RumFeature.crashAttributes(event));
+  }
+
+  /** Pure: extract native-symbolication metadata from a crash_report bus event. */
+  static crashAttributes(event: Record<string, Object>): Record<string, Object> {
+    const attributes: Record<string, Object> = {};
+    const images: Object | undefined = event['binary_images'];
+    if (typeof images === 'string' && images.length > 0) {
+      attributes['_dd.crash.binary_images'] = images;
+    }
+    const arch: Object | undefined = event['arch'];
+    if (typeof arch === 'string' && arch.length > 0) {
+      attributes['_dd.crash.arch'] = arch;
+    }
+    const kind: Object | undefined = event['crash_kind'];
+    if (typeof kind === 'string' && kind.length > 0) {
+      attributes['_dd.crash.kind'] = kind;
+    }
+    return attributes;
   }
 
   private onNetworkRequestStarted(event: Record<string, Object>): void {

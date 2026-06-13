@@ -1,7 +1,10 @@
 # HarmonyOS / DevEco Studio
 /build
 /*/build
+/*/.test
 /*/.preview
+/*/BuildProfile.ets
+.cache
 .cxx
 *.har
 

@@ -117,4 +117,46 @@ The user may compress/extend; rounds are checkpoints, not a contract.
 
 ## Round log
 
-(empty — appended after each round)
+### Round 1 — `flashcat-crash` module (DONE, 2026-06-13, local build green)
+
+**Shipped** (4th HAR module `@flashcatcloud/crash`, depends only on `core`):
+- `CrashConfiguration` + builder (`trackCrashes`, `trackAppHangs`, both default true).
+- `CrashEventMapper` — **pure** translation of a hiAppEvent `AppEventInfo.params`
+  into a `crash_report` bus message. Unit-tested (4 cases: ArkTS crash, native
+  crash w/ binary_images, freeze, missing-fields tolerance).
+- `CrashFeature` — installs a `hiAppEvent.addWatcher` for `APP_CRASH` +
+  `APP_FREEZE` (domain `OS`); `onReceive` maps each event and publishes it on the
+  bus to RUM. Whole callback wrapped try/catch — crash reporting must never crash
+  the host. `onStop` removes the watcher.
+- `FlashcatCrash.enable(config)` — registers the feature against the core.
+- RUM side: `RumFeature.onReceive` gains a `crash_report` branch →
+  `monitor.reportError(message, source, stack, isCrash=true, 'unhandled', attrs)`.
+  Native symbolication metadata extracted by a **pure** `RumFeature.crashAttributes`
+  static (`_dd.crash.binary_images` / `_dd.crash.arch` / `_dd.crash.kind`),
+  unit-tested (2 cases).
+
+**Key design insight (simplifies vs. original spec):** `hiAppEvent` itself
+persists the fault and **replays it on the next launch** via the watcher, so the
+crash path needs NO custom `crash/` directory or cross-death persistence — the OS
+provides durability. The original "write to crash/ dir, upload next launch" idea
+is dropped. Live ArkTS errors still flow through the existing
+`errorManager.on('error')` hook in RUM (unchanged).
+
+**Bus contract (`crash_report`)** — see `CrashEventMapper`:
+`{ type:'crash_report', target:'rum', message, stack, source:'source',
+is_crash:true, crash_kind:'crash'|'freeze', binary_images:<json|''>, arch:<str|''> }`.
+
+**Verified locally** (toolchain env in `docs/HANDOFF.md`):
+`clean assembleHar` → all 4 HARs built; `test` → local unit-test pipeline green
+(core/rum/trace/crash); `codelinter -e error` → "No defects found".
+
+**Deferred to on-device** (cannot exercise hiAppEvent delivery without a device):
+the real `AppEventInfo.params` field shape (`exception.name/message/stack`, native
+`external_log`, arch/binary_images) must be confirmed against an actual
+`APP_CRASH`/`APP_FREEZE`, and `CrashEventMapper` adjusted if the observed shape
+differs. Tracked in the R1 plan's on-device checklist.
+
+**Native-crash readiness:** the mapper already carries `binary_images` + `arch`
+through to `_dd.crash.*`, so when Round 4 adds the backend symbolicator the native
+metadata is already on the error event. Round 2's demo will ship a real NDK `.so`
+to produce a genuine native frame.

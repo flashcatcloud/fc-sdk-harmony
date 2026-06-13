@@ -79,14 +79,28 @@ Notes:
 - `ohpm prepublish` warns that HAR files contain source code. This is not a prepublish failure, but review the source-distribution policy before public registry release.
 - ArkTS still warns on rcp syscap availability and the core HTTP permission in dependency compile output. The build and tests pass; on-device validation should confirm the intended target devices support the rcp APIs.
 
-## Next step
+## Active effort (2026-06-13): Crash + Symbolication, multi-round
 
-None for this effort. Follow-ups (separate efforts, NOT started):
-- On-device verification (checklist below) — no longer blocked by local CLI compilation, still needs a HarmonyOS device/emulator + proxy/intake environment.
+Driving spec: `docs/superpowers/specs/2026-06-13-harmony-crash-symbolication-design.md`
+(7-round plan, Round log appended after each round). Per-round plans under
+`docs/superpowers/plans/`.
+
+- **Round 1 — DONE.** `flashcat-crash` module (hiAppEvent APP_CRASH native+ArkTS
+  + APP_FREEZE → `crash_report` bus → RUM `is_crash` error). Local build/test/lint
+  green. Key insight: hiAppEvent replays faults on next launch, so NO custom crash
+  dir needed. Plan: `docs/superpowers/plans/2026-06-13-r1-crash-module.md`.
+- **Round 2 — NEXT.** Full `entry/` demo HAP: env switch, init in AbilityStage,
+  buttons for view/resource/network/manual-error/ArkTS-throw/native-crash/freeze;
+  ships a real NDK `.so` for native-crash symbolication. → manual device verify.
+- Rounds 3–7: hvigor symbol-upload plugin → fc-rum HarmonyOS symbolicator
+  (`SourceHarmony`, `HarmonyProcessor`, `stack.ParseHarmony`) → e2e + hardening →
+  security review → release packaging.
+
+## Earlier phase-1 follow-ups (still open)
 - P2 schema alignment (deferred pending backend confirm): view.url should = key
   not name; `_dd.session.plan`; `source='harmony'` enum in fc-rum.
-- Phase 2: crash via hiAppEvent, nav auto-tracking (UIObserver), compile-time
-  AOP for http.createHttp, ActionEvents.
+- Phase 2: nav auto-tracking (UIObserver), compile-time AOP for http.createHttp,
+  ActionEvents. (Crash via hiAppEvent — now DONE in Round 1.)
 
 ## On-device verification checklist (first DevEco session)
 
