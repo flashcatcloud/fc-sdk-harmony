@@ -63,6 +63,9 @@ export class CrashFeature implements Feature {
       for (const group of groups) {
         const isFreeze: boolean = group.name === hiAppEvent.event.APP_FREEZE;
         for (const info of group.appEventInfos) {
+          if (!CrashFeature.sampled(this.configuration.sampleRate)) {
+            continue;
+          }
           const params: Record<string, Object> = info.params as Record<string, Object>;
           const ev: Record<string, Object> =
             isFreeze ? CrashEventMapper.fromAppFreeze(params) : CrashEventMapper.fromAppCrash(params);
@@ -72,6 +75,17 @@ export class CrashFeature implements Feature {
     } catch (_e) {
       // Crash reporting must never crash the app.
     }
+  }
+
+  /** Sampling decision. 100 → always, 0 → never, else probabilistic. */
+  static sampled(sampleRate: number): boolean {
+    if (sampleRate >= 100) {
+      return true;
+    }
+    if (sampleRate <= 0) {
+      return false;
+    }
+    return Math.random() * 100 < sampleRate;
   }
 
   onStop(): void {

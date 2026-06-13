@@ -105,10 +105,14 @@ Driving spec: `docs/superpowers/specs/2026-06-13-harmony-crash-symbolication-des
   enrich/list routing on origin `flashcat-hvigor-plugin`. `go build` + 11 unit
   tests + vet green. Gap: store→symbolicate needs MySQL/MinIO/Symbolicator +
   real obfuscated artifacts → Round 5 staging.
-- **Round 5 — NEXT.** End-to-end + hardening: stand up local fc-rum (or staging),
-  run the demo → confirm ArkTS + native symbolication resolve; sampling, payload
-  caps, retry/backoff, telemetry; confirm real hiAppEvent params shape.
-- Rounds 6–7: security review → release packaging.
+- **Round 5 — DONE.** Hardening (crash payload caps 2k/50k/100k + sample rate) +
+  `docs/E2E-RUNBOOK.md` for staging+device validation. Build/test/lint green. The
+  actual on-device + backend e2e run is the user's step (env-blocked here).
+- **Round 6 — NEXT.** Security & stability review: consent gating audit, no
+  clientToken leakage, symbol-file ACL, crash-path never-throw/re-entrancy audit,
+  stack-parser fuzz.
+- **Round 7.** Release packaging: HAR ohpm prepublish dry-run, plugin publish
+  flow, update workspace CLAUDE.md repo map, finalize memory.
   (`SourceHarmony`, `HarmonyProcessor`, `stack.ParseHarmony`) → e2e + hardening →
   security review → release packaging.
 

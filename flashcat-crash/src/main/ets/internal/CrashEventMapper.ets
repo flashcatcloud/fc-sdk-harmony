@@ -19,6 +19,14 @@ import { RumErrorSource } from './RumErrorSourceLite';
  * }
  * ```
  */
+// Payload caps. The RUM intake rejects bodies over nginx's default 1 MiB (see the
+// Replay 413 incident), and an oversized crash event would also bloat on-disk
+// batches, so the stack/message/binary-images are bounded defensively.
+const MAX_MESSAGE_CHARS: number = 2000;
+const MAX_STACK_CHARS: number = 50000;
+const MAX_BINARY_IMAGES_CHARS: number = 100000;
+const TRUNCATION_SUFFIX: string = '…[truncated]';
+
 export class CrashEventMapper {
   static fromAppCrash(params: Record<string, Object>): Record<string, Object> {
     return CrashEventMapper.build(params, 'crash');
@@ -40,8 +48,8 @@ export class CrashEventMapper {
     const event: Record<string, Object> = {
       'type': 'crash_report',
       'target': 'rum',
-      'message': message,
-      'stack': stack,
+      'message': CrashEventMapper.truncate(message, MAX_MESSAGE_CHARS),
+      'stack': CrashEventMapper.truncate(stack, MAX_STACK_CHARS),
       'source': RumErrorSource.SOURCE as string,
       'is_crash': true,
       'crash_kind': kind,
@@ -51,10 +59,20 @@ export class CrashEventMapper {
     return event;
   }
 
+  /** Truncates over-long text to keep the assembled crash event under intake limits. */
+  private static truncate(text: string, max: number): string {
+    if (text.length <= max) {
+      return text;
+    }
+    return text.substring(0, max) + TRUNCATION_SUFFIX;
+  }
+
   private static binaryImages(params: Record<string, Object>): string {
     const images: Object | undefined = params['binary_images'];
     if (Array.isArray(images)) {
-      return JSON.stringify(images);
+      const json: string = JSON.stringify(images);
+      // Drop rather than truncate: a truncated JSON array is unparseable downstream.
+      return json.length <= MAX_BINARY_IMAGES_CHARS ? json : '';
     }
     return '';
   }

@@ -270,3 +270,28 @@ MySQL / MinIO / Symbolicator can't run in this dev env, and the exact ArkTS
 release `sourceMaps.map` key form + obfuscated stack shape need confirming against
 **real DevEco-obfuscated artifacts** on staging. The parsing/splitting/routing
 logic is unit-tested; end-to-end resolution is the Round-5 staging gate.
+
+### Round 5 — hardening + e2e runbook (DONE, 2026-06-13, build/test/lint green)
+
+Real on-device + full-backend e2e is environment-blocked here (no HarmonyOS
+device; no MySQL/MinIO/Symbolicator), so Round 5 delivered the **testable
+hardening** + a precise **runbook** for the user to close the loop on staging.
+
+**Client hardening (`flashcat-crash`):**
+- Payload caps in `CrashEventMapper` — message ≤ 2000 chars, stack ≤ 50000 chars
+  (truncated with a marker), `binary_images` JSON dropped (not truncated — a
+  truncated JSON array is unparseable) above 100000 chars. Guards the known RUM
+  intake 1 MiB nginx limit (cf. [[replay-413-nginx-1mib-limit]]) and on-disk batch bloat.
+- Crash **sample rate** (`CrashConfiguration.setSampleRate`, default 100, clamped
+  [0,100]); `CrashFeature.sampled()` applied per delivered event.
+- 2 new mapper tests (truncate, drop-oversized-images) + 3 sampling tests.
+- `entry` demo gained a placeholder unit test so the project-wide `test` task is
+  green now that it's a registered module.
+
+**Runbook:** `docs/E2E-RUNBOOK.md` — release(obfuscated) build → plugin symbol
+upload → exercise every button → verify on the wire (NDJSON `_dd.crash.*`) →
+verify symbolication in console, with explicit "confirm the real hiAppEvent params
+shape" and key-format fallbacks for the two unit-unverifiable assumptions.
+
+**Verified locally:** `clean assembleHar` + `test` (crash module now 6 mapper +
+3 sampling + RUM crash tests) + `codelinter` all green.
