@@ -22,11 +22,20 @@ export class RumApplicationScope implements RumScope {
 
   handleEvent(event: RumRawEvent): RumScope | null {
     if (this.session === null) {
+      // A keep-alive carries no user intent — it must never start a session.
+      if (event.kind === 'keepAlive') {
+        return this;
+      }
       this.session = this.startNewSession(event.timestampMs);
     }
     const result: RumScope | null = this.session.handleEvent(event);
     if (result === null) {
-      // Expired session — start a fresh one and replay the triggering event.
+      // Session expired. Don't recreate from a keep-alive — only a real event
+      // starts the next session.
+      if (event.kind === 'keepAlive') {
+        this.session = null;
+        return this;
+      }
       this.session = this.startNewSession(event.timestampMs);
       this.session.handleEvent(event);
     }

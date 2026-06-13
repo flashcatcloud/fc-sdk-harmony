@@ -72,7 +72,14 @@ export class RumViewScope implements RumScope {
         return this;
       case 'addAction':
         this.actionCount += 1;
+        this.writeAction(event);
         this.writeViewEvent(event.timestampMs);
+        return this;
+      case 'keepAlive':
+        // Refresh time_spent without counting as a child event.
+        if (this.active) {
+          this.writeViewEvent(event.timestampMs);
+        }
         return this;
       case 'addError':
         this.errorCount += 1;
@@ -143,6 +150,16 @@ export class RumViewScope implements RumScope {
       const event: Record<string, Object> = RumEventAssembler.view(
         context, this.applicationId, this.sessionId, this.viewId, this.viewName,
         this.startedAtMs, timeSpentNs, actions, errors, resources, version, isActive, this.attributes);
+      writer.write(event);
+    });
+  }
+
+  private writeAction(raw: RumRawEvent): void {
+    this.featureScope.withWriteContext((context: FlashcatContext, writer: EventWriter) => {
+      const event: Record<string, Object> = RumEventAssembler.action(
+        context, this.applicationId, this.sessionId, this.viewId, this.viewName,
+        raw.actionId ?? '', raw.actionType ?? 'custom', raw.name ?? '',
+        raw.timestampMs, raw.actionDurationNs ?? 0, raw.attributes);
       writer.write(event);
     });
   }

@@ -70,6 +70,9 @@ export class RumFeature implements Feature, FeatureEventReceiver {
       }
       this.errorObserverId = -1;
     }
+    if (this.monitor !== null) {
+      this.monitor.stopKeepAlive(); // stop the keep-alive timer so it doesn't leak
+    }
     this.monitor = null;
     // Reset the global so post-stop GlobalRumMonitor.get() returns the no-op, not a
     // monitor wired to a torn-down core.
@@ -88,6 +91,13 @@ export class RumFeature implements Feature, FeatureEventReceiver {
       this.onNetworkRequestFailed(event);
     } else if (type === 'crash_report') {
       this.onCrashReport(event);
+    } else if (type === 'keep_alive') {
+      // App backgrounded — refresh the active view so its final time_spent is sent
+      // before the batch is flushed (published by the core on background).
+      const m: DefaultRumMonitor | null = this.monitor;
+      if (m !== null) {
+        m.keepAlive();
+      }
     }
   }
 

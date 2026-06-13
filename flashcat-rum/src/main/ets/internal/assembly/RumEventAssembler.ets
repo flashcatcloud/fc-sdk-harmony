@@ -102,6 +102,45 @@ export class RumEventAssembler {
     return event;
   }
 
+  static action(
+    context: FlashcatContext,
+    applicationId: string,
+    sessionId: string,
+    viewId: string,
+    viewName: string,
+    actionId: string,
+    actionType: string,
+    targetName: string,
+    dateMs: number,
+    durationNs: number,
+    attributes: Record<string, Object>
+  ): Record<string, Object> {
+    const event: Record<string, Object> = {};
+    event['type'] = 'action';
+    event['date'] = dateMs;
+    event['_dd'] = RumEventAssembler.dd(0);
+    event['application'] = RumEventAssembler.idObj(applicationId);
+    event['session'] = RumEventAssembler.session(sessionId);
+
+    const view: Record<string, Object> = {};
+    view['id'] = viewId;
+    view['url'] = viewName;
+    view['name'] = viewName;
+    event['view'] = view;
+
+    const action: Record<string, Object> = {};
+    action['id'] = actionId;
+    action['type'] = actionType;
+    action['loading_time'] = durationNs; // ns; 0 for instantaneous custom actions
+    const target: Record<string, Object> = {};
+    target['name'] = targetName;
+    action['target'] = target;
+    event['action'] = action;
+
+    RumEventAssembler.applyContext(event, context, attributes);
+    return event;
+  }
+
   static resource(
     context: FlashcatContext,
     applicationId: string,

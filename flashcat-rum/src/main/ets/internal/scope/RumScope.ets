@@ -6,10 +6,16 @@
 export interface RumRawEvent {
   kind: string;                 // 'startView' | 'stopView' | 'addAction' | 'addError'
                                 // | 'startResource' | 'stopResource' | 'stopResourceWithError'
+                                // | 'keepAlive'
   key?: string;                 // view key, or resource key
   name?: string;
   attributes: Record<string, Object>;
   timestampMs: number;          // epoch ms
+
+  // action specifics (kind === 'addAction')
+  actionType?: string;          // RumActionType value, e.g. 'tap'
+  actionId?: string;            // unique action id
+  actionDurationNs?: number;    // 0 for instantaneous (addAction), measured for start/stop
 
   // error specifics (kind === 'addError' | 'stopResourceWithError')
   errorMessage?: string;
