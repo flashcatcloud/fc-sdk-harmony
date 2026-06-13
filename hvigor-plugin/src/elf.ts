@@ -15,6 +15,15 @@ function align4(n: number): number {
  * `-Wl,--build-id`, or was stripped of notes).
  */
 export function extractElfBuildId(data: Buffer): string | null {
+  try {
+    return parseElfBuildId(data);
+  } catch {
+    // Malformed / truncated ELF: never throw on untrusted input, just report absent.
+    return null;
+  }
+}
+
+function parseElfBuildId(data: Buffer): string | null {
   // ELF magic
   if (data.length < 20 || data[0] !== 0x7f || data[1] !== 0x45 || data[2] !== 0x4c || data[3] !== 0x46) {
     return null;
@@ -34,7 +43,12 @@ export function extractElfBuildId(data: Buffer): string | null {
   const eShentsize = is64 ? u16(0x3a) : u16(0x2e);
   const eShnum = is64 ? u16(0x3c) : u16(0x30);
   const eShstrndx = is64 ? u16(0x3e) : u16(0x32);
-  if (eShoff === 0 || eShnum === 0) {
+  if (eShoff === 0 || eShnum === 0 || eShentsize === 0) {
+    return null;
+  }
+  // Bound the section table to the file: reject a header that claims a table
+  // extending past EOF (defends against crafted eShnum/eShoff overflow).
+  if (eShoff + eShnum * eShentsize > data.length) {
     return null;
   }
 
@@ -60,12 +74,17 @@ export function extractElfBuildId(data: Buffer): string | null {
       continue;
     }
     let p = shOffset(i);
-    const end = p + shSize(i);
+    // Clamp the note section to the actual file length so a bogus sh_size can't
+    // drive reads past EOF (readers would throw anyway, but fail closed early).
+    const end = Math.min(p + shSize(i), data.length);
     while (p + 12 <= end) {
       const namesz = u32(p);
       const descsz = u32(p + 4);
       const ntype = u32(p + 8);
       let q = p + 12;
+      if (q + namesz > end || q + align4(namesz) + descsz > end) {
+        break;
+      }
       const name = data.toString('ascii', q, q + namesz).replace(/\0+$/, '');
       q += align4(namesz);
       const desc = data.subarray(q, q + descsz);
