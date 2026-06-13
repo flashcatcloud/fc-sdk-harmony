@@ -46,6 +46,13 @@
       targets: [
         { name: "default", applyToProducts: ["default"] }
       ]
+    },
+    {
+      name: "entry",
+      srcPath: "./entry",
+      targets: [
+        { name: "default", applyToProducts: ["default"] }
+      ]
     }
   ]
 }

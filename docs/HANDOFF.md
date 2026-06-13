@@ -89,10 +89,14 @@ Driving spec: `docs/superpowers/specs/2026-06-13-harmony-crash-symbolication-des
   + APP_FREEZE → `crash_report` bus → RUM `is_crash` error). Local build/test/lint
   green. Key insight: hiAppEvent replays faults on next launch, so NO custom crash
   dir needed. Plan: `docs/superpowers/plans/2026-06-13-r1-crash-module.md`.
-- **Round 2 — NEXT.** Full `entry/` demo HAP: env switch, init in AbilityStage,
-  buttons for view/resource/network/manual-error/ArkTS-throw/native-crash/freeze;
-  ships a real NDK `.so` for native-crash symbolication. → manual device verify.
-- Rounds 3–7: hvigor symbol-upload plugin → fc-rum HarmonyOS symbolicator
+- **Round 2 — DONE.** `entry` demo HAP: prod/staging env switch, init+enable
+  RUM/Trace/Crash, buttons for view/resource/network/manual-error/ArkTS-throw/
+  native-crash(`libentry.so` SIGSEGV)/freeze, on-screen log. `assembleHap` +
+  native CMake build + lint green. See `entry/README.md` for device verify.
+- **Round 3 — NEXT.** hvigor symbol-upload plugin: collect ArkTS `sourceMaps.map`
+  + `nameCache.json` + unstripped `.so` (by ELF buildId), upload to fc-rum with
+  `event.type=harmony_sourcemap`/`harmony_symbol_file`.
+- Rounds 4–7: fc-rum HarmonyOS symbolicator
   (`SourceHarmony`, `HarmonyProcessor`, `stack.ParseHarmony`) → e2e + hardening →
   security review → release packaging.
 

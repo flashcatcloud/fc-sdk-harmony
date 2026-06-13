@@ -160,3 +160,32 @@ differs. Tracked in the R1 plan's on-device checklist.
 through to `_dd.crash.*`, so when Round 4 adds the backend symbolicator the native
 metadata is already on the error event. Round 2's demo will ship a real NDK `.so`
 to produce a genuine native frame.
+
+### Round 2 — `entry` demo HAP (DONE, 2026-06-13, local build green)
+
+**Shipped** (new `entry` HAP module + AppScope app metadata):
+- `AppScope/app.json5` gained `icon`/`label` + `AppScope/resources` (icon PNG,
+  app_name string) so the project builds as an app, not just HARs.
+- `entry/` module: `EntryAbility` (loads single page), `pages/Index.ets` — the
+  verification UI, and `common/DemoSdk.ets` — idempotent init that enables
+  RUM + Trace + Crash and exposes a prod/staging environment switch (locked at
+  init; relaunch to change).
+- **Native crash trigger**: `entry/src/main/cpp/napi_init.cpp` exposes
+  `triggerNativeCrash()` (null-deref → SIGSEGV in `libentry.so`) + a benign
+  `add()`, with `CMakeLists.txt` and typed `libentry.so` d.ts. This produces a
+  real native frame for symbolication (R4).
+- `Index.ets` buttons: env toggle, Initialize, Start/Stop View, Fire Traced
+  Network Request (rcp + `FlashcatTrace.interceptor()`), Add Manual Error, Throw
+  Unhandled ArkTS Error (async `setTimeout` throw), Trigger Native Crash, Trigger
+  App Freeze (8s main-thread block), plus an on-screen event log.
+- `entry/README.md`: device setup (signing + credential placeholders), CLI build,
+  per-button telemetry table, and a device verification checklist.
+
+**Verified locally:** `assembleHap` → `CompileArkTS` ✅, native CMake/Ninja build
+→ `libentry.so` (arm64-v8a) ✅ (unstripped DWARF copy under
+`entry/build/.../intermediates/cmake/.../obj/arm64-v8a/libentry.so` — the exact
+artifact R3's plugin uploads), unsigned HAP produced, `codelinter` → "No defects".
+Signing/running on a device is the user's step (DevEco automatic signing).
+
+**Credentials:** `DemoSdk.ets` ships `REPLACE_WITH_*` placeholders — the user must
+fill client token + application id before running. (No real tokens committed.)

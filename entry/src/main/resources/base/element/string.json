@@ -1,0 +1,16 @@
+{
+  "string": [
+    {
+      "name": "app_name",
+      "value": "FlashCat SDK Demo"
+    },
+    {
+      "name": "EntryAbility_label",
+      "value": "FlashCat SDK Demo"
+    },
+    {
+      "name": "reason_internet",
+      "value": "Upload RUM / crash telemetry to the FlashCat ingest endpoint"
+    }
+  ]
+}
