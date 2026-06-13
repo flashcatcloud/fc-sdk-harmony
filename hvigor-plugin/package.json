@@ -10,7 +10,8 @@
   "files": ["dist", "README.md"],
   "scripts": {
     "build": "tsc -b",
-    "test": "node --experimental-strip-types --test test/*.test.ts"
+    "test": "node --experimental-strip-types --test test/*.test.ts",
+    "prepublishOnly": "npm run build"
   },
   "engines": {
     "node": ">=18"
