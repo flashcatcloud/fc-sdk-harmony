@@ -189,3 +189,43 @@ Signing/running on a device is the user's step (DevEco automatic signing).
 
 **Credentials:** `DemoSdk.ets` ships `REPLACE_WITH_*` placeholders — the user must
 fill client token + application id before running. (No real tokens committed.)
+
+### Round 3 — `@flashcatcloud/hvigor-plugin` (DONE, 2026-06-13, tested + cross-verified)
+
+**Shipped** (new `hvigor-plugin/` Node/TS package, **zero runtime deps** — uses
+Node ≥18 built-in `fetch`/`FormData`):
+- `src/elf.ts` — `extractElfBuildId(Buffer)`: parses the `.note.gnu.build-id` ELF
+  note, mirroring fc-rum's `logic/sourcemap/elf_buildid.go`.
+- `src/collect.ts` — `collectArktsSourcemap` (finds `sourceMaps.map`, prefers the
+  `outputs` copy, + optional `nameCache.json`) and `collectNativeSymbols` (finds
+  UNSTRIPPED `.so` under `intermediates/cmake/.../obj/<abi>`, skips system libs +
+  stripped copies, extracts build-id, maps ABI→arch).
+- `src/upload.ts` — event metadata builders + multipart POST. Defines the
+  **upload contract** (see below).
+- `src/index.ts` — `uploadAll(buildDir, cfg, log)` orchestration; never throws (a
+  symbol-upload failure must not fail the app build).
+- `src/plugin.ts` — `flashcatSymbolUploadPlugin(options)`: registers an
+  `uploadFlashcatSymbols` hvigor task (postDependencies assembleHap/assembleHar),
+  opt-in via `enabled` / `FLASHCAT_UPLOAD`. Models only the minimal hvigor API so
+  the package type-checks without depending on `@ohos/hvigor`.
+- `README.md` documents usage + the contract; `test/` has 11 unit tests.
+
+**Upload contract (locks R4 backend):** `POST {endpoint}/sourcemap/upload`,
+multipart, headers `DD-API-KEY` (auth → account), `DD-EVP-ORIGIN:
+flashcat-hvigor-plugin` (routes to the HarmonyOS handler),
+`DD-EVP-ORIGIN-VERSION`.
+- ArkTS: `event={type:'harmony_sourcemap',service,version,cli_version}` +
+  `source_map` file + optional `name_cache` file.
+- Native: one request per `.so`,
+  `event={type:'harmony_symbol_file',service,version,arch,lib_name,build_id}` +
+  `symbol_file` (unstripped `.so`). `arch`∈{arm64,arm,x64,x86}.
+
+**Verified locally:** `node --experimental-strip-types --test` → **11/11 pass**,
+incl. extracting a real GNU build-id from an arm64 `.so` fixture and the
+collection rules. **Cross-impl check:** the plugin and fc-rum's Go extractor
+produce the IDENTICAL build-id (`d7b6e463…`) for the same `.so` — guaranteeing the
+client-uploaded `build_id` matches the server lookup key.
+
+**R4 inputs ready:** origin `flashcat-hvigor-plugin`, event types
+`harmony_sourcemap` / `harmony_symbol_file`, and the exact form fields above are
+what the backend must route + parse.

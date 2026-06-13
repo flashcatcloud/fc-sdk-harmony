@@ -93,10 +93,17 @@ Driving spec: `docs/superpowers/specs/2026-06-13-harmony-crash-symbolication-des
   RUM/Trace/Crash, buttons for view/resource/network/manual-error/ArkTS-throw/
   native-crash(`libentry.so` SIGSEGV)/freeze, on-screen log. `assembleHap` +
   native CMake build + lint green. See `entry/README.md` for device verify.
-- **Round 3 — NEXT.** hvigor symbol-upload plugin: collect ArkTS `sourceMaps.map`
-  + `nameCache.json` + unstripped `.so` (by ELF buildId), upload to fc-rum with
-  `event.type=harmony_sourcemap`/`harmony_symbol_file`.
-- Rounds 4–7: fc-rum HarmonyOS symbolicator
+- **Round 3 — DONE.** `hvigor-plugin/` (`@flashcatcloud/hvigor-plugin`, zero-dep
+  Node/TS): collects ArkTS `sourceMaps.map`+`nameCache.json` + unstripped `.so`
+  (build-id), uploads via `uploadFlashcatSymbols` task. 11 unit tests pass; build-id
+  extraction cross-verified identical to fc-rum's Go extractor. Contract locked
+  (origin `flashcat-hvigor-plugin`, types `harmony_sourcemap`/`harmony_symbol_file`).
+- **Round 4 — NEXT (backend, cross-repo `sdk/server/fc-rum`).** Add
+  `SourceHarmony`; `HarmonyProcessor` (ArkTS sourcemap+nameCache deobf, reuse JS
+  machinery) + native `.so` via existing `elf_buildid`/symbolicator; route
+  `uploadHarmony` + `ClassifyHarmonyUpload` on origin `flashcat-hvigor-plugin`;
+  `stack.ParseHarmony`; model table; controllers (upload/enrich/list); Go tests.
+- Rounds 5–7: e2e + hardening → security review → release packaging.
   (`SourceHarmony`, `HarmonyProcessor`, `stack.ParseHarmony`) → e2e + hardening →
   security review → release packaging.
 
