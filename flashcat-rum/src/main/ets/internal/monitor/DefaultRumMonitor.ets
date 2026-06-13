@@ -1,5 +1,4 @@
 import { SdkCore, FeatureScope } from '@flashcatcloud/core';
-import { systemDateTime } from '@kit.BasicServicesKit';
 import { RumMonitor } from '../../RumMonitor';
 import { RumConfiguration } from '../../RumConfiguration';
 import { RumActionType, RumErrorSource, RumResourceKind, RumResourceMethod } from '../../RumTypes';
@@ -116,6 +115,6 @@ export class DefaultRumMonitor implements RumMonitor {
         attrs[k] = attributes[k];
       }
     }
-    return { kind, attributes: attrs, timestampMs: systemDateTime.getTime() };
+    return { kind, attributes: attrs, timestampMs: Date.now() };
   }
 }

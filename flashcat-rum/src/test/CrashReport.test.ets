@@ -28,5 +28,14 @@ export default function crashReportTests(): void {
       expect(attrs['_dd.crash.arch']).assertUndefined();
       expect(attrs['_dd.crash.kind']).assertEqual('freeze');
     });
+
+    it('formatsUnhandledErrorObjectsWithStack', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+      const err: Error = new Error('boom');
+      err.stack = 'Error: boom\n    at Demo.throwArkTsError (Index.ets:68:13)';
+
+      const text: string = RumFeature.unhandledErrorText(err);
+
+      expect(text).assertEqual('Error: boom\n    at Demo.throwArkTsError (Index.ets:68:13)');
+    });
   });
 }

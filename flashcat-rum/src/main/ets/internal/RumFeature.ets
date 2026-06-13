@@ -39,20 +39,10 @@ export class RumFeature implements Feature, FeatureEventReceiver {
     try {
       this.errorObserverId = errorManager.on('error', {
         onUnhandledException: (errMsg: string) => {
-          if (this.handlingError) {
-            return;
-          }
-          this.handlingError = true;
-          try {
-            const m: DefaultRumMonitor | null = this.monitor;
-            if (m !== null) {
-              m.reportError(RumFeature.firstLine(errMsg), RumErrorSource.SOURCE, errMsg, false, 'unhandled');
-            }
-          } catch (_e) {
-            // Swallow — the error handler must not throw.
-          } finally {
-            this.handlingError = false;
-          }
+          this.reportUnhandledError(errMsg);
+        },
+        onException: (errObject: Error) => {
+          this.reportUnhandledError(RumFeature.unhandledErrorText(errObject));
         }
       });
     } catch (_e) {
@@ -176,6 +166,23 @@ export class RumFeature implements Feature, FeatureEventReceiver {
       RumFeature.asString(event['message']));
   }
 
+  private reportUnhandledError(stackText: string): void {
+    if (this.handlingError) {
+      return;
+    }
+    this.handlingError = true;
+    try {
+      const m: DefaultRumMonitor | null = this.monitor;
+      if (m !== null) {
+        m.reportError(RumFeature.firstLine(stackText), RumErrorSource.SOURCE, stackText, true, 'unhandled');
+      }
+    } catch (_e) {
+      // Swallow — the error handler must not throw.
+    } finally {
+      this.handlingError = false;
+    }
+  }
+
   private static asString(value: Object | undefined): string {
     return typeof value === 'string' ? value : '';
   }
@@ -193,6 +200,14 @@ export class RumFeature implements Feature, FeatureEventReceiver {
       case 'PATCH': return RumResourceMethod.PATCH;
       default: return RumResourceMethod.GET; // incl. unknown verbs — enum has no OPTIONS/TRACE
     }
+  }
+
+  static unhandledErrorText(errObject: Error): string {
+    if (errObject.stack !== undefined && errObject.stack.length > 0) {
+      return errObject.stack;
+    }
+    const name: string = errObject.name.length > 0 ? errObject.name : 'Error';
+    return `${name}: ${errObject.message}`;
   }
 
   private static firstLine(text: string): string {

@@ -1,6 +1,6 @@
 import { common } from '@kit.AbilityKit';
 import { fileIo as fs } from '@kit.CoreFileKit';
-import { systemDateTime } from '@kit.BasicServicesKit';
+import { FlashcatLog } from '../FlashcatLog';
 
 const MAX_BATCH_BYTES: number = 512 * 1024;       // roll the active file past this size
 const MAX_BATCH_AGE_MS: number = 5000;            // …or this age, so events don't linger
@@ -39,12 +39,31 @@ export class FilePersistenceStrategy {
   }
 
   private ensureDir(dir: string): void {
+    // accessSync can THROW (not return false) when the path is missing on some
+    // HarmonyOS versions, so never gate mkdir on it. Create recursively and treat
+    // an "already exists" failure as success.
+    let exists: boolean = false;
     try {
-      if (!fs.accessSync(dir)) {
-        fs.mkdirSync(dir, true);
-      }
+      exists = fs.accessSync(dir);
+    } catch (_a) {
+      exists = false;
+    }
+    if (exists) {
+      return;
+    }
+    try {
+      fs.mkdirSync(dir, true); // recursive: creates intermediate dirs too
     } catch (_e) {
-      // Storage unavailable — writes will no-op below.
+      // Possibly created concurrently / already present — verify, else log.
+      let ok: boolean = false;
+      try {
+        ok = fs.accessSync(dir);
+      } catch (_v) {
+        ok = false;
+      }
+      if (!ok) {
+        FlashcatLog.e(`ensureDir failed for ${dir}`);
+      }
     }
   }
 
@@ -54,7 +73,8 @@ export class FilePersistenceStrategy {
    *  becomes drainable on the next scheduler tick (used for error/crash events). */
   write(serializedEvent: string, forceRoll: boolean = false): boolean {
     const line: string = serializedEvent + '\n';
-    const now: number = systemDateTime.getTime();
+    this.ensureDir(this.rootDir); // self-heal if the dir wasn't created at construction
+    const now: number = Date.now();
     if (this.activeName === null || this.shouldRoll(now, line.length)) {
       this.openNewActive(now);
     }
@@ -63,6 +83,7 @@ export class FilePersistenceStrategy {
     if (ok) {
       this.activeBytes += line.length;
     }
+    FlashcatLog.d(`persist.write: ok=${ok} forceRoll=${forceRoll} batch=${name} dir=${this.rootDir}`);
     if (forceRoll) {
       this.activeName = null; // close so the just-written event is immediately drainable
     }
@@ -105,7 +126,7 @@ export class FilePersistenceStrategy {
       const data: string = fs.readTextSync(path);
       fs.unlinkSync(path);
       if (data.length > 0) {
-        const now: number = systemDateTime.getTime();
+        const now: number = Date.now();
         this.seq += 1;
         const rand: number = Math.floor(Math.random() * 1e6);
         const name: string = `${BATCH_PREFIX}${now}-${this.seq}-${rand}${BATCH_SUFFIX}`;
@@ -132,12 +153,14 @@ export class FilePersistenceStrategy {
 
   /** Oldest closed batch ready to upload; ages out the active file first if stale. */
   readNextBatch(): Batch | null {
-    const now: number = systemDateTime.getTime();
+    const now: number = Date.now();
     if (this.activeName !== null && (now - this.activeCreatedMs) > MAX_BATCH_AGE_MS) {
       this.activeName = null; // close so it's eligible in this same pass
     }
-    const ready: string[] = this.listBatches().filter((n: string) => n !== this.activeName);
+    const all: string[] = this.listBatches();
+    const ready: string[] = all.filter((n: string) => n !== this.activeName);
     if (ready.length === 0) {
+      FlashcatLog.d(`readNextBatch: none — onDisk=${all.length} active=${this.activeName ?? 'null'}`);
       return null;
     }
     const name: string = ready[0];
