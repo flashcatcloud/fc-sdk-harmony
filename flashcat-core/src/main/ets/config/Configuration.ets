@@ -11,6 +11,8 @@ export class Configuration {
   readonly service: string | undefined;
   readonly site: FlashcatSite;
   readonly batchUploadFrequencyMs: number;
+  /** When true, the SDK emits internal HiLog (tag "Flashcat") for debugging. */
+  readonly verbose: boolean;
 
   constructor(
     clientToken: string,
@@ -18,7 +20,8 @@ export class Configuration {
     variant: string,
     service: string | undefined,
     site: FlashcatSite,
-    batchUploadFrequencyMs: number
+    batchUploadFrequencyMs: number,
+    verbose: boolean
   ) {
     this.clientToken = clientToken;
     this.env = env;
@@ -26,6 +29,7 @@ export class Configuration {
     this.service = service;
     this.site = site;
     this.batchUploadFrequencyMs = batchUploadFrequencyMs;
+    this.verbose = verbose;
   }
 }
 
@@ -36,6 +40,7 @@ export class ConfigurationBuilder {
   private service: string | undefined = undefined;
   private site: FlashcatSite = FlashcatSite.CN;
   private batchUploadFrequencyMs: number = 5000;
+  private verbose: boolean = false;
 
   constructor(clientToken: string, env: string) {
     this.clientToken = clientToken;
@@ -62,6 +67,12 @@ export class ConfigurationBuilder {
     return this;
   }
 
+  /** Enable internal HiLog (tag "Flashcat") for debugging. Default false. */
+  setVerbose(enabled: boolean): ConfigurationBuilder {
+    this.verbose = enabled;
+    return this;
+  }
+
   build(): Configuration {
     return new Configuration(
       this.clientToken,
@@ -69,7 +80,8 @@ export class ConfigurationBuilder {
       this.variant,
       this.service,
       this.site,
-      this.batchUploadFrequencyMs
+      this.batchUploadFrequencyMs,
+      this.verbose
     );
   }
 }

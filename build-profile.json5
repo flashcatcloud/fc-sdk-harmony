@@ -14,8 +14,12 @@
       }
     ],
     buildModeSet: [
-      { name: "debug" },
-      { name: "release" }
+      {
+        name: "debug"
+      },
+      {
+        name: "release"
+      }
     ]
   },
   modules: [
@@ -23,35 +27,60 @@
       name: "flashcat_core",
       srcPath: "./flashcat-core",
       targets: [
-        { name: "default", applyToProducts: ["default"] }
+        {
+          name: "default",
+          applyToProducts: [
+            "default"
+          ]
+        }
       ]
     },
     {
       name: "flashcat_rum",
       srcPath: "./flashcat-rum",
       targets: [
-        { name: "default", applyToProducts: ["default"] }
+        {
+          name: "default",
+          applyToProducts: [
+            "default"
+          ]
+        }
       ]
     },
     {
       name: "flashcat_trace",
       srcPath: "./flashcat-trace",
       targets: [
-        { name: "default", applyToProducts: ["default"] }
+        {
+          name: "default",
+          applyToProducts: [
+            "default"
+          ]
+        }
       ]
     },
     {
       name: "flashcat_crash",
       srcPath: "./flashcat-crash",
       targets: [
-        { name: "default", applyToProducts: ["default"] }
+        {
+          name: "default",
+          applyToProducts: [
+            "default"
+          ]
+        }
       ]
     },
     {
       name: "entry",
       srcPath: "./entry",
       targets: [
-        { name: "default", applyToProducts: ["default"] }
+        {
+          name: "default",
+          applyToProducts: [
+            "default"
+          ]
+        }
       ]
     }
   ]
