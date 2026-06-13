@@ -229,3 +229,44 @@ client-uploaded `build_id` matches the server lookup key.
 **R4 inputs ready:** origin `flashcat-hvigor-plugin`, event types
 `harmony_sourcemap` / `harmony_symbol_file`, and the exact form fields above are
 what the backend must route + parse.
+
+### Round 4 — fc-rum HarmonyOS symbolicator (DONE, 2026-06-13, build + tests green)
+
+> Cross-repo: `~/workspace/flashcat/sdk/server/fc-rum`, branch
+> `feat/harmony-symbolication`, commit `afccf23`. NOT merged.
+
+**Shipped:**
+- `types.SourceHarmony = "harmony"` + `SupportedRumSourceTypes` (also unblocks the
+  long-standing P2 `source='harmony'` item).
+- `stack.ParseHarmony` (`logic/stack/parse_harmony_shared.go`) — parses a mixed
+  HarmonyOS stack: ArkTS V8 frames `at func (file:line:col)` (strips the
+  `entry|entry|1.0.0|…` module prefix) AND native `#NN pc <addr> <lib.so>
+  (sym+off)` frames, into the unified `Frame` model. Registered in `Parse()`.
+  5 unit tests.
+- `HarmonyProcessor` (`logic/sourcemap/harmony.go`):
+  - **ArkTS**: on upload, splits the combined `sourceMaps.map`
+    (`{moduleKey: v3map}`) into per-module entries stored via the **JavaScript
+    sourcemap model + object storage**; on enrich, resolves each ArkTS frame with
+    go-sourcemap — full reuse of the proven browser path.
+  - **Native**: delegates `.so` upload to `NativeAndroidProcessor` and resolves
+    via the same Android NDK symbol model + Symbolicator (keyed by
+    service/version/build_id/arch/lib — no cross-platform collision since service
+    differs). `ParseHarmony` native frames feed it directly.
+  - `Enrich` splits frames by type, resolves each set, returns original order.
+  - `ClassifyHarmonyUpload`, `splitHarmonySourceMaps`, object-path helpers.
+- Controllers: `upload.go` routes `DD-EVP-ORIGIN: flashcat-hvigor-plugin` →
+  `uploadHarmony` → `uploadHarmonySourcemap` (`source_map`+`name_cache`) /
+  `uploadHarmonyNative` (`symbol_file`, requires build_id+arch); `EventMetadata`
+  gained `lib_name`. `enrich.go` + `list.go` gained harmony cases.
+- `issue/cause.go`: HarmonyOS platform description for AI cause analysis.
+
+**Verified locally:** `go build ./...` green; new unit tests **11/11**
+(ParseHarmony ×5, ClassifyHarmonyUpload, splitHarmonySourceMaps ×3, object paths,
+native-frame detection); full `logic/stack` suite green (no regressions);
+`go vet` clean. The plugin↔backend build-id was already cross-verified identical.
+
+**Honest validation gap (→ Round 5):** the store→symbolicate paths that touch
+MySQL / MinIO / Symbolicator can't run in this dev env, and the exact ArkTS
+release `sourceMaps.map` key form + obfuscated stack shape need confirming against
+**real DevEco-obfuscated artifacts** on staging. The parsing/splitting/routing
+logic is unit-tested; end-to-end resolution is the Round-5 staging gate.

@@ -98,12 +98,17 @@ Driving spec: `docs/superpowers/specs/2026-06-13-harmony-crash-symbolication-des
   (build-id), uploads via `uploadFlashcatSymbols` task. 11 unit tests pass; build-id
   extraction cross-verified identical to fc-rum's Go extractor. Contract locked
   (origin `flashcat-hvigor-plugin`, types `harmony_sourcemap`/`harmony_symbol_file`).
-- **Round 4 — NEXT (backend, cross-repo `sdk/server/fc-rum`).** Add
-  `SourceHarmony`; `HarmonyProcessor` (ArkTS sourcemap+nameCache deobf, reuse JS
-  machinery) + native `.so` via existing `elf_buildid`/symbolicator; route
-  `uploadHarmony` + `ClassifyHarmonyUpload` on origin `flashcat-hvigor-plugin`;
-  `stack.ParseHarmony`; model table; controllers (upload/enrich/list); Go tests.
-- Rounds 5–7: e2e + hardening → security review → release packaging.
+- **Round 4 — DONE (cross-repo `sdk/server/fc-rum`, branch
+  `feat/harmony-symbolication`, commit `afccf23`, NOT merged).** `SourceHarmony`
+  + `stack.ParseHarmony` (ArkTS + native frames) + `HarmonyProcessor` (ArkTS via
+  reused JS sourcemap infra; native via reused Android NDK pipeline) + upload/
+  enrich/list routing on origin `flashcat-hvigor-plugin`. `go build` + 11 unit
+  tests + vet green. Gap: store→symbolicate needs MySQL/MinIO/Symbolicator +
+  real obfuscated artifacts → Round 5 staging.
+- **Round 5 — NEXT.** End-to-end + hardening: stand up local fc-rum (or staging),
+  run the demo → confirm ArkTS + native symbolication resolve; sampling, payload
+  caps, retry/backoff, telemetry; confirm real hiAppEvent params shape.
+- Rounds 6–7: security review → release packaging.
   (`SourceHarmony`, `HarmonyProcessor`, `stack.ParseHarmony`) → e2e + hardening →
   security review → release packaging.
 
