@@ -141,6 +141,9 @@ export class FlashcatCore implements SdkCore {
     if (this.consent !== TrackingConsent.GRANTED) {
       return;
     }
+    // Let RUM emit a final view update (current time_spent) before we roll + upload,
+    // so the session/view duration reflects real dwell time at backgrounding.
+    this.bus.send(RUM_FEATURE_NAME, { 'type': 'keep_alive' } as Record<string, Object>);
     this.features.forEach((r: RegisteredFeature) => {
       r.persistence.rollActive();
       r.scheduler.triggerNow();

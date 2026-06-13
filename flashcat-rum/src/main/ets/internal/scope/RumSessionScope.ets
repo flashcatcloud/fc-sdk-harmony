@@ -50,6 +50,16 @@ export class RumSessionScope implements RumScope {
       }
       return null; // parent starts a fresh session and replays the event
     }
+
+    // Keep-alive only refreshes the active view's time_spent; it must NOT count as
+    // activity (else inactivity expiry never fires) and must not start a view.
+    if (event.kind === 'keepAlive') {
+      if (this.sampled && this.activeView !== null) {
+        this.activeView.handleEvent(event);
+      }
+      return this;
+    }
+
     this.lastActivityMs = event.timestampMs;
 
     if (!this.sampled) {
