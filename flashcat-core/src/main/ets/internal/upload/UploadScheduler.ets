@@ -1,5 +1,6 @@
 import { FilePersistenceStrategy, Batch } from '../persistence/FilePersistenceStrategy';
 import { DataUploader, UploadStatus } from './DataUploader';
+import { FlashcatLog } from '../FlashcatLog';
 
 /**
  * Drains persisted batches to the uploader on a cadence, with exponential backoff
@@ -66,10 +67,12 @@ export class UploadScheduler {
     }
     const batch: Batch | null = this.persistence.readNextBatch();
     if (batch === null) {
+      FlashcatLog.d('drain: no ready batch (active not rolled yet)');
       this.currentDelayMs = this.baseDelayMs;
       this.scheduleNext(this.baseDelayMs);
       return;
     }
+    FlashcatLog.d(`drain: uploading batch ${batch.batchId} (${batch.eventCount} events)`);
     const status: UploadStatus = await this.uploader.upload(batch);
     if (!this.running) {
       return; // stopped while the upload was in flight
