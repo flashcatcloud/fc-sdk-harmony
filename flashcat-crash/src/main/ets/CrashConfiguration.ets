@@ -7,16 +7,20 @@ export class CrashConfiguration {
   readonly trackCrashes: boolean;
   /** Capture app freezes (hiAppEvent APP_FREEZE / watchdog timeout). Default true. */
   readonly trackAppHangs: boolean;
+  /** Percentage [0,100] of captured crashes/freezes to report. Default 100 (all). */
+  readonly sampleRate: number;
 
-  constructor(trackCrashes: boolean, trackAppHangs: boolean) {
+  constructor(trackCrashes: boolean, trackAppHangs: boolean, sampleRate: number) {
     this.trackCrashes = trackCrashes;
     this.trackAppHangs = trackAppHangs;
+    this.sampleRate = sampleRate;
   }
 }
 
 export class CrashConfigurationBuilder {
   private trackCrashes: boolean = true;
   private trackAppHangs: boolean = true;
+  private sampleRate: number = 100;
 
   setTrackCrashes(enabled: boolean): CrashConfigurationBuilder {
     this.trackCrashes = enabled;
@@ -28,7 +32,13 @@ export class CrashConfigurationBuilder {
     return this;
   }
 
+  /** Set the crash report sample rate, clamped to [0,100]. Default 100. */
+  setSampleRate(rate: number): CrashConfigurationBuilder {
+    this.sampleRate = rate < 0 ? 0 : (rate > 100 ? 100 : rate);
+    return this;
+  }
+
   build(): CrashConfiguration {
-    return new CrashConfiguration(this.trackCrashes, this.trackAppHangs);
+    return new CrashConfiguration(this.trackCrashes, this.trackAppHangs, this.sampleRate);
   }
 }

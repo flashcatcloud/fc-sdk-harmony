@@ -54,6 +54,27 @@ export default function crashEventMapperTests(): void {
       expect((ev['message'] as string).indexOf('freeze')).assertLarger(-1);
     });
 
+    it('truncatesOversizedStackAndMessage', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+      const longReason: string = 'x'.repeat(5000);
+      const longStack: string = 'y'.repeat(80000);
+      const exception: Record<string, Object> = { 'name': 'E', 'message': longReason, 'stack': longStack };
+      const params: Record<string, Object> = { 'exception': exception };
+      const ev: Record<string, Object> = CrashEventMapper.fromAppCrash(params);
+      expect((ev['message'] as string).length <= 2100).assertTrue();
+      expect((ev['stack'] as string).length <= 50100).assertTrue();
+      expect((ev['stack'] as string).indexOf('truncated')).assertLarger(-1);
+    });
+
+    it('dropsOversizedBinaryImages', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+      const big: Array<Record<string, Object>> = [];
+      for (let i = 0; i < 5000; i++) {
+        big.push({ 'name': `lib_${i}_aaaaaaaaaaaaaaaaaaaaaaaaaaaa.so`, 'arch': 'arm64' });
+      }
+      const params: Record<string, Object> = { 'exception': {} as Record<string, Object>, 'binary_images': big };
+      const ev: Record<string, Object> = CrashEventMapper.fromAppCrash(params);
+      expect(ev['binary_images']).assertEqual(''); // dropped, not truncated (unparseable JSON)
+    });
+
     it('toleratesMissingFields', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
       const empty: Record<string, Object> = {};
       const ev: Record<string, Object> = CrashEventMapper.fromAppCrash(empty);
