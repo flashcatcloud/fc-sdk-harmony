@@ -9,6 +9,7 @@ import { MessageBus } from './bus/MessageBus';
 import { FilePersistenceStrategy } from './persistence/FilePersistenceStrategy';
 import { DataUploader } from './upload/DataUploader';
 import { UploadScheduler } from './upload/UploadScheduler';
+import { FlashcatLog } from './FlashcatLog';
 
 /**
  * Default SdkCore implementation. Owns the context provider, message bus, and the
@@ -34,6 +35,8 @@ export class FlashcatCore implements SdkCore {
 
   /** Called by Flashcat.initialize. Flush buffered events when the app backgrounds. */
   initialize(): void {
+    FlashcatLog.setEnabled(this.configuration.verbose);
+    FlashcatLog.d(`initialize: instance="${this.name}" site=${this.configuration.site} consent=${this.consent}`);
     try {
       // Inline literal so its target type is the kit's ApplicationStateChangeCallback.
       this.context.getApplicationContext().on('applicationStateChange', {
@@ -61,6 +64,7 @@ export class FlashcatCore implements SdkCore {
       () => this.consent, () => scheduler.triggerNow());
 
     this.features.set(feature.name, { feature, scope, scheduler, persistence });
+    FlashcatLog.d(`registerFeature: ${feature.name}`);
     feature.onInitialize();
     if (this.consent === TrackingConsent.GRANTED) {
       scheduler.start();
@@ -208,6 +212,8 @@ class PersistenceEventWriter implements EventWriter {
 
   write(event: Record<string, Object>, forceFlush?: boolean): boolean {
     const consent: TrackingConsent = this.consentSupplier();
+    const eventType: Object | undefined = event['type'];
+    FlashcatLog.d(`write: type=${typeof eventType === 'string' ? eventType : '?'} consent=${consent} forceFlush=${forceFlush === true}`);
     if (consent === TrackingConsent.NOT_GRANTED) {
       return false;
     }

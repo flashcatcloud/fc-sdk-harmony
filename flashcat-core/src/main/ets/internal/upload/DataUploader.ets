@@ -2,6 +2,7 @@ import { http } from '@kit.NetworkKit';
 import { Configuration } from '../../config/Configuration';
 import { intakeEndpoint } from '../../FlashcatSite';
 import { Batch } from '../persistence/FilePersistenceStrategy';
+import { FlashcatLog } from '../FlashcatLog';
 
 export enum UploadStatus {
   SUCCESS,
@@ -49,8 +50,10 @@ export class DataUploader {
         connectTimeout: 30000,
         readTimeout: 30000
       });
+      FlashcatLog.d(`upload: POST ${this.trackPath} -> ${response.responseCode} (${batch.data.length} bytes)`);
       return DataUploader.statusFor(response.responseCode);
-    } catch (_e) {
+    } catch (e) {
+      FlashcatLog.e(`upload: POST ${this.trackPath} failed: ${e instanceof Error ? e.message : 'network error'}`);
       return UploadStatus.RETRY; // network error
     } finally {
       request.destroy();

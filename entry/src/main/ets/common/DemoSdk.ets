@@ -18,8 +18,8 @@ import { FlashcatCrash, CrashConfigurationBuilder } from '@flashcatcloud/crash';
  *
  * !!! Replace these placeholder credentials with your own before testing. !!!
  */
-const DEMO_CLIENT_TOKEN: string = 'REPLACE_WITH_CLIENT_TOKEN';
-const DEMO_APPLICATION_ID: string = 'REPLACE_WITH_APPLICATION_ID';
+const DEMO_CLIENT_TOKEN: string = '511b5df774d45cceb5f8d5a328ec5da1131';
+const DEMO_APPLICATION_ID: string = 'm3SvJwengBynqVJvWTeVBk';
 const DEMO_SERVICE: string = 'flashcat-harmony-demo';
 
 export class DemoSdk {
@@ -46,6 +46,7 @@ export class DemoSdk {
     const config: Configuration = new ConfigurationBuilder(DEMO_CLIENT_TOKEN, prod ? 'prod' : 'staging')
       .setService(DEMO_SERVICE)
       .useSite(site)
+      .setVerbose(true) // demo: emit internal HiLog (tag "Flashcat") so you can watch init/write/upload
       .build();
     Flashcat.initialize(context, config, TrackingConsent.GRANTED);
 
