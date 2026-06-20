@@ -3,6 +3,9 @@ import { RumConfiguration } from './RumConfiguration';
 import { GlobalRumMonitor } from './RumMonitor';
 import { RumFeature } from './internal/RumFeature';
 import { DefaultRumMonitor } from './internal/monitor/DefaultRumMonitor';
+import { RumAutoInstrumentation } from './internal/RumAutoInstrumentation';
+import { RumNavigationTracker, NavContext } from './internal/RumNavigationTracker';
+import { RumEventMapperHolder } from './internal/RumEventMapperHolder';
 
 /**
  * Enables Real User Monitoring. Call after `Flashcat.initialize`.
@@ -29,5 +32,36 @@ export class FlashcatRum {
     const monitor: DefaultRumMonitor = new DefaultRumMonitor(core, scope, configuration);
     feature.attachMonitor(monitor);
     GlobalRumMonitor.register(monitor);
+
+    // Phase 2: make the auto-instrumentation toggles consultable by the tap /
+    // navigation trackers. Inert unless the corresponding flag is enabled.
+    RumAutoInstrumentation.configure(configuration);
+    // Phase 2 R3: install the event mapper (PII scrubbing / drop), if any.
+    RumEventMapperHolder.configure(configuration.eventMapper);
+  }
+
+  /**
+   * Auto-record a TAP action on `target`. No-op unless RUM is enabled with
+   * `setTrackUserInteractions(true)`. Wrap a component's `onClick` (or one shared
+   * click handler) with this to capture the interaction timeline without a manual
+   * `addAction` per component.
+   */
+  static trackTap(target: string, attributes?: Record<string, Object>): void {
+    RumAutoInstrumentation.trackTap(target, attributes);
+  }
+
+  /**
+   * Start automatic View tracking for `router` navigation, scoped to `context`
+   * (a UIAbilityContext or a UIContext from UI land). Each page show/hide then
+   * emits start/stopView automatically. No-op unless RUM is enabled with
+   * `setTrackNavigation(true)`. Idempotent.
+   */
+  static startViewTracking(context: NavContext): void {
+    RumNavigationTracker.attach(context);
+  }
+
+  /** Stop automatic View tracking (detach the navigation observer). */
+  static stopViewTracking(): void {
+    RumNavigationTracker.detach();
   }
 }

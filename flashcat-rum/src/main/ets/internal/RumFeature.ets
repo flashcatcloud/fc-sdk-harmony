@@ -4,6 +4,9 @@ import { RumConfiguration } from '../RumConfiguration';
 import { RumErrorSource, RumResourceKind, RumResourceMethod } from '../RumTypes';
 import { GlobalRumMonitor } from '../RumMonitor';
 import { DefaultRumMonitor } from './monitor/DefaultRumMonitor';
+import { RumAutoInstrumentation } from './RumAutoInstrumentation';
+import { RumNavigationTracker } from './RumNavigationTracker';
+import { RumEventMapperHolder } from './RumEventMapperHolder';
 
 /**
  * The RUM feature. Installs the unhandled-exception hook (auto Error capture) and
@@ -73,6 +76,9 @@ export class RumFeature implements Feature, FeatureEventReceiver {
     if (this.monitor !== null) {
       this.monitor.stopKeepAlive(); // stop the keep-alive timer so it doesn't leak
     }
+    RumNavigationTracker.detach(); // remove the router observer
+    RumAutoInstrumentation.reset(); // make tap/nav trackers inert after stop
+    RumEventMapperHolder.reset(); // clear the event mapper
     this.monitor = null;
     // Reset the global so post-stop GlobalRumMonitor.get() returns the no-op, not a
     // monitor wired to a torn-down core.

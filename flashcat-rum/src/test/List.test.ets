@@ -2,9 +2,11 @@ import { describe, expect, it, Level, Size, TestType } from '@ohos/hypium';
 import { GlobalRumMonitor } from '../main/ets/RumMonitor';
 import { RumActionType, RumErrorSource, RumResourceKind, RumResourceMethod } from '../main/ets/RumTypes';
 import crashReportTests from './CrashReport.test';
+import phase2Tests from './Phase2AutoInstrumentation.test';
 
 export default function testsuite(): void {
   crashReportTests();
+  phase2Tests();
   describe('flashcat-rum', (): void => {
     it('defaultMonitorIsNoOp', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
       const monitor = GlobalRumMonitor.get();

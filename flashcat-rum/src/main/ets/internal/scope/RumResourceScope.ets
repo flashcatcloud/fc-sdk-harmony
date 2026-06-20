@@ -2,6 +2,7 @@ import { FeatureScope, FlashcatContext, EventWriter } from '@flashcatcloud/core'
 import { util } from '@kit.ArkTS';
 import { RumRawEvent } from './RumScope';
 import { RumEventAssembler } from '../assembly/RumEventAssembler';
+import { writeMapped } from '../RumEventMapperHolder';
 
 const MS_TO_NS: number = 1e6;
 /** Internal attribute keys carrying the injected trace context (Android convention). */
@@ -72,7 +73,7 @@ export class RumResourceScope {
         this.resourceId, this.url, this.method, raw.resourceKind ?? 'native',
         raw.statusCode ?? 0, raw.sizeBytes ?? 0, this.startedAtMs, durationNs,
         this.traceId, this.spanId, attrs);
-      writer.write(event);
+      writeMapped(writer, event, false);
     });
   }
 
@@ -85,7 +86,7 @@ export class RumResourceScope {
         raw.errorMessage ?? 'network request failed', 'network', undefined,
         false, 'handled', raw.timestampMs, attrs,
         this.method, raw.statusCode, this.url);
-      writer.write(event, true);
+      writeMapped(writer, event, true);
     });
   }
 
