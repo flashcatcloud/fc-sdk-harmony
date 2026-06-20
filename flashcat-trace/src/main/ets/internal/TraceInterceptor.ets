@@ -77,6 +77,27 @@ function rumScope(core: SdkCore | null): FeatureScope | null {
 
 function notifyRequestStarted(core: SdkCore | null, key: string,
   request: rcp.Request, tc: TraceContext | null): void {
+  const traceId: string | undefined = tc !== null ? tc.traceId : undefined;
+  const spanId: string | undefined = tc !== null ? tc.spanId : undefined;
+  publishResourceStarted(core, key, request.url.toString(), request.method ?? 'GET', traceId, spanId);
+}
+
+function notifyRequestCompleted(core: SdkCore | null, key: string, response: rcp.Response): void {
+  publishResourceCompleted(core, key, response.statusCode,
+    response.body !== undefined ? response.body.byteLength : 0);
+}
+
+function notifyRequestFailed(core: SdkCore | null, key: string, e: Object): void {
+  publishResourceFailed(core, key, e instanceof Error ? e.message : 'network request failed');
+}
+
+// ---- Reusable resource-lifecycle publishers (shared by the rcp interceptor and
+// the FlashcatHttp wrapper). Keyed by plain url/method strings so any network
+// stack can drive RUM resource tracking through the same bus path. ----
+
+/** @internal */
+export function publishResourceStarted(core: SdkCore | null, key: string, url: string,
+  method: string, traceId?: string, spanId?: string): void {
   const scope: FeatureScope | null = rumScope(core);
   if (scope === null) {
     return;
@@ -84,16 +105,20 @@ function notifyRequestStarted(core: SdkCore | null, key: string,
   const event: Record<string, Object> = {};
   event['type'] = 'network_request_started';
   event['key'] = key;
-  event['url'] = request.url.toString();
-  event['method'] = request.method ?? 'GET';
-  if (tc !== null) {
-    event['trace_id'] = tc.traceId;
-    event['span_id'] = tc.spanId;
+  event['url'] = url;
+  event['method'] = method;
+  if (traceId !== undefined) {
+    event['trace_id'] = traceId;
+  }
+  if (spanId !== undefined) {
+    event['span_id'] = spanId;
   }
   scope.sendEvent(event);
 }
 
-function notifyRequestCompleted(core: SdkCore | null, key: string, response: rcp.Response): void {
+/** @internal */
+export function publishResourceCompleted(core: SdkCore | null, key: string,
+  statusCode: number, size: number): void {
   const scope: FeatureScope | null = rumScope(core);
   if (scope === null) {
     return;
@@ -101,12 +126,13 @@ function notifyRequestCompleted(core: SdkCore | null, key: string, response: rcp
   const event: Record<string, Object> = {};
   event['type'] = 'network_request_completed';
   event['key'] = key;
-  event['status_code'] = response.statusCode;
-  event['size'] = response.body !== undefined ? response.body.byteLength : 0;
+  event['status_code'] = statusCode;
+  event['size'] = size;
   scope.sendEvent(event);
 }
 
-function notifyRequestFailed(core: SdkCore | null, key: string, e: Object): void {
+/** @internal */
+export function publishResourceFailed(core: SdkCore | null, key: string, message: string): void {
   const scope: FeatureScope | null = rumScope(core);
   if (scope === null) {
     return;
@@ -114,6 +140,6 @@ function notifyRequestFailed(core: SdkCore | null, key: string, e: Object): void
   const event: Record<string, Object> = {};
   event['type'] = 'network_request_failed';
   event['key'] = key;
-  event['message'] = e instanceof Error ? e.message : 'network request failed';
+  event['message'] = message;
   scope.sendEvent(event);
 }
