@@ -1,7 +1,9 @@
 import { common } from '@kit.AbilityKit';
+import { router } from '@kit.ArkUI';
 import { rcp } from '@kit.RemoteCommunicationKit';
-import { RumActionType, RumErrorSource, RumResourceKind, RumResourceMethod } from '@flashcatcloud/rum';
-import { FlashcatTrace } from '@flashcatcloud/trace';
+import { FlashcatRum, RumActionType, RumErrorSource, RumResourceKind, RumResourceMethod } from '@flashcatcloud/rum';
+import { FlashcatTrace, FlashcatHttp } from '@flashcatcloud/trace';
+import { http } from '@kit.NetworkKit';
 import { TrackingConsent } from '@flashcatcloud/core';
 import testNapi from 'libentry.so';
 import { DemoSdk } from '../common/DemoSdk';
@@ -33,7 +35,10 @@ struct Index {
     this.initialized = DemoSdk.isInitialized();
     this.statusText = `Initialized → ${DemoSdk.currentEnv()}`;
     DemoSdk.monitor().startView('demo-home', 'DemoHome');
-    this.append(`init OK (${DemoSdk.currentEnv()}); view "DemoHome" started`);
+    // Phase 2 A1: turn on automatic View tracking for router navigation, scoped to
+    // this component's UIContext. From here, pushing/popping pages auto-emits views.
+    FlashcatRum.startViewTracking(this.getUIContext());
+    this.append(`init OK (${DemoSdk.currentEnv()}); view "DemoHome" started; nav auto-tracking on`);
   }
 
   private async request(method: string, url: string): Promise<void> {
@@ -51,6 +56,16 @@ struct Index {
       session.close();
     } catch (e) {
       this.append(`net ${method} ${shortUrl(url)} FAILED: ${e instanceof Error ? e.message : 'error'}`);
+    }
+  }
+
+  // Phase 2 A2: FlashcatHttp wrapper — auto resource + traceparent, NO interceptor.
+  private async autoHttp(method: http.RequestMethod, url: string): Promise<void> {
+    try {
+      const resp: http.HttpResponse = await FlashcatHttp.request(url, { method });
+      this.append(`auto-http ${method} ${shortUrl(url)} → ${resp.responseCode}`);
+    } catch (e) {
+      this.append(`auto-http ${method} ${shortUrl(url)} FAILED: ${e instanceof Error ? e.message : 'error'}`);
     }
   }
 
@@ -100,7 +115,14 @@ struct Index {
       .fontSize(14)
       .margin({ top: 5 })
       .enabled(this.initialized)
-      .onClick(action)
+      .onClick(() => {
+        // Phase 2 A3: route every button tap through auto-instrumentation. One
+        // wrapper here auto-emits a TAP action (target = the button label) for
+        // every button — no per-button addAction. Inert unless RUM is enabled
+        // with trackUserInteractions(true).
+        FlashcatRum.trackTap(label);
+        action();
+      })
   }
 
   build() {
@@ -160,6 +182,11 @@ struct Index {
             this.append('startView Profile {tab,premium}');
           })
 
+          // ---- Navigation (auto View tracking, A1) ----
+          this.sectionTitle('5b · Navigation (auto Views)')
+          this.btn('Go to Detail page →', () => { router.pushUrl({ url: 'pages/PageDetail' }); this.append('pushUrl PageDetail (auto view expected)'); })
+          this.btn('Go to Settings page →', () => { router.pushUrl({ url: 'pages/PageSettings' }); this.append('pushUrl PageSettings (auto view expected)'); })
+
           // ---- Actions ----
           this.sectionTitle('6 · Actions')
           this.btn('Add Action (tap "checkout")', () => { DemoSdk.monitor().addAction(RumActionType.TAP, 'checkout'); this.append('addAction tap checkout'); })
@@ -177,6 +204,13 @@ struct Index {
           this.btn('Traced GET 500', () => { this.request('GET', 'https://httpbingo.org/status/500'); })
           this.btn('Traced GET bad host (network error)', () => { this.request('GET', 'https://nonexistent.invalid.flashcat/'); })
           this.btn('Manual resource (no network)', () => { this.manualResource(); })
+          this.btn('Auto HTTP GET (FlashcatHttp, no interceptor)', () => { this.autoHttp(http.RequestMethod.GET, 'https://httpbingo.org/get'); })
+          this.btn('Auto HTTP POST (FlashcatHttp, no interceptor)', () => { this.autoHttp(http.RequestMethod.POST, 'https://httpbingo.org/post'); })
+
+          // ---- Event mapper (R3) ----
+          this.sectionTitle('7b · Event mapper (PII redaction)')
+          this.btn('Tap "secret" target (dropped by mapper)', () => { FlashcatRum.trackTap('secret-button'); this.append('tapped secret (mapper should DROP the action)'); })
+          this.btn('Auto HTTP with ?token (url scrubbed)', () => { this.autoHttp(http.RequestMethod.GET, 'https://httpbingo.org/get?token=SECRET123&u=1'); })
 
           // ---- Errors ----
           this.sectionTitle('8 · Errors')
