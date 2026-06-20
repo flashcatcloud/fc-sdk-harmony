@@ -38,6 +38,16 @@ export class FlashcatTrace {
     return new TraceInterceptor(FlashcatTrace.core, FlashcatTrace.configuration);
   }
 
+  /** @internal — active core for the FlashcatHttp wrapper (null before enable). */
+  static currentCore(): SdkCore | null {
+    return FlashcatTrace.core;
+  }
+
+  /** @internal — active trace configuration for the FlashcatHttp wrapper. */
+  static currentConfiguration(): TraceConfiguration {
+    return FlashcatTrace.configuration;
+  }
+
   /**
    * Manual fallback: trace headers for any network stack (@ohos.net.http, WebSocket, …).
    * Returns an empty object when tracking consent is not GRANTED (no header injected).
