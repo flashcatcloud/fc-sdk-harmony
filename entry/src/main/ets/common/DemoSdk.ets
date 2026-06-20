@@ -57,6 +57,10 @@ export class DemoSdk {
 
     FlashcatRum.enable(new RumConfigurationBuilder(DEMO_APPLICATION_ID)
       .setSessionSampleRate(100)
+      .setTrackUserInteractions(true) // phase 2: auto TAP actions (A3)
+      .setTrackNavigation(true)       // phase 2: auto View events on router push/pop (A1)
+      .setTrackNetworkRequests(true)  // phase 2: auto Resource via FlashcatHttp wrapper (A2)
+      .setEventMapper(DemoSdk.demoEventMapper) // phase 2 R3: PII scrubbing / drop
       .build());
     FlashcatTrace.enable(new TraceConfigurationBuilder().setSampleRate(100).build());
     FlashcatCrash.enable(new CrashConfigurationBuilder().build());
@@ -68,6 +72,43 @@ export class DemoSdk {
 
   static monitor(): RumMonitor {
     return GlobalRumMonitor.get();
+  }
+
+  /**
+   * Phase 2 R3 demo mapper. Two redactions you can verify in HiLog / NDJSON:
+   * - resource events: strip the query string from `resource.url` (tokens, PII);
+   * - action events whose target name contains "secret": dropped entirely (null).
+   * Everything else passes through unchanged. Must never throw.
+   */
+  static demoEventMapper(event: Record<string, Object>): Record<string, Object> | null {
+    const type: Object | undefined = event['type'];
+    if (type === 'resource') {
+      const res: Object | undefined = event['resource'];
+      if (typeof res === 'object') {
+        const r: Record<string, Object> = res as Record<string, Object>;
+        const u: Object | undefined = r['url'];
+        if (typeof u === 'string') {
+          const q: number = u.indexOf('?');
+          if (q >= 0) {
+            r['url'] = u.substring(0, q);
+          }
+        }
+      }
+    } else if (type === 'action') {
+      const action: Object | undefined = event['action'];
+      if (typeof action === 'object') {
+        const a: Record<string, Object> = action as Record<string, Object>;
+        const target: Object | undefined = a['target'];
+        if (typeof target === 'object') {
+          const t: Record<string, Object> = target as Record<string, Object>;
+          const name: Object | undefined = t['name'];
+          if (typeof name === 'string' && name.indexOf('secret') >= 0) {
+            return null; // drop secret-marked taps
+          }
+        }
+      }
+    }
+    return event;
   }
 
   static setConsent(consent: TrackingConsent): void {
