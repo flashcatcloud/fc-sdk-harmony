@@ -2,6 +2,7 @@ import { FeatureScope, FlashcatContext, EventWriter, SdkCore } from '@flashcatcl
 import { RumScope, RumRawEvent } from './RumScope';
 import { RumResourceScope } from './RumResourceScope';
 import { RumEventAssembler } from '../assembly/RumEventAssembler';
+import { writeMapped } from '../RumEventMapperHolder';
 
 const MS_TO_NS: number = 1e6;
 const MAX_PENDING_RESOURCES: number = 100;
@@ -150,7 +151,7 @@ export class RumViewScope implements RumScope {
       const event: Record<string, Object> = RumEventAssembler.view(
         context, this.applicationId, this.sessionId, this.viewId, this.viewName,
         this.startedAtMs, timeSpentNs, actions, errors, resources, version, isActive, this.attributes);
-      writer.write(event);
+      writeMapped(writer, event, false);
     });
   }
 
@@ -160,7 +161,7 @@ export class RumViewScope implements RumScope {
         context, this.applicationId, this.sessionId, this.viewId, this.viewName,
         raw.actionId ?? '', raw.actionType ?? 'custom', raw.name ?? '',
         raw.timestampMs, raw.actionDurationNs ?? 0, raw.attributes);
-      writer.write(event);
+      writeMapped(writer, event, false);
     });
   }
 
@@ -172,7 +173,7 @@ export class RumViewScope implements RumScope {
         raw.isCrash ?? false, raw.errorHandling ?? 'handled', raw.timestampMs, raw.attributes);
       // Error/crash events are force-flushed so they upload promptly (not after the
       // 5s/512KB batch threshold).
-      writer.write(event, true);
+      writeMapped(writer, event, true);
     });
   }
 }

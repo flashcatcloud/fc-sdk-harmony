@@ -1,3 +1,5 @@
+import { RumEventMapper } from './RumTypes';
+
 /**
  * RUM feature configuration. Built via {@link RumConfigurationBuilder}.
  * Mirrors `RumConfiguration.Builder(applicationId)` on Android.
@@ -9,6 +11,7 @@ export class RumConfiguration {
   readonly trackNavigation: boolean;        // auto page tracking via UIObserver
   readonly trackNetworkRequests: boolean;   // auto resource tracking
   readonly trackFrustrations: boolean;
+  readonly eventMapper: RumEventMapper | null;  // phase 2 R3: PII scrubbing / drop
 
   constructor(
     applicationId: string,
@@ -16,7 +19,8 @@ export class RumConfiguration {
     trackUserInteractions: boolean,
     trackNavigation: boolean,
     trackNetworkRequests: boolean,
-    trackFrustrations: boolean
+    trackFrustrations: boolean,
+    eventMapper: RumEventMapper | null = null
   ) {
     this.applicationId = applicationId;
     this.sessionSampleRate = sessionSampleRate;
@@ -24,6 +28,7 @@ export class RumConfiguration {
     this.trackNavigation = trackNavigation;
     this.trackNetworkRequests = trackNetworkRequests;
     this.trackFrustrations = trackFrustrations;
+    this.eventMapper = eventMapper;
   }
 }
 
@@ -37,6 +42,7 @@ export class RumConfigurationBuilder {
   private trackNavigation: boolean = false;
   private trackNetworkRequests: boolean = false;
   private trackFrustrations: boolean = false;
+  private eventMapper: RumEventMapper | null = null;
 
   constructor(applicationId: string) {
     this.applicationId = applicationId;
@@ -67,6 +73,16 @@ export class RumConfigurationBuilder {
     return this;
   }
 
+  /**
+   * Phase 2 R3: set an event mapper to redact/drop View/Action/Error/Resource
+   * events before upload. Return a modified event, or `null` to drop it. Must be
+   * cheap and must not throw (a throwing mapper is contained).
+   */
+  setEventMapper(mapper: RumEventMapper): RumConfigurationBuilder {
+    this.eventMapper = mapper;
+    return this;
+  }
+
   build(): RumConfiguration {
     return new RumConfiguration(
       this.applicationId,
@@ -74,7 +90,8 @@ export class RumConfigurationBuilder {
       this.trackUserInteractions,
       this.trackNavigation,
       this.trackNetworkRequests,
-      this.trackFrustrations
+      this.trackFrustrations,
+      this.eventMapper
     );
   }
 }

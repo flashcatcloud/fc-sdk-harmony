@@ -3,6 +3,7 @@ import { util } from '@kit.ArkTS';
 import { RumScope, RumRawEvent } from './RumScope';
 import { RumViewScope } from './RumViewScope';
 import { RumEventAssembler } from '../assembly/RumEventAssembler';
+import { writeMapped } from '../RumEventMapperHolder';
 
 const SESSION_INACTIVITY_MS: number = 15 * 60 * 1000;     // 15 min
 const SESSION_MAX_DURATION_MS: number = 4 * 60 * 60 * 1000; // 4 h
@@ -103,7 +104,7 @@ export class RumSessionScope implements RumScope {
         context, this.applicationId, this.sessionId, undefined, undefined,
         raw.errorMessage ?? '', raw.errorSource ?? 'source', raw.errorStack,
         raw.isCrash ?? false, raw.errorHandling ?? 'handled', raw.timestampMs, raw.attributes);
-      writer.write(event, true);
+      writeMapped(writer, event, true);
     });
   }
 
