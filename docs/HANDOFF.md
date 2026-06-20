@@ -140,7 +140,66 @@ Still NOT verified on-device (needs a real device, not just emulator):
 - end-to-end symbolication (needs the hvigor plugin to upload symbols to a fc-rum
   with the `feat/harmony-symbolication` branch + the real obfuscated artifacts).
 
-## ALL 7 ROUNDS COMPLETE — remaining work is the user's
+## Phase 2 implementation started (2026-06-14): auto-instrumentation M1+M2 + R3
+
+Driving doc: `docs/PHASE-2-PLAN.md` (see its Revision log "Implementation pass").
+Implemented + locally build/lint-verified (assembleHar all modules + assembleHap
+demo + codelinter all "No defects"; unit tests added in
+`flashcat-rum/src/test/Phase2AutoInstrumentation.test.ets` +
+`flashcat-trace/src/test/List.test.ets`, compile-clean):
+
+- **A3 tap auto-tracking** — `flashcat-rum/.../internal/RumAutoInstrumentation.ets`
+  (`trackTap`, gated by `trackUserInteractions`); `FlashcatRum.trackTap`. Demo `btn`
+  builder + sub-pages route every tap through it. Log: `rum.tap: auto action tap`.
+- **A1 navigation auto-tracking** — `RumNavigationTracker.ets` on
+  `uiObserver.on('routerPageUpdate', context, cb)`; ON_PAGE_SHOW→startView,
+  ON_PAGE_HIDE→stopView; key=pageId→path→index, name=name→last path segment.
+  `FlashcatRum.startViewTracking(context)` (demo calls with `this.getUIContext()`).
+  Demo gains `pages/PageDetail.ets` + `pages/PageSettings.ets` (registered in
+  `main_pages.json`). Log: `rum.nav: auto startView/stopView`.
+- **A2 network auto-capture** — `flashcat-trace/.../FlashcatHttp.ets` wraps
+  `@ohos.net.http`; reuses refactored bus publishers
+  (`publishResourceStarted/Completed/Failed`, now exported from TraceInterceptor);
+  consent + `firstPartyHosts`-gated traceparent (`TraceConfiguration.firstPartyHosts`
+  + `isFirstParty`). Demo "Auto HTTP GET/POST" buttons use it with NO interceptor.
+- **R3 event mappers** — `RumEventMapper` type (RumTypes), `RumEventMapperHolder.ets`
+  + `writeMapped(writer,event,force)` swapped in at all 6 `writer.write` sites
+  (RumViewScope×3, RumResourceScope×2, RumSessionScope×1). Never-throw: a throwing
+  mapper passes the event through unmodified. `RumConfigurationBuilder.setEventMapper`.
+  Demo mapper scrubs `resource.url` query strings + drops taps whose target contains
+  "secret". Log: `rum.mapper: dropped event type=...`.
+
+**Live on-device acceptance — DONE (2026-06-14, "Pura 90" emulator).** Drove the
+demo via `docs/phase2-acceptance.sh` (uitest dumpLayout + uinput) and confirmed in
+HiLog (tag Flashcat, domain 0xF1A7):
+- **A1**: `rum.nav: auto stopView`/`auto startView` for the full Home→Detail→Settings
+  →back→Home stack, stop-before-start ordering, names/paths mapped
+  (`pages/PageDetail`/`pages/PageSettings`/`pages/Index`).
+- **A3**: `rum.tap: auto action tap target="…"` for home + sub-page buttons.
+- **R3**: `rum.mapper: dropped event type=action` for the "secret" taps; URL scrub
+  confirmed (`https://httpbingo.org/get?token=SECRET123&u=1` → `…/get`).
+- **A2**: `write: type=resource` from `FlashcatHttp` with NO interceptor wiring.
+- **Upload**: repeated `upload: POST /api/v2/rum -> 202`.
+
+Toolchain notes for the live loop (hard-won this session):
+- The freshly cold-booted emulator **accepts the unsigned CLI HAP**:
+  `hdc install -r entry/build/.../entry-default-unsigned.hap` — no DevEco signing
+  needed. Launch the AVD headless via
+  `"/Applications/DevEco-Studio.app/Contents/tools/emulator/Emulator" -hvd "Pura 90"`
+  (AVD is named **"Pura 90"**, data under `~/.Huawei/Emulator/deployed/`).
+- `hdc shell "uinput -T -c X Y"` MUST be quoted as one arg (unquoted → "parameter
+  error"). Tap the *smallest non-zero-bounds* node for a button (its inner Text node
+  reports `[0,0]`). `force-stop` before driving so the Scroll starts at the top
+  (off-screen buttons report `[0,0]`). The app's el2 sandbox dir is not reliably
+  shell-readable, so verify scrub via a HiLog probe, not by catting the batch file.
+- Still NOT run on-device: the hypium unit-test *assertions* (compile-clean; they
+  execute in a device test runtime, not host) — separate from this demo acceptance.
+
+Scope note: SDK self-telemetry, Logs, Feature Flags, Session Replay are explicitly
+OUT of phase 2 (see PHASE-2-PLAN "Scope decisions"). M4 (crash sign-off, cross-repo),
+M5 (vitals/webview), M6 (release) are not yet started.
+
+## ALL 7 ROUNDS COMPLETE (phase 1) — remaining work is the user's
 
 Everything is implemented and locally green (build/test/lint/fuzz). The only
 open step is on-device + staging validation per `docs/E2E-RUNBOOK.md`, then:
