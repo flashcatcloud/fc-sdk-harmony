@@ -22,7 +22,7 @@ Symbolication is only meaningful on an obfuscated build (a debug build has no
 `nameCache.json` and readable frames).
 
 ```sh
-# fill credentials first: entry/src/main/ets/common/DemoSdk.ets (REPLACE_WITH_*)
+# fill credentials first: entry/src/main/resources/rawfile/demo_config.json
 hvigorw assembleHap --mode module -p module=entry@default -p product=default -p buildMode=release
 ```
 

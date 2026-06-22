@@ -178,7 +178,7 @@ to produce a genuine native frame.
   Network Request (rcp + `FlashcatTrace.interceptor()`), Add Manual Error, Throw
   Unhandled ArkTS Error (async `setTimeout` throw), Trigger Native Crash, Trigger
   App Freeze (8s main-thread block), plus an on-screen event log.
-- `entry/README.md`: device setup (signing + credential placeholders), CLI build,
+- `entry/README.md`: device setup (signing + rawfile credential config), CLI build,
   per-button telemetry table, and a device verification checklist.
 
 **Verified locally:** `assembleHap` → `CompileArkTS` ✅, native CMake/Ninja build
@@ -187,8 +187,9 @@ to produce a genuine native frame.
 artifact R3's plugin uploads), unsigned HAP produced, `codelinter` → "No defects".
 Signing/running on a device is the user's step (DevEco automatic signing).
 
-**Credentials:** `DemoSdk.ets` ships `REPLACE_WITH_*` placeholders — the user must
-fill client token + application id before running. (No real tokens committed.)
+**Credentials:** `entry/src/main/resources/rawfile/demo_config.json` ships empty
+`clientToken` / `applicationId` fields — the user must fill them before running.
+(No real tokens committed.)
 
 ### Round 3 — `@flashcatcloud/hvigor-plugin` (DONE, 2026-06-13, tested + cross-verified)
 
