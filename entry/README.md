@@ -27,9 +27,10 @@ Verified working on the local emulator (2026-06-13): `upload: POST /api/v2/rum -
 2. Configure automatic signing: `File → Project Structure → Signing Configs →
    Automatically generate signature` (a free Huawei account works). The CLI build
    produces an **unsigned** HAP; running on a device needs a signature.
-3. Edit `entry/src/main/ets/common/DemoSdk.ets` and replace:
-   - `DEMO_CLIENT_TOKEN` — your FlashCat client token
-   - `DEMO_APPLICATION_ID` — your RUM application id
+3. Edit `entry/src/main/resources/rawfile/demo_config.json`:
+   - `clientToken` — your FlashCat client token
+   - `applicationId` — your RUM application id
+   - `service` — optional service name; defaults to `flashcat-harmony-demo`
 
 ## Build from CLI (compile check, no signing)
 

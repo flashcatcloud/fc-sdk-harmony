@@ -31,7 +31,14 @@ struct Index {
   }
 
   private initSdk(): void {
-    DemoSdk.init(this.context, this.useProd, this.customEndpoint);
+    try {
+      DemoSdk.init(this.context, this.useProd, this.customEndpoint);
+    } catch (e) {
+      const message: string = e instanceof Error ? e.message : 'SDK initialization failed';
+      this.statusText = message;
+      this.append(message);
+      return;
+    }
     this.initialized = DemoSdk.isInitialized();
     this.statusText = `Initialized → ${DemoSdk.currentEnv()}`;
     DemoSdk.monitor().startView('demo-home', 'DemoHome');

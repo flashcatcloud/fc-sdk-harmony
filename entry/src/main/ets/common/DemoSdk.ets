@@ -5,6 +5,7 @@ import {
 import { FlashcatRum, RumConfigurationBuilder, GlobalRumMonitor, RumMonitor } from '@flashcatcloud/rum';
 import { FlashcatTrace, TraceConfigurationBuilder } from '@flashcatcloud/trace';
 import { FlashcatCrash, CrashConfigurationBuilder } from '@flashcatcloud/crash';
+import { DemoConfig, DemoConfigLoader } from './DemoConfig';
 
 /**
  * Centralizes SDK setup for the demo so the UI stays declarative.
@@ -15,13 +16,8 @@ import { FlashcatCrash, CrashConfigurationBuilder } from '@flashcatcloud/crash';
  * environment first. After init the choice is locked for the process lifetime —
  * relaunch the app to switch. In a production app, call init in
  * `AbilityStage.onCreate` with a fixed environment.
- *
- * !!! Replace these placeholder credentials with your own before testing. !!!
+ * Configure credentials in `resources/rawfile/demo_config.json` before testing.
  */
-const DEMO_CLIENT_TOKEN: string = '511b5df774d45cceb5f8d5a328ec5da1131';
-const DEMO_APPLICATION_ID: string = 'm3SvJwengBynqVJvWTeVBk';
-const DEMO_SERVICE: string = 'flashcat-harmony-demo';
-
 export class DemoSdk {
   private static initialized: boolean = false;
   private static envLabel: string = '(not initialized)';
@@ -44,9 +40,14 @@ export class DemoSdk {
     if (DemoSdk.initialized) {
       return;
     }
+    const demoConfig: DemoConfig = DemoConfigLoader.load(context);
+    const missing: string[] = DemoConfigLoader.missingRequiredFields(demoConfig);
+    if (missing.length > 0) {
+      throw new Error(`Missing demo config fields: ${missing.join(', ')}. Edit resources/rawfile/${DemoConfigLoader.configFileName()}.`);
+    }
     const site: FlashcatSite = prod ? FlashcatSite.CN : FlashcatSite.STAGING;
-    const builder: ConfigurationBuilder = new ConfigurationBuilder(DEMO_CLIENT_TOKEN, prod ? 'prod' : 'staging')
-      .setService(DEMO_SERVICE)
+    const builder: ConfigurationBuilder = new ConfigurationBuilder(demoConfig.clientToken, prod ? 'prod' : 'staging')
+      .setService(demoConfig.service)
       .useSite(site)
       .setBatchUploadFrequencyMs(2000) // demo: flush quickly so you see uploads sooner
       .setVerbose(true);               // emit internal HiLog (tag "Flashcat")
@@ -55,7 +56,7 @@ export class DemoSdk {
     }
     Flashcat.initialize(context, builder.build(), TrackingConsent.GRANTED);
 
-    FlashcatRum.enable(new RumConfigurationBuilder(DEMO_APPLICATION_ID)
+    FlashcatRum.enable(new RumConfigurationBuilder(demoConfig.applicationId)
       .setSessionSampleRate(100)
       .setTrackUserInteractions(true) // phase 2: auto TAP actions (A3)
       .setTrackNavigation(true)       // phase 2: auto View events on router push/pop (A1)
