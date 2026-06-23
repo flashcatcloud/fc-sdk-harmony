@@ -195,9 +195,51 @@ Toolchain notes for the live loop (hard-won this session):
 - Still NOT run on-device: the hypium unit-test *assertions* (compile-clean; they
   execute in a device test runtime, not host) — separate from this demo acceptance.
 
+## Phase 2 M3 — SDK-side production hardening complete (2026-06-23)
+
+Driving doc: `docs/PHASE-2-PLAN.md` (see "M3 implementation pass"). This completes
+the SDK-side M3 scope needed before M4; real-device WorkScheduler quota/latency
+behavior still needs final device acceptance.
+
+- **R1 schema alignment** — RUM assembly now emits `view.url` from the view key/path
+  instead of display name, populates `_dd.session.plan=1`, preserves
+  `source:"harmony"`, and keeps viewless ErrorEvents viewless while viewed errors
+  include the corrected `view.url`. Covered by
+  `flashcat-rum/src/test/SchemaAlignment.test.ets`. Full `rum-events-format`
+  codegen remains an OQ-5 hardening follow-up, not an M4 blocker.
+- **R2 deferred upload plumbing** — core config adds
+  `setDeferredUploadWork(abilityName, workId?)`, `setUploadOnWifiOnly`, and
+  `setDeferredUploadRequiresCharging`; initialization registers WorkScheduler
+  idempotently when configured. Upload drains now claim batches by renaming to
+  `*.uploading`, delete on success/drop, restore on retry, and only recover stale
+  claimed files after a 10-minute window to avoid foreground/background duplicate
+  POSTs. `Flashcat.flushAndWait()` is the awaitable entrypoint for a host
+  `WorkSchedulerExtensionAbility`.
+- **R3 mappers** — unchanged from the 2026-06-14 pass and still complete.
+
+Minimal host-side WorkScheduler shape for R2 validation:
+
+```ets
+const config = new ConfigurationBuilder('<clientToken>', 'prod')
+  .setDeferredUploadWork('FlashcatUploadWorkAbility', 71001)
+  .setUploadOnWifiOnly(false)
+  .setDeferredUploadRequiresCharging(true)
+  .build();
+
+// In the app's WorkSchedulerExtensionAbility callback, after normal SDK init:
+await Flashcat.flushAndWait();
+```
+
+Local verification added for M3:
+- `flashcat-core/src/test/DeferredUpload.test.ets`
+- `flashcat-rum/src/test/SchemaAlignment.test.ets`
+- `hvigorw test --no-daemon --stacktrace` passes.
+
 Scope note: SDK self-telemetry, Logs, Feature Flags, Session Replay are explicitly
-OUT of phase 2 (see PHASE-2-PLAN "Scope decisions"). M4 (crash sign-off, cross-repo),
-M5 (vitals/webview), M6 (release) are not yet started.
+OUT of phase 2 (see PHASE-2-PLAN "Scope decisions"). Current release train is M4
+crash/symbolication verification, then M6 release/publish. M5 Vitals/WebView is
+deferred to the next version iteration and should not block the first package
+release.
 
 ## ALL 7 ROUNDS COMPLETE (phase 1) — remaining work is the user's
 

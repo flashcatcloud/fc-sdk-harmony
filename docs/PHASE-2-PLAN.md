@@ -52,17 +52,19 @@ acceptance gates do not silently re-absorb them:
 | **Feature flags** | OUT | Flag-evaluation tracking has no consumer on HarmonyOS today. |
 | **Session Replay** | OUT | Heavy (ArkUI snapshotting + privacy masking); high cost, no committed product demand. Explicitly out — not "later". |
 
-Everything else from the original roadmap stays **IN** and is detailed below.
-Removing these four sharpens Phase 2 to: *auto-instrumentation → production
-hardening → crash/symbolication sign-off → vitals → release.*
+Everything else from the original roadmap stays documented below, but the current
+release train is now narrowed to: *auto-instrumentation → production hardening →
+crash/symbolication sign-off → release.* Vitals/WebView remain planned as **M5 in
+the next version iteration**, not as a blocker for the first package release.
 
 ---
 
-## Phase 2 work items (IN scope)
+## Phase 2 work items and deferred M5 backlog
 
 Priority bands: **P0** = the headline (auto-instrumentation), **P1** = production
-robustness + crash completeness, **P2** = vitals/webview + release. IDs are stable
-references used by the milestone table.
+robustness + crash completeness, **P2** = release. Vitals/WebView are still specified
+here for continuity, but are deferred to M5 in the next version iteration. IDs are
+stable references used by the milestone table.
 
 ### P0 — Auto-instrumentation (the headline)
 
@@ -196,6 +198,11 @@ references used by the milestone table.
 
 #### R1. rum-events-format schema integration (pays down phase-1 debt)
 
+**Implementation status (2026-06-23):** M3 landed the schema-alignment fixes needed
+before M4 (`view.url` uses the view key/path, `_dd.session.plan=1`,
+`source='harmony'`, viewless errors omit `view`). Full `rum-events-format`
+codegen remains a follow-up hardening item under OQ-5, not a blocker for M4.
+
 - **What & why**: Phase 1 hand-assembles events. Wire the shared schema + model
   generation so event shape is authoritative and drift-proof; fix deferred schema
   bugs in one pass.
@@ -214,7 +221,7 @@ references used by the milestone table.
   - [ ] Generate ArkTS models respecting ArkTS constraints (no `any`, explicit
         `Record<string, Object>`).
   - [ ] Migrate assemblers to generated types; delete hand-rolled shapes.
-  - [ ] Land the 4 deferred fixes + update tests.
+  - [x] Land the 4 deferred fixes + update tests.
 - **Acceptance**: Generated models compile under ArkTS; existing NDJSON output is
   byte-compatible (or intentionally corrected) and fc-rum ingest still aggregates by
   Session/View/Resource/Error; `view.url` now carries the path.
@@ -234,6 +241,13 @@ references used by the milestone table.
 
 #### R2. Offline / network-aware deferred upload
 
+**Implementation status (2026-06-23):** SDK-side deferred upload plumbing is in:
+opt-in WorkScheduler registration, idempotent constraint mapping, `Flashcat.flushAndWait()`
+for extension callbacks, bounded background drains, and batch claiming via
+`*.uploading` with stale recovery. Host apps must still declare the
+WorkSchedulerExtensionAbility and call `await Flashcat.flushAndWait()` from it.
+Real-device background quota/latency acceptance remains part of device sign-off.
+
 - **What & why**: Today upload is an in-process foreground timer; pending batches die
   with the process and ignore network/charging state. Back the scheduler with the
   system so batches survive death and upload when conditions are good.
@@ -243,10 +257,10 @@ references used by the milestone table.
 - **Config**: `uploadFrequency?` / `batchProcessingLevel?`-style knob (Android
   parity), `uploadOnWifiOnly?`.
 - **Tasks**:
-  - [ ] WorkScheduler registration + constraints; idempotent (don't double-register).
-  - [ ] Background flush entrypoint reusing the existing batch reader/uploader.
-  - [ ] Respect consent + sampling on deferred flush.
-  - [ ] Tests around constraint mapping + dedupe with foreground timer.
+  - [x] WorkScheduler registration + constraints; idempotent (don't double-register).
+  - [x] Background flush entrypoint reusing the existing batch reader/uploader.
+  - [x] Respect consent + sampling on deferred flush.
+  - [x] Tests around constraint mapping + dedupe with foreground timer.
 - **Acceptance**: kill the app with pending batches, restore network → batches upload
   via the scheduled work; no duplicate uploads when foreground + scheduled overlap.
 - **Concurrency / idempotency**: the foreground timer and the scheduled work can both
@@ -262,6 +276,10 @@ references used by the milestone table.
 
 #### R3. Event mappers (PII scrubbing / redaction)
 
+**Implementation status (2026-06-14):** Complete. `RumEventMapper` runs after
+schema assembly and before persistence; redaction/drop semantics and throwing
+mapper containment are covered by tests and demo acceptance.
+
 - **What & why**: Compliance-critical. Let apps redact/drop events (URLs, user
   fields, error messages) before upload.
 - **Design**: `RumEventMapper`-style hooks invoked in the assembly→upload path,
@@ -270,10 +288,10 @@ references used by the milestone table.
 - **Config**: `setEventMapper(...)` on the RUM config builder (per-type or a
   discriminated single hook).
 - **Tasks**:
-  - [ ] Mapper interface + invocation site (after assembly, before persist/upload).
-  - [ ] Per-type wiring (View/Action/Resource/Error); drop semantics; null-safety so
+  - [x] Mapper interface + invocation site (after assembly, before persist/upload).
+  - [x] Per-type wiring (View/Action/Resource/Error); drop semantics; null-safety so
         a throwing mapper never drops the SDK.
-  - [ ] Tests: redaction applied, drop honored, exceptions contained.
+  - [x] Tests: redaction applied, drop honored, exceptions contained.
 - **Acceptance**: a mapper that strips query strings from `resource.url` and drops
   errors matching a pattern is reflected in the NDJSON output, and a throwing mapper
   is swallowed (event passes through unmodified + logged).
@@ -348,7 +366,7 @@ references used by the milestone table.
 - **Acceptance**: a documented decision (implement / not needed) backed by device
   evidence.
 
-### P2 — Vitals & WebView
+### Deferred next-version — Vitals & WebView (M5)
 
 #### V1. Vitals / performance
 
@@ -411,7 +429,7 @@ references used by the milestone table.
   the injected API minimal and origin-gated.
 - **Upstream ref**: Datadog WebView tracking + browser-sdk webview bridge.
 
-### P2 — Release & ecosystem
+### P2 — Release & ecosystem (M6)
 
 #### E1. Publish
 
@@ -467,10 +485,15 @@ real HarmonyOS device** (not the Previewer — see HANDOFF) gates each.
 - **M1 — Auto-instrumentation core**: A1 (nav→views) + A3 (tap→actions). Biggest
   product value; makes the SDK "drop-in".
 - **M2 — Network AOP**: A2. Auto resources + trace without app wiring.
-- **M3 — Production hardening**: R1 (schema) + R2 (deferred upload) + R3 (mappers).
+- **M3 — Production hardening — SDK-side complete (2026-06-23)**: R1 schema
+  alignment fixes + R2 deferred upload plumbing + R3 mappers. Remaining R1 codegen
+  is a non-blocking OQ-5 hardening follow-up; R2 real-device background behavior
+  still needs device acceptance.
 - **M4 — Crash/symbolication completeness**: C1–C4 + on-device sign-off.
-- **M5 — Vitals + WebView**: V1–V3.
-- **M6 — Release**: E1–E3.
+- **M5 — Deferred next-version: Vitals + WebView**: V1–V3. Not on the current
+  release train.
+- **M6 — Release**: E1–E3. Execute after M4 verification/sign-off so packages can
+  ship before the M5 iteration.
 
 **Dependencies & parallelism:**
 - **M1 and M2 are independent** of each other (nav/tap vs. network) — can run in
@@ -480,10 +503,11 @@ real HarmonyOS device** (not the Previewer — see HANDOFF) gates each.
 - **R3 (mappers) depends on R1** (map over generated models — see R3 risks).
 - **M4's C2 depends on C1 + a staging deploy** of `feat/harmony-symbolication`
   (cross-repo gate above).
-- **M6 (release) is last** — E2 (api-surface guard) should be stood up *early* though,
-  even if publishing waits, so M1–M5 changes don't silently break the public surface.
-- **Critical path to "drop-in GA":** M1 → M2 → M3 → M6. M4/M5 can trail GA as point
-  releases if device/backend sign-off slips.
+- **M6 (release) follows M4 sign-off** — E2 (api-surface guard) should be stood up
+  *early* though, even if publishing waits, so the current public surface is guarded
+  before packages ship.
+- **Current release train to first package release:** M1 → M2 → M3 → M4 verification
+  → M6. M5 is deferred to the next version iteration.
 
 ---
 
@@ -592,7 +616,7 @@ deserve standing attention.
   actions, R3 mapper drop + URL scrub, A2 `FlashcatHttp` auto resources with no
   interceptor, and repeated `POST /api/v2/rum -> 202`. Still pending: the on-device
   hypium assertion run (tests compile-clean; assertions execute in a device test
-  runtime). M4/M5/M6 not yet started.
+  runtime). M4/M6 not yet started; M5 is deferred to the next version iteration.
 - **Round 5 (2026-06-13)** — Cross-cutting + self-review pass: added a
   **Definition of Done** gate (build/test/lint green, real-device verify not
   Previewer, api-surface, consent/never-throw, tests, HANDOFF update) and a
@@ -600,3 +624,20 @@ deserve standing attention.
   never-re-crash, fc-rum coupling, background limits, auto/manual double-count,
   privacy/leakage) with severity + mitigation. Verified internal consistency of item
   IDs, milestone mapping, and OQ references end-to-end.
+- **Release sequencing decision (2026-06-23)** — M5 Vitals/WebView is deferred to
+  the next version iteration. The current release train is M1 → M2 → M3 → M4
+  verification → M6; after M4 is validated, execute M6 and publish packages first.
+- **M3 implementation pass (2026-06-23)** — Completed SDK-side production hardening:
+  - **R1 schema alignment** — `view.url` now carries the view key/path, `_dd.session.plan`
+    is populated, `source='harmony'` remains emitted, and viewless ErrorEvents omit
+    `view` while viewed errors carry a schema-correct `view.url`. Added
+    `SchemaAlignment.test.ets`.
+  - **R2 deferred upload** — added opt-in WorkScheduler registration config
+    (`setDeferredUploadWork`, `setUploadOnWifiOnly`,
+    `setDeferredUploadRequiresCharging`), idempotent registrar, `Flashcat.flushAndWait()`
+    for WorkSchedulerExtensionAbility callbacks, bounded `UploadScheduler.flushForWork`,
+    and `*.uploading` batch claiming with retry restore + stale recovery to avoid
+    foreground/background duplicate POSTs. Added `DeferredUpload.test.ets`.
+  - **R3 remains complete** from the 2026-06-14 pass. M4 can proceed against the
+    schema-correct event shape; real-device WorkScheduler quota/latency validation
+    is still required for final release confidence.
