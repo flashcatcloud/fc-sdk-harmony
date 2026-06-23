@@ -59,7 +59,11 @@ export class FlashcatCore implements SdkCore {
       return; // already enabled — ignore the duplicate (avoids leaking a 2nd hook)
     }
     const persistence: FilePersistenceStrategy = new FilePersistenceStrategy(this.context, feature.name);
-    const uploader: DataUploader = new DataUploader(this.configuration, FlashcatCore.trackPathFor(feature.name));
+    const uploader: DataUploader = new DataUploader(
+      this.configuration,
+      FlashcatCore.trackPathFor(feature.name),
+      () => this.contextProvider.snapshot()
+    );
     const scheduler: UploadScheduler =
       new UploadScheduler(persistence, uploader, this.configuration.batchUploadFrequencyMs);
     const scope: CoreFeatureScope = new CoreFeatureScope(
