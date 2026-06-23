@@ -22,6 +22,7 @@ export class RumResourceScope {
   private readonly sessionId: string;
   private readonly viewId: string;
   private readonly viewName: string;
+  private readonly viewUrl: string;
   private readonly resourceId: string;
   private readonly url: string;
   private readonly method: string;
@@ -36,6 +37,7 @@ export class RumResourceScope {
     sessionId: string,
     viewId: string,
     viewName: string,
+    viewUrl: string,
     start: RumRawEvent
   ) {
     this.featureScope = featureScope;
@@ -43,6 +45,7 @@ export class RumResourceScope {
     this.sessionId = sessionId;
     this.viewId = viewId;
     this.viewName = viewName;
+    this.viewUrl = viewUrl;
     this.resourceId = util.generateRandomUUID(true);
     this.url = start.url ?? '';
     this.method = start.method ?? 'GET';
@@ -72,7 +75,7 @@ export class RumResourceScope {
         context, this.applicationId, this.sessionId, this.viewId, this.viewName,
         this.resourceId, this.url, this.method, raw.resourceKind ?? 'native',
         raw.statusCode ?? 0, raw.sizeBytes ?? 0, this.startedAtMs, durationNs,
-        this.traceId, this.spanId, attrs);
+        this.traceId, this.spanId, this.withViewUrl(attrs));
       writeMapped(writer, event, false);
     });
   }
@@ -84,7 +87,7 @@ export class RumResourceScope {
       const event: Record<string, Object> = RumEventAssembler.error(
         context, this.applicationId, this.sessionId, this.viewId, this.viewName,
         raw.errorMessage ?? 'network request failed', 'network', undefined,
-        false, 'handled', raw.timestampMs, attrs,
+        false, 'handled', raw.timestampMs, this.withViewUrl(attrs),
         this.method, raw.statusCode, this.url);
       writeMapped(writer, event, true);
     });
@@ -100,6 +103,15 @@ export class RumResourceScope {
     for (const k of Object.keys(stopAttrs)) {
       attrs[k] = stopAttrs[k];
     }
+    return attrs;
+  }
+
+  private withViewUrl(attributes: Record<string, Object>): Record<string, Object> {
+    const attrs: Record<string, Object> = {};
+    for (const k of Object.keys(attributes)) {
+      attrs[k] = attributes[k];
+    }
+    attrs['view.url'] = this.viewUrl;
     return attrs;
   }
 }
