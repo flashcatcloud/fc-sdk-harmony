@@ -10,6 +10,10 @@ export enum UploadStatus {
   DROP     // permanent (other 4xx) — discard the batch
 }
 
+export interface BatchUploader {
+  upload(batch: Batch): Promise<UploadStatus>;
+}
+
 const SDK_VERSION: string = '0.1.0';
 
 /**
@@ -21,7 +25,7 @@ const SDK_VERSION: string = '0.1.0';
  *   DD-API-KEY: <clientToken>
  * Sending application/json or a JSON-array body is rejected with HTTP 400.
  */
-export class DataUploader {
+export class DataUploader implements BatchUploader {
   private readonly configuration: Configuration;
   private readonly trackPath: string;
 

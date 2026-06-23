@@ -11,6 +11,10 @@ export class Configuration {
   readonly service: string | undefined;
   readonly site: FlashcatSite;
   readonly batchUploadFrequencyMs: number;
+  readonly deferredUploadAbilityName: string;
+  readonly deferredUploadWorkId: number;
+  readonly uploadOnWifiOnly: boolean;
+  readonly deferredUploadRequiresCharging: boolean;
   /** When true, the SDK emits internal HiLog (tag "Flashcat") for debugging. */
   readonly verbose: boolean;
   /**
@@ -27,6 +31,10 @@ export class Configuration {
     service: string | undefined,
     site: FlashcatSite,
     batchUploadFrequencyMs: number,
+    deferredUploadAbilityName: string,
+    deferredUploadWorkId: number,
+    uploadOnWifiOnly: boolean,
+    deferredUploadRequiresCharging: boolean,
     verbose: boolean,
     customEndpoint: string
   ) {
@@ -36,6 +44,10 @@ export class Configuration {
     this.service = service;
     this.site = site;
     this.batchUploadFrequencyMs = batchUploadFrequencyMs;
+    this.deferredUploadAbilityName = deferredUploadAbilityName;
+    this.deferredUploadWorkId = deferredUploadWorkId;
+    this.uploadOnWifiOnly = uploadOnWifiOnly;
+    this.deferredUploadRequiresCharging = deferredUploadRequiresCharging;
     this.verbose = verbose;
     this.customEndpoint = customEndpoint;
   }
@@ -48,6 +60,10 @@ export class ConfigurationBuilder {
   private service: string | undefined = undefined;
   private site: FlashcatSite = FlashcatSite.CN;
   private batchUploadFrequencyMs: number = 5000;
+  private deferredUploadAbilityName: string = '';
+  private deferredUploadWorkId: number = 71001;
+  private uploadOnWifiOnly: boolean = false;
+  private deferredUploadRequiresCharging: boolean = true;
   private verbose: boolean = false;
   private customEndpoint: string = '';
 
@@ -76,6 +92,28 @@ export class ConfigurationBuilder {
     return this;
   }
 
+  /**
+   * Enables system-backed deferred uploads. The app must declare a
+   * WorkSchedulerExtensionAbility with this name and call SDK flush logic from it.
+   */
+  setDeferredUploadWork(abilityName: string, workId?: number): ConfigurationBuilder {
+    this.deferredUploadAbilityName = abilityName;
+    if (workId !== undefined) {
+      this.deferredUploadWorkId = workId;
+    }
+    return this;
+  }
+
+  setUploadOnWifiOnly(enabled: boolean): ConfigurationBuilder {
+    this.uploadOnWifiOnly = enabled;
+    return this;
+  }
+
+  setDeferredUploadRequiresCharging(enabled: boolean): ConfigurationBuilder {
+    this.deferredUploadRequiresCharging = enabled;
+    return this;
+  }
+
   /** Enable internal HiLog (tag "Flashcat") for debugging. Default false. */
   setVerbose(enabled: boolean): ConfigurationBuilder {
     this.verbose = enabled;
@@ -99,6 +137,10 @@ export class ConfigurationBuilder {
       this.service,
       this.site,
       this.batchUploadFrequencyMs,
+      this.deferredUploadAbilityName,
+      this.deferredUploadWorkId,
+      this.uploadOnWifiOnly,
+      this.deferredUploadRequiresCharging,
       this.verbose,
       this.customEndpoint
     );

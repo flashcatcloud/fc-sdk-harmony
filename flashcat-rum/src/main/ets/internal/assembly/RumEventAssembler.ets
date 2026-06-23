@@ -1,5 +1,7 @@
 import { FlashcatContext } from '@flashcatcloud/core';
 
+const VIEW_URL_ATTRIBUTE: string = 'view.url';
+
 /**
  * Builds RUM event objects (View / Error / Resource) for phase 1. Fields follow
  * the shared `rum-events-format` ViewEvent / ErrorEvent / ResourceEvent shapes.
@@ -36,7 +38,7 @@ export class RumEventAssembler {
 
     const view: Record<string, Object> = {};
     view['id'] = viewId;
-    view['url'] = name;
+    view['url'] = RumEventAssembler.viewUrl(name, attributes);
     view['name'] = name;
     view['time_spent'] = timeSpentNs;
     view['is_active'] = isActive;
@@ -75,7 +77,7 @@ export class RumEventAssembler {
     if (viewId !== undefined) {
       const view: Record<string, Object> = {};
       view['id'] = viewId;
-      view['url'] = viewName ?? '';
+      view['url'] = RumEventAssembler.viewUrl(viewName ?? '', attributes);
       view['name'] = viewName ?? '';
       event['view'] = view;
     }
@@ -124,7 +126,7 @@ export class RumEventAssembler {
 
     const view: Record<string, Object> = {};
     view['id'] = viewId;
-    view['url'] = viewName;
+    view['url'] = RumEventAssembler.viewUrl(viewName, attributes);
     view['name'] = viewName;
     event['view'] = view;
 
@@ -166,6 +168,7 @@ export class RumEventAssembler {
     // request (as `traceparent`) rides along in _dd.
     const dd: Record<string, Object> = {};
     dd['format_version'] = 2;
+    dd['session'] = RumEventAssembler.sessionPlan();
     if (traceId !== undefined) {
       dd['trace_id'] = traceId;
     }
@@ -178,7 +181,7 @@ export class RumEventAssembler {
 
     const view: Record<string, Object> = {};
     view['id'] = viewId;
-    view['url'] = viewName;
+    view['url'] = RumEventAssembler.viewUrl(viewName, attributes);
     view['name'] = viewName;
     event['view'] = view;
 
@@ -201,10 +204,17 @@ export class RumEventAssembler {
   private static dd(documentVersion: number): Record<string, Object> {
     const dd: Record<string, Object> = {};
     dd['format_version'] = 2;
+    dd['session'] = RumEventAssembler.sessionPlan();
     if (documentVersion > 0) {
       dd['document_version'] = documentVersion;
     }
     return dd;
+  }
+
+  private static sessionPlan(): Record<string, Object> {
+    const session: Record<string, Object> = {};
+    session['plan'] = 1;
+    return session;
   }
 
   private static idObj(id: string): Record<string, Object> {
@@ -224,6 +234,11 @@ export class RumEventAssembler {
     const c: Record<string, Object> = {};
     c['count'] = n;
     return c;
+  }
+
+  private static viewUrl(fallback: string, attributes: Record<string, Object>): string {
+    const value: Object | undefined = attributes[VIEW_URL_ATTRIBUTE];
+    return typeof value === 'string' && value.length > 0 ? value : fallback;
   }
 
   /** Adds source/service/version/os/device/connectivity/user/context + trace link. */
@@ -277,6 +292,9 @@ export class RumEventAssembler {
     // trace id" onto a View/Error would be racy and meaningless — keep it out.
     const ctx: Record<string, Object> = {};
     for (const k of Object.keys(attributes)) {
+      if (k === VIEW_URL_ATTRIBUTE) {
+        continue;
+      }
       ctx[k] = attributes[k];
     }
     event['context'] = ctx;

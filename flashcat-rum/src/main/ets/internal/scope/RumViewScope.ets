@@ -55,8 +55,23 @@ export class RumViewScope implements RumScope {
     const update: Record<string, Object> = {};
     update['view.id'] = viewId;
     update['view.name'] = viewName;
+    update['view.url'] = key;
     this.core.updateFeatureContext('rum', update);
     this.writeViewEvent(startedAtMs);
+  }
+
+  private viewAttributes(extra?: Record<string, Object>): Record<string, Object> {
+    const attrs: Record<string, Object> = {};
+    for (const k of Object.keys(this.attributes)) {
+      attrs[k] = this.attributes[k];
+    }
+    if (extra !== undefined) {
+      for (const k of Object.keys(extra)) {
+        attrs[k] = extra[k];
+      }
+    }
+    attrs['view.url'] = this.key;
+    return attrs;
   }
 
   handleEvent(event: RumRawEvent): RumScope | null {
@@ -92,7 +107,7 @@ export class RumViewScope implements RumScope {
         if (key !== '' && this.pendingResources.size < MAX_PENDING_RESOURCES) {
           this.pendingResources.set(key, new RumResourceScope(
             this.featureScope, this.applicationId, this.sessionId,
-            this.viewId, this.viewName, event));
+            this.viewId, this.viewName, this.key, event));
         }
         return this;
       }
@@ -150,7 +165,7 @@ export class RumViewScope implements RumScope {
     this.featureScope.withWriteContext((context: FlashcatContext, writer: EventWriter) => {
       const event: Record<string, Object> = RumEventAssembler.view(
         context, this.applicationId, this.sessionId, this.viewId, this.viewName,
-        this.startedAtMs, timeSpentNs, actions, errors, resources, version, isActive, this.attributes);
+        this.startedAtMs, timeSpentNs, actions, errors, resources, version, isActive, this.viewAttributes());
       writeMapped(writer, event, false);
     });
   }
@@ -160,7 +175,7 @@ export class RumViewScope implements RumScope {
       const event: Record<string, Object> = RumEventAssembler.action(
         context, this.applicationId, this.sessionId, this.viewId, this.viewName,
         raw.actionId ?? '', raw.actionType ?? 'custom', raw.name ?? '',
-        raw.timestampMs, raw.actionDurationNs ?? 0, raw.attributes);
+        raw.timestampMs, raw.actionDurationNs ?? 0, this.viewAttributes(raw.attributes));
       writeMapped(writer, event, false);
     });
   }
@@ -170,7 +185,7 @@ export class RumViewScope implements RumScope {
       const event: Record<string, Object> = RumEventAssembler.error(
         context, this.applicationId, this.sessionId, this.viewId, this.viewName,
         raw.errorMessage ?? '', raw.errorSource ?? 'source', raw.errorStack,
-        raw.isCrash ?? false, raw.errorHandling ?? 'handled', raw.timestampMs, raw.attributes);
+        raw.isCrash ?? false, raw.errorHandling ?? 'handled', raw.timestampMs, this.viewAttributes(raw.attributes));
       // Error/crash events are force-flushed so they upload promptly (not after the
       // 5s/512KB batch threshold).
       writeMapped(writer, event, true);

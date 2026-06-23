@@ -70,6 +70,18 @@ export class Flashcat {
     (core as FlashcatCore).setTrackingConsent(consent);
   }
 
+  /** Rolls active batches and triggers upload for the default (or named) instance. */
+  static flush(instanceName?: string): void {
+    const core: SdkCore = Flashcat.getInstance(instanceName);
+    (core as FlashcatCore).flush();
+  }
+
+  /** Rolls active batches and waits for a bounded background drain. */
+  static async flushAndWait(instanceName?: string): Promise<void> {
+    const core: SdkCore = Flashcat.getInstance(instanceName);
+    await (core as FlashcatCore).flushAndWait();
+  }
+
   /** Stops and removes an instance, flushing pending data. */
   static stopInstance(instanceName?: string): void {
     const name: string = instanceName ?? SdkCoreRegistry.DEFAULT_INSTANCE_NAME;
