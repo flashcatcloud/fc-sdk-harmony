@@ -1,6 +1,11 @@
 import { FlashcatContext } from '@flashcatcloud/core';
 
 const VIEW_URL_ATTRIBUTE: string = 'view.url';
+const BUILD_ID_ATTRIBUTE: string = 'build_id';
+const ERROR_BINARY_IMAGES_ATTRIBUTE: string = 'error.binary_images';
+const ERROR_CATEGORY_ATTRIBUTE: string = 'error.category';
+const ERROR_SOURCE_TYPE_ATTRIBUTE: string = 'error.source_type';
+const ERROR_META_CODE_TYPE_ATTRIBUTE: string = 'error.meta.code_type';
 
 /**
  * Builds RUM event objects (View / Error / Resource) for phase 1. Fields follow
@@ -72,6 +77,10 @@ export class RumEventAssembler {
     event['type'] = 'error';
     event['date'] = dateMs;
     event['_dd'] = RumEventAssembler.dd(0);
+    const buildId: string = RumEventAssembler.asString(attributes[BUILD_ID_ATTRIBUTE]);
+    if (buildId.length > 0) {
+      event['build_id'] = buildId;
+    }
     event['application'] = RumEventAssembler.idObj(applicationId);
     event['session'] = RumEventAssembler.session(sessionId);
     if (viewId !== undefined) {
@@ -90,6 +99,24 @@ export class RumEventAssembler {
     }
     error['is_crash'] = isCrash;
     error['handling'] = handling; // 'handled' | 'unhandled'
+    const category: string = RumEventAssembler.asString(attributes[ERROR_CATEGORY_ATTRIBUTE]);
+    if (category.length > 0) {
+      error['category'] = category;
+    }
+    const sourceType: string = RumEventAssembler.asString(attributes[ERROR_SOURCE_TYPE_ATTRIBUTE]);
+    if (sourceType.length > 0) {
+      error['source_type'] = sourceType;
+    }
+    const binaryImages: Object | undefined = attributes[ERROR_BINARY_IMAGES_ATTRIBUTE];
+    if (Array.isArray(binaryImages) && binaryImages.length > 0) {
+      error['binary_images'] = binaryImages;
+    }
+    const codeType: string = RumEventAssembler.asString(attributes[ERROR_META_CODE_TYPE_ATTRIBUTE]);
+    if (codeType.length > 0) {
+      const meta: Record<string, Object> = {};
+      meta['code_type'] = codeType;
+      error['meta'] = meta;
+    }
     // Failed-resource errors (source 'network') carry the request that failed.
     if (resourceUrl !== undefined) {
       const errResource: Record<string, Object> = {};
@@ -292,11 +319,21 @@ export class RumEventAssembler {
     // trace id" onto a View/Error would be racy and meaningless — keep it out.
     const ctx: Record<string, Object> = {};
     for (const k of Object.keys(attributes)) {
-      if (k === VIEW_URL_ATTRIBUTE) {
+      if (RumEventAssembler.isInternalAttribute(k)) {
         continue;
       }
       ctx[k] = attributes[k];
     }
     event['context'] = ctx;
+  }
+
+  private static isInternalAttribute(key: string): boolean {
+    return key === VIEW_URL_ATTRIBUTE || key === BUILD_ID_ATTRIBUTE ||
+      key === ERROR_BINARY_IMAGES_ATTRIBUTE || key === ERROR_CATEGORY_ATTRIBUTE ||
+      key === ERROR_SOURCE_TYPE_ATTRIBUTE || key === ERROR_META_CODE_TYPE_ATTRIBUTE;
+  }
+
+  private static asString(value: Object | undefined): string {
+    return typeof value === 'string' ? value : '';
   }
 }

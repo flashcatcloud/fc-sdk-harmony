@@ -74,5 +74,34 @@ export default function schemaAlignmentTests(): void {
       expect(view['url']).assertEqual('pages/Home');
       expect(view['name']).assertEqual('Home');
     });
+
+    it('crashAttributesUseBackendErrorSchemaFields', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+      const images: Array<Record<string, Object>> = [
+        { 'uuid': 'abc123', 'name': 'libentry.so', 'is_system': false, 'arch': 'arm64' }
+      ];
+      const attrs: Record<string, Object> = {
+        'error.binary_images': images,
+        'error.source_type': 'harmony',
+        'error.meta.code_type': 'arm64',
+        'error.category': 'Exception',
+        'build_id': 'abc123',
+        'custom': 'keep'
+      };
+      const event = RumEventAssembler.error(
+        testContext(), 'app-1', 'session-1', 'view-id', 'Home',
+        'NativeCrash', 'source', '#0 pc 1 libentry.so', true, 'unhandled', 1000, attrs);
+
+      const error = record(event['error']);
+      const meta = record(error['meta']);
+      const ctx = record(event['context']);
+      expect(event['build_id']).assertEqual('abc123');
+      expect(error['binary_images']).assertEqual(images);
+      expect(error['source_type']).assertEqual('harmony');
+      expect(error['category']).assertEqual('Exception');
+      expect(meta['code_type']).assertEqual('arm64');
+      expect(ctx['custom']).assertEqual('keep');
+      expect(ctx['error.binary_images']).assertUndefined();
+      expect(ctx['build_id']).assertUndefined();
+    });
   });
 }

@@ -22,5 +22,10 @@ oh-package-lock.json5
 local.properties
 *.iml
 
+# Local signing material
+*.cer
+*.p12
+*.p7b
+
 # OS
 .DS_Store
