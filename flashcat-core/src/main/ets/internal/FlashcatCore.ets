@@ -1,4 +1,4 @@
-import { common } from '@kit.AbilityKit';
+import { common, bundleManager } from '@kit.AbilityKit';
 import { Configuration } from '../config/Configuration';
 import { TrackingConsent } from '../privacy/TrackingConsent';
 import { SdkCore } from '../api/SdkCore';
@@ -9,6 +9,7 @@ import { MessageBus } from './bus/MessageBus';
 import { FilePersistenceStrategy } from './persistence/FilePersistenceStrategy';
 import { DataUploader } from './upload/DataUploader';
 import { UploadScheduler } from './upload/UploadScheduler';
+import { DeferredUploadWorkRegistrar, DeferredUploadWorkOptions } from './upload/DeferredUploadWorkRegistrar';
 import { FlashcatLog } from './FlashcatLog';
 
 /**
@@ -24,6 +25,7 @@ export class FlashcatCore implements SdkCore {
   private readonly contextProvider: ContextProvider;
   private readonly bus: MessageBus = new MessageBus();
   private readonly features: Map<string, RegisteredFeature> = new Map<string, RegisteredFeature>();
+  private readonly deferredUploadRegistrar: DeferredUploadWorkRegistrar = new DeferredUploadWorkRegistrar();
 
   constructor(name: string, context: common.Context, configuration: Configuration, consent: TrackingConsent) {
     this.name = name;
@@ -37,6 +39,7 @@ export class FlashcatCore implements SdkCore {
   initialize(): void {
     FlashcatLog.setEnabled(this.configuration.verbose);
     FlashcatLog.d(`initialize: instance="${this.name}" site=${this.configuration.site} consent=${this.consent}`);
+    this.registerDeferredUploadWork();
     try {
       // Inline literal so its target type is the kit's ApplicationStateChangeCallback.
       this.context.getApplicationContext().on('applicationStateChange', {
@@ -137,7 +140,7 @@ export class FlashcatCore implements SdkCore {
     this.features.clear();
   }
 
-  private flushAll(): void {
+  flush(): void {
     if (this.consent !== TrackingConsent.GRANTED) {
       return;
     }
@@ -150,9 +153,52 @@ export class FlashcatCore implements SdkCore {
     });
   }
 
+  async flushAndWait(maxBatchesPerFeature: number = 20): Promise<void> {
+    if (this.consent !== TrackingConsent.GRANTED) {
+      return;
+    }
+    this.bus.send(RUM_FEATURE_NAME, { 'type': 'keep_alive' } as Record<string, Object>);
+    const drains: Array<Promise<void>> = [];
+    this.features.forEach((r: RegisteredFeature) => {
+      r.persistence.rollActive();
+      drains.push(r.scheduler.flushForWork(maxBatchesPerFeature));
+    });
+    for (const drain of drains) {
+      await drain;
+    }
+  }
+
+  private flushAll(): void {
+    this.flush();
+  }
+
   private static trackPathFor(featureName: string): string {
     // Phase 1: RUM (views + errors) goes to the rum track. Other features map 1:1.
     return featureName === RUM_FEATURE_NAME ? '/api/v2/rum' : `/api/v2/${featureName}`;
+  }
+
+  private registerDeferredUploadWork(): void {
+    if (this.configuration.deferredUploadAbilityName.length === 0) {
+      return;
+    }
+    const options: DeferredUploadWorkOptions = {
+      workId: this.configuration.deferredUploadWorkId,
+      bundleName: this.bundleName(),
+      abilityName: this.configuration.deferredUploadAbilityName,
+      uploadOnWifiOnly: this.configuration.uploadOnWifiOnly,
+      requiresCharging: this.configuration.deferredUploadRequiresCharging
+    };
+    this.deferredUploadRegistrar.register(options);
+  }
+
+  private bundleName(): string {
+    const flags: number = bundleManager.BundleFlag.GET_BUNDLE_INFO_WITH_APPLICATION;
+    try {
+      const info: bundleManager.BundleInfo = bundleManager.getBundleInfoForSelfSync(flags);
+      return info.name;
+    } catch (_err) {
+      return '';
+    }
   }
 }
 

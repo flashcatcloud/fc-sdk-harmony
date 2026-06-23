@@ -8,13 +8,22 @@ const MAX_TOTAL_BYTES: number = 4 * 1024 * 1024;  // disk quota per feature (old
 const MAX_BATCH_COUNT: number = 200;              // file-count quota per feature
 const BATCH_PREFIX: string = 'batch-';
 const BATCH_SUFFIX: string = '.ndjson';
+const UPLOADING_SUFFIX: string = '.uploading';
+const UPLOADING_RECOVERY_AGE_MS: number = 10 * 60 * 1000;
 const PENDING_DIR: string = 'pending';
 const PENDING_FILE: string = 'pending.ndjson';
 
 export interface Batch {
   batchId: string;   // the file name
+  originalBatchId?: string;
   data: string;      // NDJSON payload (one event per line)
   eventCount: number;
+}
+
+export interface UploadPersistence {
+  readNextBatch(): Batch | null;
+  deleteBatch(batchId: string): void;
+  restoreBatch(batch: Batch): void;
 }
 
 /**
@@ -24,7 +33,7 @@ export interface Batch {
  * file, migrated into the main dir on GRANTED or wiped on NOT_GRANTED. A disk quota
  * evicts the oldest batches. Mirrors Android's FilePersistenceStrategy + consent dirs.
  */
-export class FilePersistenceStrategy {
+export class FilePersistenceStrategy implements UploadPersistence {
   private readonly rootDir: string;
   private readonly pendingDir: string;
   private activeName: string | null = null;   // basename of the active main batch file
@@ -38,6 +47,7 @@ export class FilePersistenceStrategy {
     this.pendingDir = `${this.rootDir}/${PENDING_DIR}`;
     FlashcatLog.d(`persistence[${featureName}]: filesDir=${filesDir} rootDir=${this.rootDir}`);
     this.ensureDir(this.rootDir);
+    this.restoreUploadingBatches();
   }
 
   private ensureDir(dir: string): void {
@@ -167,7 +177,13 @@ export class FilePersistenceStrategy {
     if (ready.length === 0) {
       return null; // idle — silent to avoid per-tick spam
     }
-    const name: string = ready[0];
+    const originalName: string = ready[0];
+    const name: string = FilePersistenceStrategy.claimedName(originalName);
+    try {
+      fs.renameSync(`${this.rootDir}/${originalName}`, `${this.rootDir}/${name}`);
+    } catch (_claimErr) {
+      return null;
+    }
     const path: string = `${this.rootDir}/${name}`;
     try {
       const data: string = fs.readTextSync(path);
@@ -177,8 +193,9 @@ export class FilePersistenceStrategy {
         return null;
       }
       const lines: string[] = trimmed.split('\n').filter((l: string) => l.length > 0);
-      return { batchId: name, data: lines.join('\n'), eventCount: lines.length };
+      return { batchId: name, originalBatchId: originalName, data: lines.join('\n'), eventCount: lines.length };
     } catch (_e) {
+      this.restoreBatch({ batchId: name, originalBatchId: originalName, data: '', eventCount: 0 });
       return null;
     }
   }
@@ -188,6 +205,18 @@ export class FilePersistenceStrategy {
       fs.unlinkSync(`${this.rootDir}/${batchId}`);
     } catch (_e) {
       // Already gone.
+    }
+  }
+
+  restoreBatch(batch: Batch): void {
+    const originalName: string = batch.originalBatchId ?? FilePersistenceStrategy.originalName(batch.batchId);
+    if (originalName === batch.batchId) {
+      return;
+    }
+    try {
+      fs.renameSync(`${this.rootDir}/${batch.batchId}`, `${this.rootDir}/${originalName}`);
+    } catch (_e) {
+      // Already gone or restored.
     }
   }
 
@@ -201,6 +230,51 @@ export class FilePersistenceStrategy {
     } catch (_e) {
       return [];
     }
+  }
+
+  private restoreUploadingBatches(): void {
+    try {
+      const names: string[] = fs.listFileSync(this.rootDir)
+        .filter((n: string) => n.startsWith(BATCH_PREFIX) && n.endsWith(`${BATCH_SUFFIX}${UPLOADING_SUFFIX}`))
+        .sort();
+      const nowMs: number = Date.now();
+      for (const name of names) {
+        if (!FilePersistenceStrategy.shouldRestoreClaimedBatch(name, nowMs)) {
+          continue;
+        }
+        const originalName: string = FilePersistenceStrategy.originalName(name);
+        try {
+          fs.renameSync(`${this.rootDir}/${name}`, `${this.rootDir}/${originalName}`);
+        } catch (_e) {
+          // best-effort recovery
+        }
+      }
+    } catch (_e) {
+      // best-effort recovery
+    }
+  }
+
+  static shouldRestoreClaimedBatch(batchId: string, nowMs: number): boolean {
+    if (!batchId.startsWith(BATCH_PREFIX) || !batchId.endsWith(`${BATCH_SUFFIX}${UPLOADING_SUFFIX}`)) {
+      return false;
+    }
+    const start: number = BATCH_PREFIX.length;
+    const end: number = batchId.indexOf('-', start);
+    if (end <= start) {
+      return false;
+    }
+    const startedAtMs: number = Number(batchId.slice(start, end));
+    return startedAtMs > 0 && (nowMs - startedAtMs) >= UPLOADING_RECOVERY_AGE_MS;
+  }
+
+  private static claimedName(batchId: string): string {
+    return batchId.endsWith(UPLOADING_SUFFIX) ? batchId : `${batchId}${UPLOADING_SUFFIX}`;
+  }
+
+  private static originalName(batchId: string): string {
+    return batchId.endsWith(UPLOADING_SUFFIX)
+      ? batchId.slice(0, batchId.length - UPLOADING_SUFFIX.length)
+      : batchId;
   }
 
   /** Evict oldest batches when over the file-count or total-byte quota. */

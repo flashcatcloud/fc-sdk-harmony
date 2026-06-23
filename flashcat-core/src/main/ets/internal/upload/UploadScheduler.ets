@@ -1,5 +1,5 @@
-import { FilePersistenceStrategy, Batch } from '../persistence/FilePersistenceStrategy';
-import { DataUploader, UploadStatus } from './DataUploader';
+import { UploadPersistence, Batch } from '../persistence/FilePersistenceStrategy';
+import { BatchUploader, UploadStatus } from './DataUploader';
 import { FlashcatLog } from '../FlashcatLog';
 
 /**
@@ -10,14 +10,14 @@ import { FlashcatLog } from '../FlashcatLog';
  * Mirrors Android's DataUploadScheduler + UploadRunnable (WorkManager-backed there).
  */
 export class UploadScheduler {
-  private readonly persistence: FilePersistenceStrategy;
-  private readonly uploader: DataUploader;
+  private readonly persistence: UploadPersistence;
+  private readonly uploader: BatchUploader;
   private readonly baseDelayMs: number;
   private currentDelayMs: number;
   private timerId: number = -1;
   private running: boolean = false;
 
-  constructor(persistence: FilePersistenceStrategy, uploader: DataUploader, baseDelayMs: number) {
+  constructor(persistence: UploadPersistence, uploader: BatchUploader, baseDelayMs: number) {
     this.persistence = persistence;
     this.uploader = uploader;
     this.baseDelayMs = baseDelayMs;
@@ -82,9 +82,44 @@ export class UploadScheduler {
       this.currentDelayMs = this.baseDelayMs;
       this.scheduleNext(0); // try the next batch immediately
     } else {
+      this.persistence.restoreBatch(batch);
       // RETRY: keep the batch, back off (capped at 60s).
       this.currentDelayMs = Math.min(this.currentDelayMs * 2, 60000);
       this.scheduleNext(this.currentDelayMs);
+    }
+  }
+
+  /** Bounded drain used by WorkScheduler extension callbacks. */
+  async flushForWork(maxBatches: number = 20): Promise<void> {
+    if (maxBatches <= 0) {
+      return;
+    }
+    for (let i: number = 0; i < maxBatches; i += 1) {
+      const drained: boolean = await this.flushOneForWork();
+      if (!drained) {
+        return;
+      }
+    }
+  }
+
+  /** One-shot drain retained for focused tests and small extension callbacks. */
+  async flushOnceForWork(): Promise<void> {
+    await this.flushForWork(1);
+  }
+
+  private async flushOneForWork(): Promise<boolean> {
+    const batch: Batch | null = this.persistence.readNextBatch();
+    if (batch === null) {
+      return false;
+    }
+    FlashcatLog.d(`work.drain: uploading batch ${batch.batchId} (${batch.eventCount} events)`);
+    const status: UploadStatus = await this.uploader.upload(batch);
+    if (status === UploadStatus.SUCCESS || status === UploadStatus.DROP) {
+      this.persistence.deleteBatch(batch.batchId);
+      return true;
+    } else {
+      this.persistence.restoreBatch(batch);
+      return false;
     }
   }
 }
