@@ -161,11 +161,12 @@ jobs:
         env:
           OHPM_PUBLISH_ID: ${{ secrets.OHPM_PUBLISH_ID }}
           OHPM_PRIVATE_KEY: ${{ secrets.OHPM_PRIVATE_KEY }}
+          OHPM_KEY_PASSPHRASE: ${{ secrets.OHPM_KEY_PASSPHRASE }}
         run: |
           set -euo pipefail
 
-          if [[ -z "${OHPM_PUBLISH_ID}" || -z "${OHPM_PRIVATE_KEY}" ]]; then
-            echo "Missing OHPM_PUBLISH_ID or OHPM_PRIVATE_KEY secrets."
+          if [[ -z "${OHPM_PUBLISH_ID}" || -z "${OHPM_PRIVATE_KEY}" || -z "${OHPM_KEY_PASSPHRASE}" ]]; then
+            echo "Missing OHPM_PUBLISH_ID, OHPM_PRIVATE_KEY or OHPM_KEY_PASSPHRASE secrets."
             exit 1
           fi
 
@@ -176,6 +177,9 @@ jobs:
           ohpm config set publish_registry "$OHPM_PUBLISH_REGISTRY"
           ohpm config set publish_id "$OHPM_PUBLISH_ID"
           ohpm config set key_path "$KEY_PATH"
+          # ohpm mandates an encrypted private key; supply its passphrase so the
+          # non-interactive publish can decrypt and sign (without it: error 00609007).
+          ohpm config set key_passphrase "$OHPM_KEY_PASSPHRASE"
 
       - name: Publish packages
         if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.dry_run) }}
