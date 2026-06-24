@@ -3,6 +3,7 @@ import { Configuration } from '../../config/Configuration';
 import { intakeEndpoint } from '../../FlashcatSite';
 import { Batch } from '../persistence/FilePersistenceStrategy';
 import { FlashcatLog } from '../FlashcatLog';
+import { SDK_VERSION } from '../Version';
 
 export enum UploadStatus {
   SUCCESS,
@@ -23,7 +24,6 @@ export interface UploadContext {
 
 export type UploadContextProvider = () => UploadContext;
 
-const SDK_VERSION: string = '0.1.0';
 const DEFAULT_SOURCE: string = 'harmony';
 
 /**
