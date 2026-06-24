@@ -174,12 +174,39 @@ jobs:
           printf '%s\n' "$OHPM_PRIVATE_KEY" > "$KEY_PATH"
           chmod 600 "$KEY_PATH"
 
+          # ohpm requires a passphrase-protected key (else 00609007) AND the
+          # passphrase stored *encrypted* in .ohpmrc (plaintext -> 00602020).
+          # Encryption is done by an auto-generated "crypto component" under
+          # crypto_path via the interactive-only `ohpm config encrypt`: it rejects
+          # piped input (setRawMode) and discards any input chunk containing a
+          # control char, so we drive it through a PTY with expect and send the
+          # password and the Enter as *separate* writes. encrypt + publish share
+          # the same crypto_path so the value round-trips at publish time.
+          CRYPTO_PATH="$RUNNER_TEMP/ohpm-crypto"
+          rm -rf "$CRYPTO_PATH"; mkdir -p "$CRYPTO_PATH"
+
+          ENC_PASS="$(CRYPTO_PATH="$CRYPTO_PATH" expect -c '
+            log_user 0
+            set timeout 60
+            spawn ohpm config encrypt --crypto_path $env(CRYPTO_PATH)
+            expect -re "to be encrypted:"
+            send -- $env(OHPM_KEY_PASSPHRASE)
+            after 300
+            send -- "\r"
+            log_user 1
+            expect eof
+          ' | sed -E 's/\x1b\[[0-9;]*m//g' | tr -d '\r' | grep -oE 'security:[0-9]+:[0-9A-Fa-f]+:[0-9A-Fa-f]+' | head -1 || true)"
+
+          if [[ -z "${ENC_PASS}" ]]; then
+            echo "Failed to encrypt the ohpm key passphrase via 'ohpm config encrypt'."
+            exit 1
+          fi
+
           ohpm config set publish_registry "$OHPM_PUBLISH_REGISTRY"
           ohpm config set publish_id "$OHPM_PUBLISH_ID"
           ohpm config set key_path "$KEY_PATH"
-          # ohpm mandates an encrypted private key; supply its passphrase so the
-          # non-interactive publish can decrypt and sign (without it: error 00609007).
-          ohpm config set key_passphrase "$OHPM_KEY_PASSPHRASE"
+          ohpm config set crypto_path "$CRYPTO_PATH"
+          ohpm config set key_passphrase "$ENC_PASS"
 
       - name: Publish packages
         if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.dry_run) }}
