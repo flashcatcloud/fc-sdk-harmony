@@ -14,7 +14,10 @@ export interface HvigorPlugin {
 }
 
 export interface FlashcatPluginOptions {
-  endpoint: string;
+  /** RUM ingest base URL. Optional — defaults to $FLASHCAT_ENDPOINT, else the SaaS
+   *  ingest (https://browser.flashcat.cloud). Set it (or the env var) for staging /
+   *  self-hosted. */
+  endpoint?: string;
   apiKey: string;
   service: string;
   version: string;
@@ -37,7 +40,6 @@ export interface FlashcatPluginOptions {
  * export default {
  *   system: hapTasks,
  *   plugins: [flashcatSymbolUploadPlugin({
- *     endpoint: 'https://browser.flashcat.cloud',
  *     apiKey: process.env.FLASHCAT_API_KEY ?? '',
  *     service: 'my-app', version: '1.0.0',
  *     enabled: process.env.FLASHCAT_UPLOAD === '1'
@@ -62,8 +64,10 @@ export function flashcatSymbolUploadPlugin(options: FlashcatPluginOptions): Hvig
             console.warn('flashcat: FLASHCAT_API_KEY not set — skipping symbol upload.');
             return;
           }
+          // endpoint may be omitted in config; fall back to env then the SaaS ingest.
+          const endpoint = options.endpoint ?? process.env.FLASHCAT_ENDPOINT ?? 'https://browser.flashcat.cloud';
           const cfg: UploadConfig = {
-            endpoint: options.endpoint,
+            endpoint,
             apiKey: options.apiKey,
             service: options.service,
             version: options.version,
