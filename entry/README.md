@@ -45,6 +45,37 @@ node "$HOME/Downloads/command-line-tools/hvigor/bin/hvigorw.js" assembleHap --mo
 Produces `entry/build/default/outputs/default/entry-default-unsigned.hap` and
 `libentry.so` (arm64-v8a). To run, use DevEco's Run button against a device/emulator.
 
+## SDK dependency mode: local source vs published packages
+
+The demo can depend on the SDK two ways. Switch with one script — it edits only
+**two** files (`entry/oh-package.json5` + the root `oh-package.json5` core
+override) and runs `ohpm install`. `build-profile.json5` is never touched, so all
+`flashcat-*` modules stay in the project; the local modules do **not** shadow the
+registry packages because resolution follows each module's oh-package spec.
+
+```sh
+# Default — develop against local source (file:../flashcat-*). Edits to the SDK
+# modules are picked up immediately when you rebuild the demo.
+scripts/switch-demo-sdk.sh local
+
+# Validate a real release — consume the published @flashcatcloud/* from ohpm.
+scripts/switch-demo-sdk.sh published          # latest 0.1.x (^0.1.0)
+scripts/switch-demo-sdk.sh published "^0.2.0" # a specific published range
+```
+
+**Use `published` to e2e-test a release exactly as an integrator would**: switch,
+build + sign in DevEco, run on the emulator/device pointed at your **test
+environment** (set `demo_config.json` to the test app's `clientToken` /
+`applicationId`), exercise the buttons, and confirm the events land
+(`upload: POST /api/v2/rum -> 202`; rows in the test env's `t_views` / `t_actions`
+/ `t_resources` / `t_errors`). When done, `scripts/switch-demo-sdk.sh local` to
+return to the dev setup. Verified 2026-06-24 against `@flashcatcloud/*@0.1.0`:
+view + action + resource (`resource_type=image`) + error all reached the test env.
+
+> Keep the **default committed state on `local`** so SDK contributors build
+> against their working tree. `published` mode is a temporary verification step,
+> not a state to commit.
+
 ## What each button does
 
 | Button | Telemetry produced | How to confirm |
