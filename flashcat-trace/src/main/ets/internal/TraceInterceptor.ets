@@ -86,7 +86,8 @@ export function headerStringValue(headers: Object | undefined, name: string): st
     return value;
   }
   if (Array.isArray(value)) {
-    for (const item of value) {
+    const items: Object[] = value as Object[];
+    for (const item of items) {
       if (typeof item === 'string') {
         return item;
       }
