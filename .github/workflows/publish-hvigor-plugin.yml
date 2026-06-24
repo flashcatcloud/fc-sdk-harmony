@@ -43,8 +43,8 @@ jobs:
           set -euo pipefail
 
           if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
-            if [[ "${GITHUB_REF_NAME}" != "main" ]]; then
-              echo "Manual publish must run from the main branch. Current ref: ${GITHUB_REF_NAME}"
+            if [[ "${GITHUB_REF_NAME}" != "publish" ]]; then
+              echo "Manual publish must run from the publish branch. Current ref: ${GITHUB_REF_NAME}"
               exit 1
             fi
 
@@ -53,9 +53,9 @@ jobs:
               exit 1
             fi
           elif [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
-            git fetch origin main:refs/remotes/origin/main
-            if ! git merge-base --is-ancestor "${GITHUB_SHA}" origin/main; then
-              echo "Tag publish must point to a commit already contained in the main branch."
+            git fetch origin publish:refs/remotes/origin/publish
+            if ! git merge-base --is-ancestor "${GITHUB_SHA}" origin/publish; then
+              echo "Tag publish must point to a commit already contained in the publish branch."
               exit 1
             fi
           fi

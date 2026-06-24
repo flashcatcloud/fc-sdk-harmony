@@ -2,12 +2,8 @@ name: Publish OHPM
 
 on:
   push:
-    branches:
-      - publish
-    paths-ignore:
-      - "hvigor-plugin/**"
-      - ".github/workflows/publish-hvigor-plugin.yml"
-      - ".github/workflows/publish-ohpm.yml"
+    tags:
+      - 'harmony-sdk-v*'
   workflow_dispatch:
     inputs:
       dry_run:
@@ -51,14 +47,28 @@ jobs:
         run: |
           set -euo pipefail
 
-          if [[ "${GITHUB_REF_NAME}" != "publish" ]]; then
-            echo "This workflow must run from the publish branch. Current ref: ${GITHUB_REF_NAME}"
-            exit 1
-          fi
-
-          if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" && "${DRY_RUN}" != "true" && "${CONFIRM_PUBLISH}" != "yes" ]]; then
-            echo "Manual publish requires confirm_publish=yes when dry_run is false."
-            exit 1
+          if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
+            if [[ "${GITHUB_REF_NAME}" != "publish" ]]; then
+              echo "Manual publish must run from the publish branch. Current ref: ${GITHUB_REF_NAME}"
+              exit 1
+            fi
+            if [[ "${DRY_RUN}" != "true" && "${CONFIRM_PUBLISH}" != "yes" ]]; then
+              echo "Manual publish requires confirm_publish=yes when dry_run is false."
+              exit 1
+            fi
+          elif [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            TAG_VERSION="${GITHUB_REF_NAME#harmony-sdk-v}"
+            PKG_VERSION="$(grep -oE '[0-9]+\.[0-9]+\.[0-9]+' flashcat-core/oh-package.json5 | head -1)"
+            if [[ "${TAG_VERSION}" != "${PKG_VERSION}" ]]; then
+              echo "Tag version (${TAG_VERSION}) does not match the SDK package version (${PKG_VERSION})."
+              exit 1
+            fi
+            git fetch origin publish:refs/remotes/origin/publish
+            if ! git merge-base --is-ancestor "${GITHUB_SHA}" origin/publish; then
+              echo "Tag publish must point to a commit already contained in the publish branch."
+              exit 1
+            fi
+            echo "Publishing HarmonyOS SDK ${PKG_VERSION}"
           fi
 
       - name: Configure Harmony command-line tools
