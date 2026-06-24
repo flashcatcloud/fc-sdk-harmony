@@ -5,11 +5,11 @@ import { TraceConfiguration } from '../TraceConfiguration';
 import { TraceContext } from './TraceContext';
 
 /**
- * rcp interceptor that (1) injects a W3C `traceparent` into every outgoing
- * request of the session it is attached to, and (2) reports the request as a RUM
- * resource via the message bus (when the RUM feature is enabled). The generated
- * trace_id/span_id ride along on the ResourceEvent's `_dd` for RUM↔APM
- * correlation.
+ * rcp interceptor that (1) injects a W3C `traceparent`/`tracestate` into outgoing
+ * requests that do not already carry a W3C trace context, and (2) reports the
+ * request as a RUM resource via the message bus (when the RUM feature is enabled).
+ * The generated trace_id/span_id ride along on the ResourceEvent's `_dd` for
+ * RUM↔APM correlation.
  *
  * Usage: add `FlashcatTrace.interceptor()` to your rcp `SessionConfiguration`.
  * Adding the interceptor IS the opt-in for auto resource tracking.
@@ -30,12 +30,14 @@ export class TraceInterceptor implements rcp.Interceptor {
     // traffic unless the user has granted consent. (RUM resource events are still
     // reported — the consent-gated writer buffers or drops them itself.)
     let tc: TraceContext | null = null;
-    if (isInjectionAllowed(this.core)) {
+    if (isInjectionAllowed(this.core) && shouldInjectTraceHeaders(context.request.headers)) {
       tc = TraceContext.generate(this.configuration.sampleRate);
       if (context.request.headers === undefined) {
         context.request.headers = {};
       }
-      context.request.headers['traceparent'] = tc.traceparent();
+      setHeaderValue(context.request.headers as Record<string, Object>, 'traceparent', tc.traceparent());
+      setHeaderValue(context.request.headers as Record<string, Object>, 'tracestate',
+        tc.tracestate(headerStringValue(context.request.headers, 'tracestate')));
       publishTraceId(this.core, tc.traceId);
     }
     const requestKey: string = util.generateRandomUUID(true);
@@ -67,6 +69,53 @@ export function publishTraceId(core: SdkCore | null, traceId: string): void {
   core.updateFeatureContext(TRACE_FEATURE_NAME, update);
 }
 
+/** Do not take over a request that already carries a W3C trace context. */
+export function shouldInjectTraceHeaders(headers: Object | undefined): boolean {
+  return headerStringValue(headers, 'traceparent').length === 0;
+}
+
+/** Reads a header value case-insensitively. For multi-value headers, uses the first string value. */
+export function headerStringValue(headers: Object | undefined, name: string): string {
+  const key: string = headerKey(headers, name);
+  if (key.length === 0) {
+    return '';
+  }
+  const map: Record<string, Object | undefined> = headers as Record<string, Object | undefined>;
+  const value: Object | undefined = map[key];
+  if (typeof value === 'string') {
+    return value;
+  }
+  if (Array.isArray(value)) {
+    const items: Object[] = value as Object[];
+    for (const item of items) {
+      if (typeof item === 'string') {
+        return item;
+      }
+    }
+  }
+  return '';
+}
+
+/** Sets a header without creating a duplicate when the caller used different casing. */
+export function setHeaderValue(headers: Record<string, Object>, name: string, value: string): void {
+  const key: string = headerKey(headers, name);
+  headers[key.length > 0 ? key : name] = value;
+}
+
+function headerKey(headers: Object | undefined, name: string): string {
+  if (headers === undefined || typeof headers !== 'object') {
+    return '';
+  }
+  const lowerName: string = name.toLowerCase();
+  const map: Record<string, Object | undefined> = headers as Record<string, Object | undefined>;
+  for (const key of Object.keys(map)) {
+    if (key.toLowerCase() === lowerName) {
+      return key;
+    }
+  }
+  return '';
+}
+
 // ---- RUM resource tracking: publish the request lifecycle onto the bus. ----
 // The RUM feature (if enabled) translates these into start/stopResource calls;
 // when RUM is not enabled, getFeature returns null and the events are dropped.
@@ -84,7 +133,8 @@ function notifyRequestStarted(core: SdkCore | null, key: string,
 
 function notifyRequestCompleted(core: SdkCore | null, key: string, response: rcp.Response): void {
   publishResourceCompleted(core, key, response.statusCode,
-    response.body !== undefined ? response.body.byteLength : 0);
+    response.body !== undefined ? response.body.byteLength : 0,
+    contentTypeOf(response.headers));
 }
 
 function notifyRequestFailed(core: SdkCore | null, key: string, e: Object): void {
@@ -118,7 +168,7 @@ export function publishResourceStarted(core: SdkCore | null, key: string, url: s
 
 /** @internal */
 export function publishResourceCompleted(core: SdkCore | null, key: string,
-  statusCode: number, size: number): void {
+  statusCode: number, size: number, mimeType: string = ''): void {
   const scope: FeatureScope | null = rumScope(core);
   if (scope === null) {
     return;
@@ -128,7 +178,20 @@ export function publishResourceCompleted(core: SdkCore | null, key: string,
   event['key'] = key;
   event['status_code'] = statusCode;
   event['size'] = size;
+  // Response Content-Type → the RUM feature classifies the resource type from it
+  // (image/media/font/css/js/native), matching the Android/iOS SDKs.
+  if (mimeType.length > 0) {
+    event['mime_type'] = mimeType;
+  }
   scope.sendEvent(event);
+}
+
+/**
+ * Reads the `Content-Type` header value (case-insensitively) from a header map,
+ * shared by the rcp interceptor and the FlashcatHttp wrapper.
+ */
+export function contentTypeOf(headers: Object | undefined): string {
+  return headerStringValue(headers, 'content-type');
 }
 
 /** @internal */

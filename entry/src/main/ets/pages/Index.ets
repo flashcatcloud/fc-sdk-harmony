@@ -213,6 +213,7 @@ struct Index {
           this.btn('Manual resource (no network)', () => { this.manualResource(); })
           this.btn('Auto HTTP GET (FlashcatHttp, no interceptor)', () => { this.autoHttp(http.RequestMethod.GET, 'https://httpbingo.org/get'); })
           this.btn('Auto HTTP POST (FlashcatHttp, no interceptor)', () => { this.autoHttp(http.RequestMethod.POST, 'https://httpbingo.org/post'); })
+          this.btn('Auto HTTP image (→ resource_type=image)', () => { this.autoHttp(http.RequestMethod.GET, 'https://httpbingo.org/image/png'); })
 
           // ---- Event mapper (R3) ----
           this.sectionTitle('7b · Event mapper (PII redaction)')

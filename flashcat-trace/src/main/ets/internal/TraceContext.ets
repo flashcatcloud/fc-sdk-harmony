@@ -3,7 +3,10 @@ import { cryptoFramework } from '@kit.CryptoArchitectureKit';
 /**
  * A W3C trace context. trace_id is 128-bit (32 hex), span_id 64-bit (16 hex).
  * Emits the `traceparent` header: `00-{trace_id}-{span_id}-{flags}`,
- * flags `01` = sampled, `00` = not sampled.
+ * flags `01` = sampled, `00` = not sampled, plus the companion `tracestate`
+ * header carrying the Datadog vendor entry `dd=s:{0|1};o:rum` (sampling
+ * priority + RUM origin), matching the browser/native SDK convention so the
+ * backend APM continues the same sampling decision and tags the trace's origin.
  */
 export class TraceContext {
   readonly traceId: string;
@@ -26,6 +29,44 @@ export class TraceContext {
   traceparent(): string {
     const flags: string = this.sampled ? '01' : '00';
     return `00-${this.traceId}-${this.spanId}-${flags}`;
+  }
+
+  /**
+   * W3C `tracestate` value with the Datadog vendor entry: `dd=s:{0|1};o:rum`.
+   * `s` = sampling priority (1 = keep, 0 = drop), `o` = origin (rum). When an
+   * existing tracestate is present, preserve other vendors and replace only the
+   * Datadog member.
+   */
+  tracestate(existing: string = ''): string {
+    const sampling: string = this.sampled ? '1' : '0';
+    return TraceContext.mergeDatadogTracestate(existing, `dd=s:${sampling};o:rum`);
+  }
+
+  private static mergeDatadogTracestate(existing: string, datadogMember: string): string {
+    const trimmed: string = existing.trim();
+    if (trimmed.length === 0) {
+      return datadogMember;
+    }
+    const members: string[] = trimmed.split(',').map((member: string): string => member.trim())
+      .filter((member: string): boolean => member.length > 0);
+    const result: string[] = [];
+    let replaced: boolean = false;
+    for (const member of members) {
+      const separator: number = member.indexOf('=');
+      const key: string = separator >= 0 ? member.substring(0, separator).trim().toLowerCase() : '';
+      if (key === 'dd') {
+        if (!replaced) {
+          result.push(datadogMember);
+          replaced = true;
+        }
+      } else {
+        result.push(member);
+      }
+    }
+    if (!replaced) {
+      result.unshift(datadogMember);
+    }
+    return result.join(',');
   }
 
   private static randomHex(byteLength: number): string {
