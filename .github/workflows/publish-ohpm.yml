@@ -1,0 +1,202 @@
+name: Publish OHPM
+
+on:
+  push:
+    branches:
+      - publish
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Build and prepublish only; skip ohpm publish"
+        required: false
+        default: true
+        type: boolean
+      confirm_publish:
+        description: 'Type "yes" to publish packages to ohpm'
+        required: true
+        default: "no"
+
+concurrency:
+  group: publish-ohpm-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  publish-ohpm:
+    name: Publish Harmony SDK packages to OHPM
+    runs-on: [self-hosted, macOS, harmony]
+    environment: Production
+    permissions:
+      contents: read
+
+    env:
+      OHPM_PUBLISH_REGISTRY: https://ohpm.openharmony.cn/ohpm/
+      HARMONY_MODULES: "flashcat_core flashcat_rum flashcat_crash flashcat_trace"
+      HARMONY_COMMAND_LINE_TOOLS_HOME: ${{ vars.HARMONY_COMMAND_LINE_TOOLS_HOME }}
+      DEVECO_SDK_HOME: ${{ vars.DEVECO_SDK_HOME }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Validate publish ref
+        env:
+          DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run || false }}
+          CONFIRM_PUBLISH: ${{ github.event_name == 'workflow_dispatch' && inputs.confirm_publish || '' }}
+        run: |
+          set -euo pipefail
+
+          if [[ "${GITHUB_REF_NAME}" != "publish" ]]; then
+            echo "This workflow must run from the publish branch. Current ref: ${GITHUB_REF_NAME}"
+            exit 1
+          fi
+
+          if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" && "${DRY_RUN}" != "true" && "${CONFIRM_PUBLISH}" != "yes" ]]; then
+            echo "Manual publish requires confirm_publish=yes when dry_run is false."
+            exit 1
+          fi
+
+      - name: Configure Harmony command-line tools
+        run: |
+          set -euo pipefail
+
+          COMMAND_LINE_TOOLS_HOME="${HARMONY_COMMAND_LINE_TOOLS_HOME:-$HOME/Downloads/command-line-tools}"
+          DEVECO_HOME="${DEVECO_SDK_HOME:-/Applications/DevEco-Studio.app/Contents/sdk}"
+
+          test -d "$COMMAND_LINE_TOOLS_HOME" || {
+            echo "Harmony command-line tools not found: $COMMAND_LINE_TOOLS_HOME"
+            echo "Set repository/org variable HARMONY_COMMAND_LINE_TOOLS_HOME or install the tools on the self-hosted runner."
+            exit 1
+          }
+          test -f "$COMMAND_LINE_TOOLS_HOME/hvigor/bin/hvigorw.js" || {
+            echo "hvigorw.js not found under $COMMAND_LINE_TOOLS_HOME/hvigor/bin"
+            exit 1
+          }
+          test -d "$DEVECO_HOME" || {
+            echo "DevEco SDK not found: $DEVECO_HOME"
+            echo "Set repository/org variable DEVECO_SDK_HOME or install DevEco Studio SDK on the self-hosted runner."
+            exit 1
+          }
+
+          {
+            echo "$COMMAND_LINE_TOOLS_HOME/bin"
+            echo "$COMMAND_LINE_TOOLS_HOME/ohpm/bin"
+            echo "$DEVECO_HOME/default/openharmony/toolchains"
+          } >> "$GITHUB_PATH"
+
+          {
+            echo "COMMAND_LINE_TOOLS_HOME=$COMMAND_LINE_TOOLS_HOME"
+            echo "DEVECO_SDK_HOME=$DEVECO_HOME"
+          } >> "$GITHUB_ENV"
+
+      - name: Verify tools
+        run: |
+          set -euo pipefail
+          ohpm --version
+          node "$COMMAND_LINE_TOOLS_HOME/hvigor/bin/hvigorw.js" --version
+
+      - name: Install ohpm dependencies
+        run: |
+          set -euo pipefail
+          ohpm config set registry "$OHPM_PUBLISH_REGISTRY"
+          ohpm config set publish_registry "$OHPM_PUBLISH_REGISTRY"
+          ohpm install
+
+      - name: Build HAR packages
+        run: |
+          set -euo pipefail
+          for module in $HARMONY_MODULES; do
+            node "$COMMAND_LINE_TOOLS_HOME/hvigor/bin/hvigorw.js" assembleHar \
+              --mode module \
+              -p "module=${module}@default" \
+              -p product=default \
+              --no-daemon
+          done
+
+      - name: Verify package manifests
+        run: |
+          set -euo pipefail
+          node <<'NODE'
+          const { execFileSync } = require('node:child_process');
+
+          const packages = [
+            ['flashcat-core/build/default/outputs/default/flashcat_core.har', '@flashcatcloud/core'],
+            ['flashcat-rum/build/default/outputs/default/flashcat_rum.har', '@flashcatcloud/rum'],
+            ['flashcat-crash/build/default/outputs/default/flashcat_crash.har', '@flashcatcloud/crash'],
+            ['flashcat-trace/build/default/outputs/default/flashcat_trace.har', '@flashcatcloud/trace'],
+          ];
+
+          for (const [har, expectedName] of packages) {
+            const manifest = execFileSync('tar', ['-xOzf', har, 'package/oh-package.json5'], { encoding: 'utf8' });
+            const parsed = JSON.parse(manifest);
+            if (parsed.name !== expectedName) {
+              throw new Error(`${har} package name mismatch: expected ${expectedName}, got ${parsed.name}`);
+            }
+            console.log(`${parsed.name}@${parsed.version}`);
+          }
+          NODE
+
+      - name: Prepublish check
+        run: |
+          set -euo pipefail
+          ohpm prepublish flashcat-core/build/default/outputs/default/flashcat_core.har
+          ohpm prepublish flashcat-rum/build/default/outputs/default/flashcat_rum.har
+          ohpm prepublish flashcat-crash/build/default/outputs/default/flashcat_crash.har
+          ohpm prepublish flashcat-trace/build/default/outputs/default/flashcat_trace.har
+
+      - name: Upload HAR artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: harmony-ohpm-har
+          path: |
+            flashcat-core/build/default/outputs/default/flashcat_core.har
+            flashcat-rum/build/default/outputs/default/flashcat_rum.har
+            flashcat-crash/build/default/outputs/default/flashcat_crash.har
+            flashcat-trace/build/default/outputs/default/flashcat_trace.har
+          if-no-files-found: error
+
+      - name: Configure ohpm publish credentials
+        if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.dry_run) }}
+        env:
+          OHPM_PUBLISH_ID: ${{ secrets.OHPM_PUBLISH_ID }}
+          OHPM_PRIVATE_KEY: ${{ secrets.OHPM_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+
+          if [[ -z "${OHPM_PUBLISH_ID}" || -z "${OHPM_PRIVATE_KEY}" ]]; then
+            echo "Missing OHPM_PUBLISH_ID or OHPM_PRIVATE_KEY secrets."
+            exit 1
+          fi
+
+          KEY_PATH="$RUNNER_TEMP/ohpm_publish_key"
+          printf '%s\n' "$OHPM_PRIVATE_KEY" > "$KEY_PATH"
+          chmod 600 "$KEY_PATH"
+
+          ohpm config set publish_registry "$OHPM_PUBLISH_REGISTRY"
+          ohpm config set publish_id "$OHPM_PUBLISH_ID"
+          ohpm config set key_path "$KEY_PATH"
+
+      - name: Publish packages
+        if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.dry_run) }}
+        run: |
+          set -euo pipefail
+          ohpm publish flashcat-core/build/default/outputs/default/flashcat_core.har --publish_registry "$OHPM_PUBLISH_REGISTRY"
+          ohpm publish flashcat-rum/build/default/outputs/default/flashcat_rum.har --publish_registry "$OHPM_PUBLISH_REGISTRY"
+          ohpm publish flashcat-crash/build/default/outputs/default/flashcat_crash.har --publish_registry "$OHPM_PUBLISH_REGISTRY"
+          ohpm publish flashcat-trace/build/default/outputs/default/flashcat_trace.har --publish_registry "$OHPM_PUBLISH_REGISTRY"
+
+      - name: Publish summary
+        if: always()
+        run: |
+          {
+            echo "## OHPM publish workflow"
+            echo ""
+            echo "- Ref: ${GITHUB_REF}"
+            echo "- Actor: ${GITHUB_ACTOR}"
+            echo "- Packages:"
+            echo "  - @flashcatcloud/core"
+            echo "  - @flashcatcloud/rum"
+            echo "  - @flashcatcloud/crash"
+            echo "  - @flashcatcloud/trace"
+          } >> "$GITHUB_STEP_SUMMARY"
