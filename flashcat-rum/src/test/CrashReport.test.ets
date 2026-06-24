@@ -4,9 +4,12 @@ import { RumFeature } from '../main/ets/internal/RumFeature';
 export default function crashReportTests(): void {
   describe('RumCrashReport', (): void => {
     it('extractsNativeSymbolicationAttributes', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+      const images: Array<Record<string, Object>> = [
+        { 'uuid': 'abc123', 'name': 'libdemo.so', 'is_system': false, 'arch': 'arm64' }
+      ];
       const event: Record<string, Object> = {
         'type': 'crash_report',
-        'binary_images': [{ 'uuid': 'abc123', 'name': 'libdemo.so', 'is_system': false, 'arch': 'arm64' }],
+        'binary_images': images,
         'arch': 'arm64',
         'build_id': 'abc123',
         'source_type': 'harmony',
