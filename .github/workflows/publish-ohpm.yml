@@ -4,6 +4,10 @@ on:
   push:
     branches:
       - publish
+    paths-ignore:
+      - "hvigor-plugin/**"
+      - ".github/workflows/publish-hvigor-plugin.yml"
+      - ".github/workflows/publish-ohpm.yml"
   workflow_dispatch:
     inputs:
       dry_run:
