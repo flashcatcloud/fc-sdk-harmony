@@ -35,9 +35,10 @@ export default function testsuite(): void {
         .assertEqual('dd=s:1;o:rum,foo=bar,baz=qux');
     });
 
-    it('tracestateReplacesExistingDatadogEntryOnly', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+    it('tracestateReplacesDatadogEntryAndMovesItToFront', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+      // W3C: the mutated member leads; other vendors keep their relative order.
       expect(TraceContext.generate(100).tracestate('foo=bar,dd=s:0;o:rum,baz=qux'))
-        .assertEqual('foo=bar,dd=s:1;o:rum,baz=qux');
+        .assertEqual('dd=s:1;o:rum,foo=bar,baz=qux');
     });
 
     it('traceInjectionSkipsExistingTraceparent', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {

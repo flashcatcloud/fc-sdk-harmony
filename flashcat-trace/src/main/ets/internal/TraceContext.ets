@@ -35,7 +35,8 @@ export class TraceContext {
    * W3C `tracestate` value with the Datadog vendor entry: `dd=s:{0|1};o:rum`.
    * `s` = sampling priority (1 = keep, 0 = drop), `o` = origin (rum). When an
    * existing tracestate is present, preserve other vendors and replace only the
-   * Datadog member.
+   * Datadog member, moving it to the front — W3C requires the most recently
+   * mutated member to lead the list.
    */
   tracestate(existing: string = ''): string {
     const sampling: string = this.sampled ? '1' : '0';
@@ -49,24 +50,15 @@ export class TraceContext {
     }
     const members: string[] = trimmed.split(',').map((member: string): string => member.trim())
       .filter((member: string): boolean => member.length > 0);
-    const result: string[] = [];
-    let replaced: boolean = false;
-    for (const member of members) {
+    // Keep every non-`dd` vendor in its original order, drop any existing `dd`
+    // member(s), then put our updated `dd` first.
+    const others: string[] = members.filter((member: string): boolean => {
       const separator: number = member.indexOf('=');
       const key: string = separator >= 0 ? member.substring(0, separator).trim().toLowerCase() : '';
-      if (key === 'dd') {
-        if (!replaced) {
-          result.push(datadogMember);
-          replaced = true;
-        }
-      } else {
-        result.push(member);
-      }
-    }
-    if (!replaced) {
-      result.unshift(datadogMember);
-    }
-    return result.join(',');
+      return key !== 'dd';
+    });
+    others.unshift(datadogMember);
+    return others.join(',');
   }
 
   private static randomHex(byteLength: number): string {

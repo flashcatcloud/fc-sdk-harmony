@@ -214,6 +214,7 @@ struct Index {
           this.btn('Auto HTTP GET (FlashcatHttp, no interceptor)', () => { this.autoHttp(http.RequestMethod.GET, 'https://httpbingo.org/get'); })
           this.btn('Auto HTTP POST (FlashcatHttp, no interceptor)', () => { this.autoHttp(http.RequestMethod.POST, 'https://httpbingo.org/post'); })
           this.btn('Auto HTTP image (→ resource_type=image)', () => { this.autoHttp(http.RequestMethod.GET, 'https://httpbingo.org/image/png'); })
+          this.btn('Auto HTTP image 404 (static error)', () => { this.autoHttp(http.RequestMethod.GET, 'https://httpbingo.org/image/missing.png'); })
 
           // ---- Event mapper (R3) ----
           this.sectionTitle('7b · Event mapper (PII redaction)')
