@@ -35,7 +35,7 @@ export default function schemaAlignmentTests(): void {
       const attrs: Record<string, Object> = { 'view.url': 'pages/Home', 'custom': 'keep' };
       const event = RumEventAssembler.view(
         testContext(), 'app-1', 'session-1', 'view-id', 'Home',
-        1000, 0, 0, 0, 0, 1, true, attrs);
+        1000, 0, 0, 0, 0, 0, 1, true, attrs);
 
       const view = record(event['view']);
       const ctx = record(event['context']);
@@ -45,10 +45,22 @@ export default function schemaAlignmentTests(): void {
       expect(ctx['view.url']).assertUndefined();
     });
 
+    it('viewEmitsCrashCountForSessionCrashFreeRate', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+      // crashCount=2 (arg after resourceCount) must surface as view.crash.count so
+      // the backend can derive session_crash_count → crash-free rate.
+      const event = RumEventAssembler.view(
+        testContext(), 'app-1', 'session-1', 'view-id', 'Home',
+        1000, 0, 0, 0, 0, 2, 1, true, {});
+
+      const view = record(event['view']);
+      const crash = record(view['crash']);
+      expect(crash['count']).assertEqual(2);
+    });
+
     it('ddSessionPlanIsPopulated', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
       const event = RumEventAssembler.view(
         testContext(), 'app-1', 'session-1', 'view-id', 'Home',
-        1000, 0, 0, 0, 0, 1, true, {});
+        1000, 0, 0, 0, 0, 0, 1, true, {});
 
       const dd = record(event['_dd']);
       const session = record(dd['session']);

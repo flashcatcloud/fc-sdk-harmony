@@ -30,6 +30,7 @@ export class RumEventAssembler {
     actionCount: number,
     errorCount: number,
     resourceCount: number,
+    crashCount: number,
     documentVersion: number,
     isActive: boolean,
     attributes: Record<string, Object>
@@ -50,6 +51,10 @@ export class RumEventAssembler {
     view['action'] = RumEventAssembler.count(actionCount);
     view['error'] = RumEventAssembler.count(errorCount);
     view['resource'] = RumEventAssembler.count(resourceCount);
+    // view.crash.count feeds the backend's session_crash_count (SUM over views) →
+    // crash-free rate. Without it every session reads as crash-free even when
+    // is_crash errors were reported. Counts is_crash errors, matching 崩溃次数.
+    view['crash'] = RumEventAssembler.count(crashCount);
     event['view'] = view;
 
     RumEventAssembler.applyContext(event, context, attributes);

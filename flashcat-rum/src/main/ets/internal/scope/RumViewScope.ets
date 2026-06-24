@@ -27,6 +27,7 @@ export class RumViewScope implements RumScope {
   private actionCount: number = 0;
   private errorCount: number = 0;
   private resourceCount: number = 0;
+  private crashCount: number = 0;
   private documentVersion: number = 0;
   private active: boolean = true;
   private readonly pendingResources: Map<string, RumResourceScope> = new Map<string, RumResourceScope>();
@@ -99,6 +100,13 @@ export class RumViewScope implements RumScope {
         return this;
       case 'addError':
         this.errorCount += 1;
+        // A crash (is_crash) also bumps the view's crash count so the backend can
+        // derive session_crash_count → crash-free rate. Freezes/app-hangs currently
+        // arrive as is_crash too (distinguished by error.category); counting them
+        // here keeps crash-free rate consistent with 崩溃次数 (= is_crash errors).
+        if (event.isCrash === true) {
+          this.crashCount += 1;
+        }
         this.writeError(event);
         this.writeViewEvent(event.timestampMs);
         return this;
@@ -161,11 +169,12 @@ export class RumViewScope implements RumScope {
     const actions: number = this.actionCount;
     const errors: number = this.errorCount;
     const resources: number = this.resourceCount;
+    const crashes: number = this.crashCount;
     const isActive: boolean = this.active;
     this.featureScope.withWriteContext((context: FlashcatContext, writer: EventWriter) => {
       const event: Record<string, Object> = RumEventAssembler.view(
         context, this.applicationId, this.sessionId, this.viewId, this.viewName,
-        this.startedAtMs, timeSpentNs, actions, errors, resources, version, isActive, this.viewAttributes());
+        this.startedAtMs, timeSpentNs, actions, errors, resources, crashes, version, isActive, this.viewAttributes());
       writeMapped(writer, event, false);
     });
   }
