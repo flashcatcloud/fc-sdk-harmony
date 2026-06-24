@@ -10,6 +10,21 @@ symbolicated in the FlashCat console:
 
 Zero runtime dependencies (uses Node ≥18 built-in `fetch`/`FormData`).
 
+## Install
+
+hvigor plugins are declared in the project's `hvigor/hvigor-config.json5`
+`dependencies` (this is the hvigor mechanism — **not** `ohpm install`, which is for
+ArkTS/ohpm packages). hvigor installs it from npm and resolves the import below.
+
+```json5
+{
+  "modelVersion": "5.0.0",
+  "dependencies": {
+    "@flashcatcloud/hvigor-plugin": "^0.1.0"
+  }
+}
+```
+
 ## Usage (hvigor task)
 
 In the module's `hvigorfile.ts`:
