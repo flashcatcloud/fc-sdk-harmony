@@ -109,8 +109,8 @@ export class RumFeature implements Feature, FeatureEventReceiver {
 
   /**
    * Crash/freeze event published by the Crash feature. Reported as an unhandled
-   * `is_crash` error. Native symbolication metadata (binary images, arch) rides
-   * along as internal `_dd.crash.*` attributes for the backend symbolicator.
+   * `is_crash` error. Native symbolication metadata is carried as internal
+   * attributes that RumEventAssembler lifts into backend-consumed error fields.
    */
   private onCrashReport(event: Record<string, Object>): void {
     const m: DefaultRumMonitor | null = this.monitor;
@@ -132,17 +132,22 @@ export class RumFeature implements Feature, FeatureEventReceiver {
   static crashAttributes(event: Record<string, Object>): Record<string, Object> {
     const attributes: Record<string, Object> = {};
     const images: Object | undefined = event['binary_images'];
-    if (typeof images === 'string' && images.length > 0) {
-      attributes['_dd.crash.binary_images'] = images;
+    if (Array.isArray(images) && images.length > 0) {
+      attributes['error.binary_images'] = images;
     }
     const arch: Object | undefined = event['arch'];
     if (typeof arch === 'string' && arch.length > 0) {
-      attributes['_dd.crash.arch'] = arch;
+      attributes['error.meta.code_type'] = arch;
     }
     const kind: Object | undefined = event['crash_kind'];
-    if (typeof kind === 'string' && kind.length > 0) {
-      attributes['_dd.crash.kind'] = kind;
+    attributes['error.category'] = kind === 'freeze' ? 'App Hang' : 'Exception';
+    const buildId: Object | undefined = event['build_id'];
+    if (typeof buildId === 'string' && buildId.length > 0) {
+      attributes['build_id'] = buildId;
     }
+    const sourceType: Object | undefined = event['source_type'];
+    attributes['error.source_type'] =
+      typeof sourceType === 'string' && sourceType.length > 0 ? sourceType : 'harmony';
     return attributes;
   }
 
@@ -200,8 +205,8 @@ export class RumFeature implements Feature, FeatureEventReceiver {
     try {
       const m: DefaultRumMonitor | null = this.monitor;
       if (m !== null) {
-        FlashcatLog.d(`rum.error: report unhandled isCrash=true firstLine="${RumFeature.firstLine(stackText)}"`);
-        m.reportError(RumFeature.firstLine(stackText), RumErrorSource.SOURCE, stackText, true, 'unhandled');
+        FlashcatLog.d(`rum.error: report unhandled firstLine="${RumFeature.firstLine(stackText)}"`);
+        m.reportError(RumFeature.firstLine(stackText), RumErrorSource.SOURCE, stackText, false, 'unhandled');
       } else {
         FlashcatLog.d('rum.error: dropped because monitor is null');
       }

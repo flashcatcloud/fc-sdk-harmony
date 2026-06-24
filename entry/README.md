@@ -54,9 +54,9 @@ Produces `entry/build/default/outputs/default/entry-default-unsigned.hap` and
 | Start View / Stop View | RUM ViewEvents | `"type":"view"` NDJSON line; FlashCat console session |
 | Fire Traced Network Request | rcp GET with injected `traceparent`; RUM ResourceEvent | Charles shows `traceparent: 00-…`; `"type":"resource"` w/ `_dd.trace_id` |
 | Add Manual Error | RUM ErrorEvent (`source:custom`, `is_crash:false`) | `"type":"error"` line |
-| Throw Unhandled ArkTS Error | unhandled exception → `errorManager` + `APP_CRASH` (JsError) | `"type":"error"` `is_crash:true`, source `source` |
-| Trigger Native Crash (SIGSEGV) | `libentry.so` null-deref → `APP_CRASH` (NativeCrash) | next launch: `"type":"error"` with native stack + `_dd.crash.binary_images` |
-| Trigger App Freeze (8s) | main-thread block → `APP_FREEZE` | next launch: `"type":"error"` `_dd.crash.kind:freeze` |
+| Throw Unhandled ArkTS Error | unhandled exception → `errorManager` + `APP_CRASH` (JsError) | `"type":"error"` from next-launch crash intake, source `source` |
+| Trigger Native Crash (SIGSEGV) | `libentry.so` null-deref → `APP_CRASH` (NativeCrash) | next launch: `"type":"error"` with native stack, `error.binary_images`, `build_id` |
+| Trigger App Freeze (8s) | main-thread block → `APP_FREEZE` | next launch: `"type":"error"` with `error.category:"App Hang"` |
 
 > Crash/freeze events are delivered by `hiAppEvent` on the **next app launch** —
 > trigger a crash, relaunch the app, then check the proxy/console.
@@ -65,9 +65,10 @@ Produces `entry/build/default/outputs/default/entry-default-unsigned.hap` and
 
 - [ ] View/resource/error events reach `/api/v2/rum` (NDJSON, `text/plain`).
 - [ ] `traceparent` header is on the wire for the traced request.
-- [ ] ArkTS throw produces an `is_crash:true` error.
+- [ ] ArkTS throw produces one next-launch crash error.
 - [ ] Native crash produces an error whose `error.stack` has a `libentry.so` frame
-      and whose `_dd.crash.binary_images` / `_dd.crash.arch` are populated.
-- [ ] Freeze produces a `_dd.crash.kind:freeze` error.
+      and whose `error.binary_images`, `build_id`, and `error.meta.code_type`
+      are populated.
+- [ ] Freeze produces an error with `error.category:"App Hang"`.
 - [ ] Confirm the real `hiAppEvent` `params` field shape matches `CrashEventMapper`
       (adjust the mapper if the on-device shape differs — see R1 plan checklist).

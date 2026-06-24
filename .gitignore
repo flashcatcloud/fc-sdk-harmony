@@ -22,5 +22,14 @@ oh-package-lock.json5
 local.properties
 *.iml
 
+# Local signing material
+*.cer
+*.p12
+*.p7b
+
+# Local demo credentials — real clientToken/applicationId live here; the
+# committed demo_config.example.json is the template the loader falls back to.
+entry/src/main/resources/rawfile/demo_config.json
+
 # OS
 .DS_Store
