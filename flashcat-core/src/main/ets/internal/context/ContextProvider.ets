@@ -2,8 +2,8 @@ import { common, bundleManager } from '@kit.AbilityKit';
 import { deviceInfo } from '@kit.BasicServicesKit';
 import { Configuration } from '../../config/Configuration';
 import { FlashcatContext, DeviceInfo, UserInfo, NetworkInfo } from '../../api/context/FlashcatContext';
+import { SDK_VERSION } from '../Version';
 
-const SDK_VERSION: string = '0.1.0';
 const SOURCE: string = 'harmony';
 
 /**
