@@ -60,6 +60,7 @@ export class FlashcatTrace {
     const tc: TraceContext = TraceContext.generate(FlashcatTrace.configuration.sampleRate);
     publishTraceId(FlashcatTrace.core, tc.traceId);
     headers['traceparent'] = tc.traceparent();
+    headers['tracestate'] = tc.tracestate();
     return headers;
   }
 }

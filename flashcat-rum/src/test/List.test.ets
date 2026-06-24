@@ -4,11 +4,13 @@ import { RumActionType, RumErrorSource, RumResourceKind, RumResourceMethod } fro
 import crashReportTests from './CrashReport.test';
 import phase2Tests from './Phase2AutoInstrumentation.test';
 import schemaAlignmentTests from './SchemaAlignment.test';
+import resourceKindTests from './ResourceKind.test';
 
 export default function testsuite(): void {
   crashReportTests();
   phase2Tests();
   schemaAlignmentTests();
+  resourceKindTests();
   describe('flashcat-rum', (): void => {
     it('defaultMonitorIsNoOp', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
       const monitor = GlobalRumMonitor.get();

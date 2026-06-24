@@ -4,7 +4,8 @@ import { SdkCore } from '@flashcatcloud/core';
 import { TraceContext } from './internal/TraceContext';
 import {
   isInjectionAllowed, publishTraceId,
-  publishResourceStarted, publishResourceCompleted, publishResourceFailed
+  publishResourceStarted, publishResourceCompleted, publishResourceFailed, contentTypeOf,
+  shouldInjectTraceHeaders, headerStringValue, setHeaderValue
 } from './internal/TraceInterceptor';
 import { FlashcatTrace } from './FlashcatTrace';
 import { TraceConfiguration } from './TraceConfiguration';
@@ -23,9 +24,9 @@ import { TraceConfiguration } from './TraceConfiguration';
  * Behaviour (see docs/PHASE-2-PLAN.md A2):
  * - emits `network_request_started/completed/failed` on the bus → the RUM feature
  *   turns them into a ResourceEvent (or a network ErrorEvent on failure);
- * - injects `traceparent` only when consent is GRANTED AND the host is first-party
- *   (TraceConfiguration.firstPartyHosts — empty = all hosts), so trace ids never
- *   leak to third parties;
+ * - injects `traceparent`/`tracestate` only when consent is GRANTED, the host is
+ *   first-party (TraceConfiguration.firstPartyHosts — empty = all hosts), and the
+ *   request does not already carry a `traceparent`;
  * - never throws beyond the underlying request's own error; always destroys the
  *   HttpRequest handle.
  *
@@ -44,10 +45,11 @@ export class FlashcatHttp {
     let traceId: string | undefined = undefined;
     let spanId: string | undefined = undefined;
     const host: string = FlashcatHttp.hostOf(reqUrl);
-    if (isInjectionAllowed(core) && config.isFirstParty(host)) {
+    if (isInjectionAllowed(core) && config.isFirstParty(host) && shouldInjectTraceHeaders(opts.header)) {
       const tc: TraceContext = TraceContext.generate(config.sampleRate);
       const header: Record<string, Object> = FlashcatHttp.headerRecord(opts);
-      header['traceparent'] = tc.traceparent();
+      setHeaderValue(header, 'traceparent', tc.traceparent());
+      setHeaderValue(header, 'tracestate', tc.tracestate(headerStringValue(header, 'tracestate')));
       opts.header = header;
       publishTraceId(core, tc.traceId);
       traceId = tc.traceId;
@@ -58,7 +60,8 @@ export class FlashcatHttp {
     const httpRequest: http.HttpRequest = http.createHttp();
     try {
       const response: http.HttpResponse = await httpRequest.request(reqUrl, opts);
-      publishResourceCompleted(core, key, FlashcatHttp.statusOf(response), FlashcatHttp.sizeOf(response));
+      publishResourceCompleted(core, key, FlashcatHttp.statusOf(response), FlashcatHttp.sizeOf(response),
+        contentTypeOf(response.header));
       return response;
     } catch (e) {
       publishResourceFailed(core, key, e instanceof Error ? e.message : 'network request failed');

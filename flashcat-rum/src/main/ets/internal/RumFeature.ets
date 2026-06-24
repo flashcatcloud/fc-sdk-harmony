@@ -179,11 +179,14 @@ export class RumFeature implements Feature, FeatureEventReceiver {
     if (m === null) {
       return;
     }
+    const mimeType: string = RumFeature.asString(event['mime_type']);
+    const kind: RumResourceKind =
+      mimeType.length > 0 ? RumFeature.resourceKindFromMimeType(mimeType) : RumResourceKind.NATIVE;
     m.stopResource(
       RumFeature.asString(event['key']),
       RumFeature.asNumber(event['status_code']),
       RumFeature.asNumber(event['size']),
-      RumResourceKind.NATIVE);
+      kind);
   }
 
   private onNetworkRequestFailed(event: Record<string, Object>): void {
@@ -216,6 +219,42 @@ export class RumFeature implements Feature, FeatureEventReceiver {
     } finally {
       this.handlingError = false;
     }
+  }
+
+  /**
+   * Classify a resource by its response Content-Type, mirroring the Datadog
+   * Android (`RumResourceKind.fromMimeType`) and iOS (`RUMResourceType(response:)`)
+   * mapping so HarmonyOS reports the same resource types. Unknown or missing
+   * content-type → NATIVE (API/json).
+   */
+  static resourceKindFromMimeType(mimeType: string): RumResourceKind {
+    const slash: number = mimeType.indexOf('/');
+    if (slash < 0) {
+      return RumResourceKind.NATIVE;
+    }
+    const baseType: string = mimeType.substring(0, slash).trim().toLowerCase();
+    let subtype: string = mimeType.substring(slash + 1).toLowerCase();
+    const semi: number = subtype.indexOf(';');
+    if (semi >= 0) {
+      subtype = subtype.substring(0, semi);
+    }
+    subtype = subtype.trim();
+    if (baseType === 'image') {
+      return RumResourceKind.IMAGE;
+    }
+    if (baseType === 'video' || baseType === 'audio') {
+      return RumResourceKind.MEDIA;
+    }
+    if (baseType === 'font') {
+      return RumResourceKind.FONT;
+    }
+    if (baseType === 'text' && subtype === 'css') {
+      return RumResourceKind.CSS;
+    }
+    if (baseType === 'text' && subtype === 'javascript') {
+      return RumResourceKind.JS;
+    }
+    return RumResourceKind.NATIVE;
   }
 
   private static asString(value: Object | undefined): string {
