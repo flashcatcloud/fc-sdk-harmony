@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { extractElfBuildId } from '../src/elf.ts';
+import { extractElfBuildId } from '../dist/elf.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const fixture = path.join(here, 'testdata', 'libfixture-arm64.so');

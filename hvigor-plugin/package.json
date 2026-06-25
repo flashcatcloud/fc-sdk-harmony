@@ -4,16 +4,19 @@
   "description": "FlashCat hvigor plugin: upload HarmonyOS ArkTS sourcemaps + native .so debug symbols to fc-rum for crash symbolication.",
   "license": "Apache-2.0",
   "author": "FlashCat",
-  "type": "module",
+  "type": "commonjs",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
-  "files": ["dist", "README.md"],
+  "files": [
+    "dist",
+    "README.md"
+  ],
   "publishConfig": {
     "access": "public"
   },
   "scripts": {
     "build": "tsc -b",
-    "test": "node --experimental-strip-types --test test/*.test.ts",
+    "test": "tsc -b && node --experimental-strip-types --test test/*.test.ts",
     "prepublishOnly": "npm run build"
   },
   "engines": {
