@@ -2,8 +2,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   ORIGIN, TYPE_SOURCEMAP, TYPE_SYMBOL_FILE, sourcemapEvent, symbolFileEvent, type UploadConfig
-} from '../src/upload.ts';
-import type { NativeSymbol } from '../src/collect.ts';
+} from '../dist/upload.js';
+import type { NativeSymbol } from '../dist/collect.js';
 
 const cfg: UploadConfig = {
   endpoint: 'https://browser.flashcat.cloud',
