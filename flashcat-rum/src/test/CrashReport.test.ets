@@ -46,5 +46,18 @@ export default function crashReportTests(): void {
 
       expect(text).assertEqual('Error: boom\n    at Demo.throwArkTsError (Index.ets:68:13)');
     });
+
+    it('marksUnhandledRejectionsAsPlainPromiseErrors',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        const err: Error = new Error('rejected');
+        err.stack = 'Error: rejected\n    at request (Api.ets:1:2)';
+
+        const text: string = RumFeature.rejectionErrorText(err);
+        const attrs: Record<string, Object> = RumFeature.rejectionAttributes();
+
+        expect(text.indexOf('Error: rejected')).assertEqual(0);
+        expect(attrs['error.category']).assertEqual('Unhandled Promise Rejection');
+        expect(attrs['error.source_type']).assertEqual('promise');
+      });
   });
 }

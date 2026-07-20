@@ -1,4 +1,5 @@
 import { RumErrorSource } from './RumErrorSourceLite';
+import { CrashIncidentRecord } from './CrashIncident';
 
 /**
  * Pure translation of a hiAppEvent system-event payload (the `params` object of an
@@ -37,6 +38,25 @@ export class CrashEventMapper {
 
   static fromAppFreeze(params: Record<string, Object>): Record<string, Object> {
     return CrashEventMapper.build(params, 'freeze');
+  }
+
+  static fromPendingIncident(incident: CrashIncidentRecord): Record<string, Object> {
+    const exception: Record<string, Object> = {
+      'name': incident.exceptionName,
+      'message': incident.message,
+      'stack': incident.stack
+    };
+    const event: Record<string, Object> = CrashEventMapper.fromAppCrash({
+      'crash_type': 'JsError',
+      'exception': exception
+    });
+    event['incident_id'] = incident.incidentId;
+    event['fingerprint'] = incident.fingerprint;
+    event['timestamp_ms'] = incident.timestampMs;
+    event['original_session_id'] = incident.sessionId;
+    event['original_view_id'] = incident.viewId;
+    event['original_view_name'] = incident.viewName;
+    return event;
   }
 
   private static build(params: Record<string, Object>, kind: string): Record<string, Object> {

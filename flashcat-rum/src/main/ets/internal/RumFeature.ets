@@ -1,5 +1,15 @@
-import { SdkCore, Feature, FeatureEventReceiver, RUM_FEATURE_NAME, FlashcatLog } from '@flashcatcloud/core';
+import {
+  Flashcat,
+  SdkCore,
+  Feature,
+  FeatureScope,
+  FeatureEventReceiver,
+  RUM_FEATURE_NAME,
+  CRASH_FEATURE_NAME,
+  FlashcatLog
+} from '@flashcatcloud/core';
 import { errorManager } from '@kit.AbilityKit';
+import { process } from '@kit.ArkTS';
 import { RumConfiguration } from '../RumConfiguration';
 import { RumErrorSource, RumResourceKind, RumResourceMethod } from '../RumTypes';
 import { GlobalRumMonitor } from '../RumMonitor';
@@ -19,6 +29,8 @@ export class RumFeature implements Feature, FeatureEventReceiver {
   private readonly configuration: RumConfiguration;
   private monitor: DefaultRumMonitor | null = null;
   private errorObserverId: number = -1;
+  private rejectionObserver: errorManager.UnhandledRejectionObserver | null = null;
+  private activeJsCrashPolicy: string | null = null;
   private handlingError: boolean = false;
 
   constructor(core: SdkCore, configuration: RumConfiguration) {
@@ -45,18 +57,32 @@ export class RumFeature implements Feature, FeatureEventReceiver {
       this.errorObserverId = errorManager.on('error', {
         onUnhandledException: (errMsg: string) => {
           FlashcatLog.d(`rum.error: onUnhandledException len=${errMsg.length}`);
-          this.reportUnhandledError(errMsg);
+          this.reportObservedError(errMsg, 'unhandled');
         },
         onException: (errObject: Error) => {
           const text: string = RumFeature.unhandledErrorText(errObject);
           FlashcatLog.d(`rum.error: onException len=${text.length}`);
-          this.reportUnhandledError(text);
+          this.reportObservedError(text, 'exception');
         }
       });
       FlashcatLog.d(`rum.error: observer registered id=${this.errorObserverId}`);
     } catch (e) {
       this.errorObserverId = -1;
       FlashcatLog.e(`rum.error: observer registration failed: ${RumFeature.errorText(e)}`);
+    }
+
+    // Promise rejections are ordinary RUM errors. They are not terminating
+    // ArkTS crashes, so they never enter the pending store or policy path.
+    try {
+      const observer: errorManager.UnhandledRejectionObserver = (reason: Object): void => {
+        this.reportUnhandledRejection(reason);
+      };
+      errorManager.on('unhandledRejection', observer);
+      this.rejectionObserver = observer;
+      FlashcatLog.d('rum.error: unhandled-rejection observer registered');
+    } catch (e) {
+      this.rejectionObserver = null;
+      FlashcatLog.e(`rum.error: unhandled-rejection registration failed: ${RumFeature.errorText(e)}`);
     }
 
     // Network auto-instrumentation arrives via the bus (Trace interceptor →
@@ -73,6 +99,15 @@ export class RumFeature implements Feature, FeatureEventReceiver {
       }
       this.errorObserverId = -1;
     }
+    if (this.rejectionObserver !== null) {
+      try {
+        errorManager.off('unhandledRejection', this.rejectionObserver);
+      } catch (_e) {
+        // already removed or unsupported on this platform build
+      }
+      this.rejectionObserver = null;
+    }
+    this.activeJsCrashPolicy = null;
     if (this.monitor !== null) {
       this.monitor.stopKeepAlive(); // stop the keep-alive timer so it doesn't leak
     }
@@ -97,6 +132,10 @@ export class RumFeature implements Feature, FeatureEventReceiver {
       this.onNetworkRequestFailed(event);
     } else if (type === 'crash_report') {
       this.onCrashReport(event);
+    } else if (type === 'js_crash_policy') {
+      const policy: string = RumFeature.asString(event['policy']);
+      this.activeJsCrashPolicy = policy.length > 0 ? policy : null;
+      FlashcatLog.d(`rum.error: crash policy owner enabled policy=${policy}`);
     } else if (type === 'keep_alive') {
       // App backgrounded — refresh the active view so its final time_spent is sent
       // before the batch is flushed (published by the core on background).
@@ -125,7 +164,8 @@ export class RumFeature implements Feature, FeatureEventReceiver {
       RumFeature.asString(event['stack']),
       true,
       'unhandled',
-      RumFeature.crashAttributes(event));
+      RumFeature.crashAttributes(event),
+      RumFeature.optionalPositiveNumber(event['timestamp_ms']));
   }
 
   /** Pure: extract native-symbolication metadata from a crash_report bus event. */
@@ -148,6 +188,10 @@ export class RumFeature implements Feature, FeatureEventReceiver {
     const sourceType: Object | undefined = event['source_type'];
     attributes['error.source_type'] =
       typeof sourceType === 'string' && sourceType.length > 0 ? sourceType : 'harmony';
+    RumFeature.copyNonEmptyString(event, attributes, 'incident_id', 'crash.incident_id');
+    RumFeature.copyNonEmptyString(event, attributes, 'original_session_id', 'crash.original_session_id');
+    RumFeature.copyNonEmptyString(event, attributes, 'original_view_id', 'crash.original_view_id');
+    RumFeature.copyNonEmptyString(event, attributes, 'original_view_name', 'crash.original_view_name');
     return attributes;
   }
 
@@ -199,26 +243,114 @@ export class RumFeature implements Feature, FeatureEventReceiver {
       RumFeature.asString(event['message']));
   }
 
-  private reportUnhandledError(stackText: string): void {
+  private reportObservedError(stackText: string, callback: string): void {
     if (this.handlingError) {
       FlashcatLog.d('rum.error: skipped re-entrant unhandled error');
       return;
     }
     this.handlingError = true;
+    let asyncReportAttempted: boolean = false;
     try {
-      const m: DefaultRumMonitor | null = this.monitor;
-      if (m !== null) {
-        FlashcatLog.d(`rum.error: report unhandled firstLine="${RumFeature.firstLine(stackText)}"`);
-        m.reportError(RumFeature.firstLine(stackText), RumErrorSource.SOURCE, stackText, false, 'unhandled');
-      } else {
-        FlashcatLog.d('rum.error: dropped because monitor is null');
+      // The crash policy is active only after FlashcatCrash.enable publishes an
+      // owner. Without that owner, this branch is skipped and RUM retains its
+      // pre-policy observe-and-report behavior for backward compatibility.
+      if (this.activeJsCrashPolicy !== null) {
+        const crash: FeatureScope | null = this.core.getFeature(CRASH_FEATURE_NAME);
+        if (crash !== null) {
+          const control: Record<string, Object> = {
+            'type': 'js_crash_callback',
+            'target': CRASH_FEATURE_NAME,
+            'callback': callback,
+            'text': stackText,
+            'timestamp_ms': Date.now(),
+            // Safe defaults preserve the legacy report if the receiver is absent.
+            'report_async': true,
+            'should_exit': false
+          };
+          crash.sendEvent(control);
+          if (control['duplicate'] === true) {
+            return;
+          }
+          if (control['report_async'] === true) {
+            asyncReportAttempted = true;
+            this.reportUnhandledToMonitor(stackText);
+          }
+          if (control['should_exit'] === true) {
+            this.flushAndTerminate(RumFeature.asString(control['policy']));
+          }
+          return;
+        }
       }
+
+      asyncReportAttempted = true;
+      this.reportUnhandledToMonitor(stackText);
     } catch (e) {
-      // Swallow — the error handler must not throw.
-      FlashcatLog.e(`rum.error: report failed: ${RumFeature.errorText(e)}`);
+      FlashcatLog.e(`rum.error: policy path failed: ${RumFeature.errorText(e)}`);
+      if (!asyncReportAttempted) {
+        try {
+          this.reportUnhandledToMonitor(stackText);
+        } catch (fallbackError) {
+          FlashcatLog.e(`rum.error: fallback report failed: ${RumFeature.errorText(fallbackError)}`);
+        }
+      }
     } finally {
       this.handlingError = false;
     }
+  }
+
+  private reportUnhandledToMonitor(stackText: string): void {
+    const m: DefaultRumMonitor | null = this.monitor;
+    if (m !== null) {
+      FlashcatLog.d(`rum.error: report unhandled firstLine="${RumFeature.firstLine(stackText)}"`);
+      m.reportError(RumFeature.firstLine(stackText), RumErrorSource.SOURCE, stackText, false, 'unhandled');
+    } else {
+      FlashcatLog.d('rum.error: dropped because monitor is null');
+    }
+  }
+
+  private reportUnhandledRejection(reason: Object): void {
+    if (this.handlingError) {
+      FlashcatLog.d('rum.error: skipped re-entrant unhandled rejection');
+      return;
+    }
+    this.handlingError = true;
+    try {
+      const text: string = RumFeature.rejectionErrorText(reason);
+      const m: DefaultRumMonitor | null = this.monitor;
+      if (m !== null) {
+        m.reportError(
+          RumFeature.firstLine(text),
+          RumErrorSource.SOURCE,
+          text,
+          false,
+          'unhandled',
+          RumFeature.rejectionAttributes());
+      } else {
+        FlashcatLog.d('rum.error: rejection dropped because monitor is null');
+      }
+    } catch (e) {
+      FlashcatLog.e(`rum.error: rejection report failed: ${RumFeature.errorText(e)}`);
+    } finally {
+      this.handlingError = false;
+    }
+  }
+
+  private flushAndTerminate(policy: string): void {
+    try {
+      // This rolls all synchronous writers before termination. The uploader is
+      // asynchronous; the durable crash-pending file remains the delivery source.
+      Flashcat.flush(this.core.name);
+    } catch (e) {
+      FlashcatLog.e(`rum.error: pre-exit flush failed: ${RumFeature.errorText(e)}`);
+    }
+    if (policy === 'REPORT_AND_RECOVER') {
+      // TODO Phase 2: invoke appRecovery with crash-loop protection.
+      FlashcatLog.d('rum.error: REPORT_AND_RECOVER falls back to REPORT_THEN_EXIT');
+    }
+    // ProcessManager.exit restores the host's terminating crash semantics without
+    // requiring an Ability context or synthesizing a second native abort crash.
+    const manager: process.ProcessManager = new process.ProcessManager();
+    manager.exit(1);
   }
 
   /**
@@ -284,6 +416,17 @@ export class RumFeature implements Feature, FeatureEventReceiver {
     return `${name}: ${errObject.message}`;
   }
 
+  static rejectionErrorText(reason: Object): string {
+    return reason instanceof Error ? RumFeature.unhandledErrorText(reason) : `${reason}`;
+  }
+
+  static rejectionAttributes(): Record<string, Object> {
+    return {
+      'error.category': 'Unhandled Promise Rejection',
+      'error.source_type': 'promise'
+    };
+  }
+
   private static firstLine(text: string): string {
     const idx: number = text.indexOf('\n');
     return idx >= 0 ? text.substring(0, idx) : text;
@@ -291,5 +434,17 @@ export class RumFeature implements Feature, FeatureEventReceiver {
 
   private static errorText(value: Object): string {
     return value instanceof Error ? value.message : `${value}`;
+  }
+
+  private static optionalPositiveNumber(value: Object | undefined): number | undefined {
+    return typeof value === 'number' && value > 0 ? value : undefined;
+  }
+
+  private static copyNonEmptyString(source: Record<string, Object>, target: Record<string, Object>,
+    sourceKey: string, targetKey: string): void {
+    const value: Object | undefined = source[sourceKey];
+    if (typeof value === 'string' && value.length > 0) {
+      target[targetKey] = value;
+    }
   }
 }
