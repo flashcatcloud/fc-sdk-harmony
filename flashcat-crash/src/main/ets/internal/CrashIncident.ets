@@ -34,6 +34,18 @@ export class CrashFingerprint {
   static partsFromText(text: string): CrashExceptionParts {
     const stack: string = CrashFingerprint.truncate(text, MAX_STACK_CHARS);
     const lines: string[] = text.split('\n');
+    // errorManager.on('error') callback text uses a labeled three-part format
+    // ("Error name:<n>\nError message:<m>\nStacktrace:\n..."). Parse it
+    // field-wise so the live fingerprint matches the hiAppEvent fault, whose
+    // exception name/message arrive already separated. Falling through to the
+    // header heuristic here made the two sides disagree ("Error name:Error"
+    // became the message) and broke cross-launch deduplication.
+    if (lines.length >= 2 && lines[0].startsWith('Error name:') && lines[1].startsWith('Error message:')) {
+      return new CrashExceptionParts(
+        lines[0].substring('Error name:'.length).trim(),
+        lines[1].substring('Error message:'.length).trim(),
+        stack);
+    }
     const header: string = lines.length > 0 ? lines[0].trim() : '';
     const separator: number = header.indexOf(':');
     if (separator > 0) {

@@ -23,6 +23,23 @@ export default function crashIncidentTests(): void {
       expect(first).assertEqual(second);
     });
 
+    it('parsesLabeledErrorManagerTextIntoParts', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+      const observerText: string =
+        'Error name:RangeError\nError message:index out of bounds\nStacktrace:\n    at pick (entry/src/main/ets/pages/Index.ets:12:5)';
+      const parts = CrashFingerprint.partsFromText(observerText);
+
+      expect(parts.name).assertEqual('RangeError');
+      expect(parts.message).assertEqual('index out of bounds');
+      // Live observer text and a watcher-style separated report must agree on
+      // the fingerprint, or cross-launch dedup silently stops working.
+      const live: string = CrashFingerprint.fromText(observerText);
+      const watcher: string = CrashFingerprint.fromParts(
+        'RangeError',
+        'index out of bounds',
+        'RangeError: index out of bounds\n    at pick (entry/src/main/ets/pages/Index.ets:12:5)');
+      expect(live).assertEqual(watcher);
+    });
+
     it('changesWhenMessageChanges', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
       const first: string = CrashFingerprint.fromParts(
         'Error', 'first', 'Error: first\n    at run (/data/app/Index.ets:10:2)');
