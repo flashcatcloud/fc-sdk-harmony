@@ -1,5 +1,7 @@
 import { common } from '@kit.AbilityKit';
+import { taskpool } from '@kit.ArkTS';
 import { router } from '@kit.ArkUI';
+import { hiAppEvent, hilog } from '@kit.PerformanceAnalysisKit';
 import { rcp } from '@kit.RemoteCommunicationKit';
 import { FlashcatRum, RumActionType, RumErrorSource, RumResourceKind, RumResourceMethod } from '@flashcatcloud/rum';
 import { FlashcatTrace, FlashcatHttp } from '@flashcatcloud/trace';
@@ -7,6 +9,16 @@ import { http } from '@kit.NetworkKit';
 import { TrackingConsent } from '@flashcatcloud/core';
 import testNapi from 'libentry.so';
 import { DemoSdk } from '../common/DemoSdk';
+import { SpikeMode, SpikeModeStore } from '../common/SpikeMode';
+
+const SPIKE_DOMAIN: number = 0x0000;
+const SPIKE_TAG: string = 'FCSpike';
+const SPIKE_FAULT_WATCHER_NAME: string = 'fc_spike_fault_probe';
+
+@Concurrent
+function spikeTaskPoolThrow(): void {
+  throw new Error('FCSpike: taskpool worker');
+}
 
 /**
  * FlashCat SDK manual-verification harness. Grouped by telemetry type so each
@@ -22,12 +34,109 @@ struct Index {
   @State statusText: string = 'SDK not initialized';
   @State sessionId: string = '—';
   @State log: string = '';
+  @State spikeMode: SpikeMode = SpikeMode.OFF;
+  @State spikeLaunchCounter: number = 0;
+  @State spikeLastCrashTimestamp: number = 0;
+  @State interactivityProbeCount: number = 0;
+  @StorageProp('fcSpikeRecoveredPayload') recoveredPayload: string = '';
 
   private context: common.Context = getContext(this) as common.Context;
   private resourceSeq: number = 0;
+  private faultPackageHolder: hiAppEvent.AppEventPackageHolder | null = null;
+  private faultWatcherRegistered: boolean = false;
+
+  aboutToAppear(): void {
+    try {
+      this.spikeMode = SpikeModeStore.readMode(this.context);
+      this.spikeLaunchCounter = SpikeModeStore.readLaunchCounter(this.context);
+      this.spikeLastCrashTimestamp = SpikeModeStore.readLastCrashTimestamp(this.context);
+      this.appendSpike(`page ready; persisted mode=${this.spikeMode}; launch=${this.spikeLaunchCounter}`);
+    } catch (error) {
+      this.appendSpikeError(`failed to read spike state: ${errorText(error)}`);
+    }
+    this.registerFaultWatcher();
+  }
+
+  aboutToDisappear(): void {
+    if (!this.faultWatcherRegistered) {
+      return;
+    }
+    try {
+      const watcher: hiAppEvent.Watcher = { name: SPIKE_FAULT_WATCHER_NAME };
+      hiAppEvent.removeWatcher(watcher);
+      this.appendSpike('fault watcher removed');
+    } catch (error) {
+      this.appendSpikeError(`fault watcher removal failed: ${errorText(error)}`);
+    }
+    this.faultWatcherRegistered = false;
+    this.faultPackageHolder = null;
+  }
 
   private append(line: string): void {
     this.log = `• ${line}\n${this.log}`;
+  }
+
+  private appendSpike(line: string): void {
+    hilog.info(SPIKE_DOMAIN, SPIKE_TAG, '%{public}s', line);
+    this.append(`[FCSpike] ${line}`);
+  }
+
+  private appendSpikeError(line: string): void {
+    hilog.error(SPIKE_DOMAIN, SPIKE_TAG, '%{public}s', line);
+    this.append(`[FCSpike] ${line}`);
+  }
+
+  private selectSpikeMode(mode: SpikeMode): void {
+    SpikeModeStore.writeMode(this.context, mode).then((): void => {
+      this.spikeMode = mode;
+      this.appendSpike(`persisted mode → ${mode}; cold-relaunch before testing`);
+    }).catch((error: Object): void => {
+      this.appendSpikeError(`failed to persist mode ${mode}: ${errorText(error)}`);
+    });
+  }
+
+  private registerFaultWatcher(): void {
+    if (this.faultWatcherRegistered) {
+      return;
+    }
+    const watcher: hiAppEvent.Watcher = {
+      name: SPIKE_FAULT_WATCHER_NAME,
+      appEventFilters: [{
+        domain: hiAppEvent.domain.OS,
+        names: [hiAppEvent.event.APP_CRASH, hiAppEvent.event.APP_FREEZE]
+      }]
+    };
+    try {
+      this.faultPackageHolder = hiAppEvent.addWatcher(watcher);
+      this.faultWatcherRegistered = true;
+      this.appendSpike('fault watcher ready; use Query recent faults after launch');
+    } catch (error) {
+      this.appendSpikeError(`fault watcher registration failed: ${errorText(error)}`);
+    }
+  }
+
+  private queryRecentFaults(): void {
+    const holder: hiAppEvent.AppEventPackageHolder | null = this.faultPackageHolder;
+    if (holder === null) {
+      this.appendSpikeError('fault query unavailable: watcher holder is missing');
+      return;
+    }
+    let count: number = 0;
+    let eventPackage: hiAppEvent.AppEventPackage | null = holder.takeNext();
+    while (eventPackage !== null) {
+      this.appendSpike(
+        `fault package id=${eventPackage.packageId} row=${eventPackage.row} size=${eventPackage.size}`);
+      for (const eventInfo of eventPackage.data) {
+        count++;
+        this.appendSpike(`fault #${count}: ${JSON.stringify(eventInfo)}`);
+      }
+      eventPackage = holder.takeNext();
+    }
+    if (count === 0) {
+      this.appendSpike('no queued APP_CRASH / APP_FREEZE faults; wait for collection and retry');
+    } else {
+      this.appendSpike(`fault query complete; events=${count}`);
+    }
   }
 
   private initSdk(): void {
@@ -92,7 +201,7 @@ struct Index {
   }
 
   private triggerNativeCrash(): void {
-    this.append('triggering native SIGSEGV (libentry.so)…');
+    this.appendSpikeError('triggering native SIGSEGV (libentry.so)…');
     testNapi.triggerNativeCrash();
   }
 
@@ -132,6 +241,25 @@ struct Index {
       })
   }
 
+  @Builder
+  spikeModeButton(label: string, mode: SpikeMode) {
+    Button(label)
+      .width('32%')
+      .fontSize(11)
+      .fontColor(this.spikeMode === mode ? '#FFFFFF' : '#333333')
+      .backgroundColor(this.spikeMode === mode ? '#166FF6' : '#E8E8E8')
+      .onClick(() => { this.selectSpikeMode(mode); })
+  }
+
+  @Builder
+  spikeBtn(label: string, action: () => void) {
+    Button(label)
+      .width('100%')
+      .fontSize(14)
+      .margin({ top: 5 })
+      .onClick(() => { action(); })
+  }
+
   build() {
     Column() {
       Text('FlashCat SDK Demo')
@@ -141,6 +269,59 @@ struct Index {
 
       Scroll() {
         Column() {
+          // ---- Phase 0 crash semantics spike (does not require SDK init) ----
+          this.sectionTitle('Spike: crash soft-landing (Phase 0)')
+          if (this.recoveredPayload.length > 0) {
+            Text(`RECOVERED FROM CRASH\nRestored: ${this.recoveredPayload}`)
+              .fontSize(14)
+              .fontWeight(FontWeight.Bold)
+              .fontColor('#8A2A00')
+              .backgroundColor('#FFF0E5')
+              .border({ width: 1, color: '#FF8A3D' })
+              .borderRadius(6)
+              .padding(10)
+              .width('100%')
+              .margin({ top: 5, bottom: 5 })
+          }
+          Text(`Persisted mode: ${this.spikeMode}`)
+            .fontSize(13).fontWeight(FontWeight.Bold).width('100%').margin({ top: 4 })
+          Text('Mode changes take effect on the next cold launch because the observer is registered in onCreate.')
+            .fontSize(11).fontColor('#8A5A00').width('100%').margin({ top: 2, bottom: 4 })
+          Row() {
+            this.spikeModeButton('OFF', SpikeMode.OFF)
+            this.spikeModeButton('OBSERVE', SpikeMode.OBSERVE_ONLY)
+            this.spikeModeButton('RECOVER', SpikeMode.RECOVER)
+          }.width('100%').justifyContent(FlexAlign.SpaceBetween)
+          Text(`Launch counter: ${this.spikeLaunchCounter} · Last crash: ${formatTimestamp(this.spikeLastCrashTimestamp)}`)
+            .fontSize(11).fontColor('#666666').width('100%').margin({ top: 5 })
+          this.spikeBtn('a · Main-thread synchronous throw', () => {
+            this.appendSpikeError('throwing main-thread synchronous error now');
+            throw new Error('FCSpike: sync main-thread');
+          })
+          this.spikeBtn('b · Async callback throw (setTimeout 0)', () => {
+            this.appendSpike('scheduled async callback throw');
+            setTimeout((): void => {
+              this.appendSpikeError('throwing from async callback now');
+              throw new Error('FCSpike: async callback');
+            }, 0);
+          })
+          this.spikeBtn('c · Unhandled Promise rejection', () => {
+            this.appendSpikeError('creating unhandled rejected Promise now');
+            Promise.reject(new Error('FCSpike: unhandled promise rejection'));
+          })
+          this.spikeBtn('d · TaskPool worker throw (uncaught execute result)', () => {
+            this.appendSpikeError('executing TaskPool function that throws');
+            taskpool.execute(spikeTaskPoolThrow);
+          })
+          this.spikeBtn('e · Native crash (SIGSEGV)', () => { this.triggerNativeCrash(); })
+          this.spikeBtn('Post-crash interactivity probe', () => {
+            this.interactivityProbeCount++;
+            this.appendSpike(`interactivity probe count=${this.interactivityProbeCount}`);
+          })
+          this.spikeBtn('Query recent APP_CRASH / APP_FREEZE faults', () => {
+            this.queryRecentFaults();
+          })
+
           // ---- Setup ----
           this.sectionTitle('1 · Setup')
           Row() {
@@ -260,4 +441,12 @@ struct Index {
 function shortUrl(url: string): string {
   const noScheme: string = url.replace('https://', '').replace('http://', '');
   return noScheme.length > 36 ? noScheme.substring(0, 36) + '…' : noScheme;
+}
+
+function formatTimestamp(timestamp: number): string {
+  return timestamp > 0 ? new Date(timestamp).toISOString() : 'none';
+}
+
+function errorText(value: Object): string {
+  return value instanceof Error ? value.message : `${value}`;
 }
