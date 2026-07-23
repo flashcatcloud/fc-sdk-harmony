@@ -23,6 +23,19 @@ export default function crashReportTests(): void {
       expect(attrs['error.category']).assertEqual('Exception');
     });
 
+    it('copiesRecoveredCrashMarker',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        const event: Record<string, Object> = {
+          'type': 'crash_report',
+          'crash_kind': 'crash',
+          'crash.recovered': true
+        };
+
+        const attrs: Record<string, Object> = RumFeature.crashAttributes(event);
+
+        expect(attrs['crash.recovered']).assertEqual(true);
+      });
+
     it('omitsEmptyAttributesForArkTsCrash', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
       const event: Record<string, Object> = {
         'type': 'crash_report',

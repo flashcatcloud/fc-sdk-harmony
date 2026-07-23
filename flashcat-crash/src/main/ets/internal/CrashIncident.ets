@@ -159,6 +159,100 @@ export class LiveCrashIncidentGuard {
   }
 }
 
+/** Result of evaluating one recoverable crash against persisted loop history. */
+export class CrashLoopDecision {
+  readonly allowRestart: boolean;
+  readonly updatedTimestamps: number[];
+
+  constructor(allowRestart: boolean, updatedTimestamps: number[]) {
+    this.allowRestart = allowRestart;
+    this.updatedTimestamps = updatedTimestamps;
+  }
+}
+
+/** Pure crash-loop decision and sidecar serialization helpers. */
+export class CrashLoopGuard {
+  static decide(
+    nowMs: number,
+    persistedTimestamps: number[],
+    threshold: number,
+    windowMs: number,
+    cooldownMs: number
+  ): CrashLoopDecision {
+    const safeThreshold: number = threshold < 1 ? 1 : threshold;
+    const safeWindowMs: number = windowMs < 1 ? 1 : windowMs;
+    const safeCooldownMs: number = cooldownMs < 1 ? 1 : cooldownMs;
+    const valid: number[] = [];
+    let newestTimestamp: number = 0;
+    for (let i: number = 0; i < persistedTimestamps.length; i++) {
+      const timestamp: number = persistedTimestamps[i];
+      if (timestamp > 0) {
+        valid.push(timestamp);
+        if (timestamp > newestTimestamp) {
+          newestTimestamp = timestamp;
+        }
+      }
+    }
+
+    const cooledDown: boolean =
+      newestTimestamp > 0 && nowMs - newestTimestamp >= safeCooldownMs;
+    const source: number[] = cooledDown ? [] : valid;
+    const previouslyTripped: boolean = source.length >= safeThreshold;
+    if (previouslyTripped) {
+      // Preserve a bounded threshold-sized history as the persisted tripped
+      // state. Each blocked crash becomes the newest timestamp, so recovery
+      // remains disabled until the app has stayed crash-free for the cooldown.
+      const blocked: number[] = [];
+      let start: number = source.length - safeThreshold + 1;
+      if (start < 0) {
+        start = 0;
+      }
+      for (let i: number = start; i < source.length; i++) {
+        blocked.push(source[i]);
+      }
+      blocked.push(nowMs);
+      return new CrashLoopDecision(false, blocked);
+    }
+
+    const cutoffMs: number = nowMs - safeWindowMs;
+    const updated: number[] = [];
+    for (let i: number = 0; i < source.length; i++) {
+      if (source[i] >= cutoffMs) {
+        updated.push(source[i]);
+      }
+    }
+    updated.push(nowMs);
+    return new CrashLoopDecision(updated.length < safeThreshold, updated);
+  }
+
+  static serializeHistory(timestamps: number[]): string {
+    return JSON.stringify(timestamps);
+  }
+
+  static parseHistory(serialized: string): number[] {
+    const timestamps: number[] = [];
+    if (serialized.length === 0) {
+      return timestamps;
+    }
+    try {
+      const value: Object = JSON.parse(serialized) as Object;
+      if (!Array.isArray(value)) {
+        return timestamps;
+      }
+      const items: Array<Object> = value as Array<Object>;
+      for (let i: number = 0; i < items.length; i++) {
+        const item: Object = items[i];
+        if (typeof item === 'number' && item > 0) {
+          timestamps.push(item);
+        }
+      }
+    } catch (_error) {
+      return [];
+    }
+    return timestamps;
+  }
+}
+
 /** Small persisted metadata entry for a pending incident already replayed to RUM. */
 export class ConsumedCrashIncident {
   readonly incidentId: string;

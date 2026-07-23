@@ -8,6 +8,7 @@ export const CRASH_STORAGE_TARGET: string = '__flashcat_crash_storage';
 const INCIDENT_PREFIX: string = 'incident-';
 const INCIDENT_SUFFIX: string = '.json';
 const CONSUMED_FILE: string = 'consumed.json';
+const LOOP_FILE: string = 'loop.json';
 
 /**
  * Core-owned synchronous crash storage. Feature modules intentionally do not
@@ -37,6 +38,12 @@ export class CrashPendingStore implements FeatureEventReceiver {
     } else if (type === 'crash_storage_write_consumed') {
       event['success'] = this.writeFile(
         `${this.rootDir}/${CONSUMED_FILE}`,
+        CrashPendingStore.stringValue(event['serialized']));
+    } else if (type === 'crash_storage_read_loop') {
+      event['serialized'] = this.readSidecar(LOOP_FILE);
+    } else if (type === 'crash_storage_write_loop') {
+      event['success'] = this.writeFile(
+        `${this.rootDir}/${LOOP_FILE}`,
         CrashPendingStore.stringValue(event['serialized']));
     }
   }
@@ -86,8 +93,12 @@ export class CrashPendingStore implements FeatureEventReceiver {
   }
 
   private readConsumed(): string {
+    return this.readSidecar(CONSUMED_FILE);
+  }
+
+  private readSidecar(fileName: string): string {
     try {
-      return fs.readTextSync(`${this.rootDir}/${CONSUMED_FILE}`);
+      return fs.readTextSync(`${this.rootDir}/${fileName}`);
     } catch (_error) {
       return '';
     }

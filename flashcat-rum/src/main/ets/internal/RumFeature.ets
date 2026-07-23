@@ -10,6 +10,7 @@ import {
 } from '@flashcatcloud/core';
 import { errorManager } from '@kit.AbilityKit';
 import { process } from '@kit.ArkTS';
+import appRecovery from '@ohos.app.ability.appRecovery';
 import { RumConfiguration } from '../RumConfiguration';
 import { RumErrorSource, RumResourceKind, RumResourceMethod } from '../RumTypes';
 import { GlobalRumMonitor } from '../RumMonitor';
@@ -192,6 +193,9 @@ export class RumFeature implements Feature, FeatureEventReceiver {
     RumFeature.copyNonEmptyString(event, attributes, 'original_session_id', 'crash.original_session_id');
     RumFeature.copyNonEmptyString(event, attributes, 'original_view_id', 'crash.original_view_id');
     RumFeature.copyNonEmptyString(event, attributes, 'original_view_name', 'crash.original_view_name');
+    if (event['crash.recovered'] === true) {
+      attributes['crash.recovered'] = true;
+    }
     return attributes;
   }
 
@@ -273,10 +277,16 @@ export class RumFeature implements Feature, FeatureEventReceiver {
           }
           if (control['report_async'] === true) {
             asyncReportAttempted = true;
-            this.reportUnhandledToMonitor(stackText);
+            try {
+              this.reportUnhandledToMonitor(stackText);
+            } catch (reportError) {
+              // Reporting failure must never bypass policy-driven termination.
+              FlashcatLog.e(
+                `rum.error: async crash report failed: ${RumFeature.errorText(reportError)}`);
+            }
           }
           if (control['should_exit'] === true) {
-            this.flushAndTerminate(RumFeature.asString(control['policy']));
+            this.flushAndTerminate(control['recover'] === true);
           }
           return;
         }
@@ -335,7 +345,7 @@ export class RumFeature implements Feature, FeatureEventReceiver {
     }
   }
 
-  private flushAndTerminate(policy: string): void {
+  private flushAndTerminate(recover: boolean): void {
     try {
       // This rolls all synchronous writers before termination. The uploader is
       // asynchronous; the durable crash-pending file remains the delivery source.
@@ -343,14 +353,30 @@ export class RumFeature implements Feature, FeatureEventReceiver {
     } catch (e) {
       FlashcatLog.e(`rum.error: pre-exit flush failed: ${RumFeature.errorText(e)}`);
     }
-    if (policy === 'REPORT_AND_RECOVER') {
-      // TODO Phase 2: invoke appRecovery with crash-loop protection.
-      FlashcatLog.d('rum.error: REPORT_AND_RECOVER falls back to REPORT_THEN_EXIT');
+    if (recover) {
+      try {
+        const saved: boolean = appRecovery.saveAppState();
+        FlashcatLog.d(`rum.error: recovery saveAppState result=${saved}`);
+      } catch (e) {
+        // State restoration is best effort; restart remains the product promise.
+        FlashcatLog.e(`rum.error: recovery saveAppState failed: ${RumFeature.errorText(e)}`);
+      }
+      try {
+        FlashcatLog.d('rum.error: requesting app recovery restart');
+        appRecovery.restartApp();
+        return;
+      } catch (e) {
+        FlashcatLog.e(`rum.error: recovery restartApp failed: ${RumFeature.errorText(e)}; exiting`);
+      }
     }
     // ProcessManager.exit restores the host's terminating crash semantics without
     // requiring an Ability context or synthesizing a second native abort crash.
-    const manager: process.ProcessManager = new process.ProcessManager();
-    manager.exit(1);
+    try {
+      const manager: process.ProcessManager = new process.ProcessManager();
+      manager.exit(1);
+    } catch (e) {
+      FlashcatLog.e(`rum.error: process exit failed: ${RumFeature.errorText(e)}`);
+    }
   }
 
   /**

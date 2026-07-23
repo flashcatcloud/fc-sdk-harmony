@@ -5,6 +5,8 @@ import {
   CrashDeduplication,
   CrashFingerprint,
   CrashIncidentRecord,
+  CrashLoopDecision,
+  CrashLoopGuard,
   LiveCrashIncidentGuard
 } from '../main/ets/internal/CrashIncident';
 
@@ -136,6 +138,104 @@ export default function crashIncidentTests(): void {
         expect(parsed[0].fingerprint).assertEqual('fp-1');
         expect(parsed[0].timestampMs).assertEqual(123456);
         expect(CrashDeduplication.parseConsumed('{broken').length).assertEqual(0);
+      });
+
+    it('allowsRecoveryBelowCrashLoopThreshold',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        const decision: CrashLoopDecision =
+          CrashLoopGuard.decide(2000, [1000], 3, 60000, 300000);
+
+        expect(decision.allowRestart).assertTrue();
+        expect(decision.updatedTimestamps.length).assertEqual(2);
+        expect(decision.updatedTimestamps[1]).assertEqual(2000);
+      });
+
+    it('blocksRecoveryAtCrashLoopThreshold',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        const decision: CrashLoopDecision =
+          CrashLoopGuard.decide(3000, [1000, 2000], 3, 60000, 300000);
+
+        expect(decision.allowRestart).assertFalse();
+        expect(decision.updatedTimestamps.length).assertEqual(3);
+      });
+
+    it('allowsRecoveryAfterCrashLoopWindowExpires',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        const decision: CrashLoopDecision =
+          CrashLoopGuard.decide(62001, [1000, 2000, 3000], 4, 60000, 300000);
+
+        expect(decision.allowRestart).assertTrue();
+        expect(decision.updatedTimestamps.length).assertEqual(2);
+        expect(decision.updatedTimestamps[0]).assertEqual(3000);
+        expect(decision.updatedTimestamps[1]).assertEqual(62001);
+      });
+
+    it('clearsCrashLoopHistoryAfterCooldown',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        const decision: CrashLoopDecision =
+          CrashLoopGuard.decide(303000, [1000, 2000, 3000], 3, 600000, 300000);
+
+        expect(decision.allowRestart).assertTrue();
+        expect(decision.updatedTimestamps.length).assertEqual(1);
+        expect(decision.updatedTimestamps[0]).assertEqual(303000);
+      });
+
+    it('toleratesEmptyAndCorruptedCrashLoopHistory',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        expect(CrashLoopGuard.parseHistory('').length).assertEqual(0);
+        expect(CrashLoopGuard.parseHistory('{broken').length).assertEqual(0);
+
+        const decision: CrashLoopDecision =
+          CrashLoopGuard.decide(1000, CrashLoopGuard.parseHistory('{broken'), 3, 60000, 300000);
+        expect(decision.allowRestart).assertTrue();
+        expect(decision.updatedTimestamps.length).assertEqual(1);
+      });
+
+    it('keepsBlockingImmediateCrashAfterLoopTrips',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        const tripped: CrashLoopDecision =
+          CrashLoopGuard.decide(3000, [1000, 2000], 3, 60000, 300000);
+        const next: CrashLoopDecision =
+          CrashLoopGuard.decide(3001, tripped.updatedTimestamps, 3, 60000, 300000);
+
+        expect(tripped.allowRestart).assertFalse();
+        expect(next.allowRestart).assertFalse();
+        expect(next.updatedTimestamps.length).assertEqual(3);
+      });
+
+    it('keepsTrippedGuardBlockedAfterWindowUntilCooldown',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        const decision: CrashLoopDecision =
+          CrashLoopGuard.decide(63001, [1000, 2000, 3000], 3, 60000, 300000);
+
+        expect(decision.allowRestart).assertFalse();
+        expect(decision.updatedTimestamps.length).assertEqual(3);
+        expect(decision.updatedTimestamps[2]).assertEqual(63001);
+      });
+
+    it('blockedCrashExtendsCrashLoopCooldown',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        const blocked: CrashLoopDecision =
+          CrashLoopGuard.decide(200000, [1000, 2000, 3000], 3, 60000, 300000);
+        const stillBlocked: CrashLoopDecision =
+          CrashLoopGuard.decide(400000, blocked.updatedTimestamps, 3, 60000, 300000);
+        const cooledDown: CrashLoopDecision =
+          CrashLoopGuard.decide(700000, stillBlocked.updatedTimestamps, 3, 60000, 300000);
+
+        expect(blocked.allowRestart).assertFalse();
+        expect(stillBlocked.allowRestart).assertFalse();
+        expect(cooledDown.allowRestart).assertTrue();
+      });
+
+    it('roundTripsCrashLoopHistory',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        const serialized: string = CrashLoopGuard.serializeHistory([1000, 2000, 3000]);
+        const parsed: number[] = CrashLoopGuard.parseHistory(serialized);
+
+        expect(parsed.length).assertEqual(3);
+        expect(parsed[0]).assertEqual(1000);
+        expect(parsed[1]).assertEqual(2000);
+        expect(parsed[2]).assertEqual(3000);
       });
   });
 }

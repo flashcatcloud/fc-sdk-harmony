@@ -139,9 +139,9 @@ struct Index {
     }
   }
 
-  private initSdk(): void {
+  private initSdk(recover: boolean = false): void {
     try {
-      DemoSdk.init(this.context, this.useProd, this.customEndpoint);
+      DemoSdk.init(this.context, this.useProd, this.customEndpoint, recover);
     } catch (e) {
       const message: string = e instanceof Error ? e.message : 'SDK initialization failed';
       this.statusText = message;
@@ -336,7 +336,10 @@ struct Index {
             .onChange((v: string) => { this.customEndpoint = v; })
           Button(this.initialized ? 'SDK Initialized' : 'Initialize SDK')
             .width('100%').margin({ top: 6 }).enabled(!this.initialized)
-            .onClick(() => { this.initSdk(); })
+            .onClick(() => { this.initSdk(false); })
+          Button(this.initialized ? 'SDK Initialized' : 'Initialize SDK (recover policy)')
+            .width('100%').margin({ top: 6 }).enabled(!this.initialized)
+            .onClick(() => { this.initSdk(true); })
           this.btn('Show Session ID', () => {
             DemoSdk.monitor().getCurrentSessionId((id: string | undefined) => {
               this.sessionId = id ?? 'none';

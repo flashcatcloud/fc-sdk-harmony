@@ -151,6 +151,26 @@ export default function crashEventMapperTests(): void {
       expect(ev['timestamp_ms']).assertEqual(123456);
       expect(ev['original_session_id']).assertEqual('session-1');
       expect(ev['original_view_id']).assertEqual('view-1');
+      expect(ev['crash.recovered']).assertUndefined();
+    });
+
+    it('marksRecoveredPendingIncident', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+      const incident: CrashIncidentRecord = new CrashIncidentRecord(
+        'incident-recovered',
+        123456,
+        'TypeError',
+        'boom',
+        'TypeError: boom\n    at run (Index.ets:1:2)',
+        'fp-recovered',
+        JsCrashPolicy.REPORT_AND_RECOVER,
+        '0.1.3',
+        'session-1',
+        'view-1',
+        'Home');
+
+      const ev: Record<string, Object> = CrashEventMapper.fromPendingIncident(incident);
+
+      expect(ev['crash.recovered']).assertEqual(true);
     });
 
     it('truncatesOversizedStackAndMessage', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {

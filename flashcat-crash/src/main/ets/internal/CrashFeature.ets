@@ -10,6 +10,7 @@ import {
 } from '@flashcatcloud/core';
 import { util } from '@kit.ArkTS';
 import { hiAppEvent } from '@kit.PerformanceAnalysisKit';
+import appRecovery from '@ohos.app.ability.appRecovery';
 import { CrashConfiguration, JsCrashPolicy } from '../CrashConfiguration';
 import { CrashEventMapper } from './CrashEventMapper';
 import {
@@ -18,6 +19,8 @@ import {
   CrashExceptionParts,
   CrashFingerprint,
   CrashIncidentRecord,
+  CrashLoopDecision,
+  CrashLoopGuard,
   LiveCrashIncidentGuard
 } from './CrashIncident';
 
@@ -39,16 +42,19 @@ export class CrashFeature implements Feature, FeatureEventReceiver {
   private readonly configuration: CrashConfiguration;
   private readonly liveGuard: LiveCrashIncidentGuard =
     new LiveCrashIncidentGuard(LIVE_DEDUP_WINDOW_MS);
+  private activePolicy: JsCrashPolicy;
   private consumed: ConsumedCrashIncident[] = [];
   private watching: boolean = false;
 
   constructor(core: SdkCore, configuration: CrashConfiguration) {
     this.core = core;
     this.configuration = configuration;
+    this.activePolicy = configuration.jsCrashPolicy;
   }
 
   onInitialize(): void {
     this.core.setEventReceiver(CRASH_FEATURE_NAME, this);
+    this.enableRecovery();
     this.consumed = CrashDeduplication.retainRecent(
       this.loadConsumed(), Date.now(), CONSUMED_RETENTION_MS);
     // Rewrite on every crash-feature start so expired or corrupt sidecar entries
@@ -65,9 +71,11 @@ export class CrashFeature implements Feature, FeatureEventReceiver {
         this.handleLiveCallback(event);
       }
     } catch (error) {
-      // A failed policy path must degrade to the legacy async RUM report.
+      // Never let a policy failure keep a process alive after a REPORT_* crash.
       event['report_async'] = true;
-      event['should_exit'] = false;
+      event['policy'] = this.activePolicy as string;
+      event['recover'] = false;
+      event['should_exit'] = this.activePolicy !== JsCrashPolicy.OBSERVE_ONLY;
       FlashcatLog.e(`crash.js: live callback failed: ${CrashFeature.errorText(error)}`);
     }
   }
@@ -97,8 +105,9 @@ export class CrashFeature implements Feature, FeatureEventReceiver {
     }
 
     this.liveGuard.remember(fingerprint, nowMs);
-    event['policy'] = this.configuration.jsCrashPolicy as string;
-    if (this.configuration.jsCrashPolicy === JsCrashPolicy.OBSERVE_ONLY) {
+    event['policy'] = this.activePolicy as string;
+    event['recover'] = false;
+    if (this.activePolicy === JsCrashPolicy.OBSERVE_ONLY) {
       event['report_async'] = true;
       event['should_exit'] = false;
       return;
@@ -109,28 +118,62 @@ export class CrashFeature implements Feature, FeatureEventReceiver {
     const parts: CrashExceptionParts = CrashFingerprint.partsFromText(text);
     const context: FlashcatContext = this.core.getContext();
     const rumContext: Record<string, Object> = context.featureContext[RUM_FEATURE_NAME] ?? {};
+    const incidentId: string = util.generateRandomUUID(true);
+    // Persist a conservative exit outcome first. Recovery policy is written to
+    // the same incident only after loop history is durable and restart is allowed,
+    // so crash.recovered never labels a known clean-exit fallback.
+    const initialPolicy: JsCrashPolicy = this.activePolicy === JsCrashPolicy.REPORT_AND_RECOVER ?
+      JsCrashPolicy.REPORT_THEN_EXIT : this.activePolicy;
     const incident: CrashIncidentRecord = new CrashIncidentRecord(
-      util.generateRandomUUID(true),
+      incidentId,
       nowMs,
       parts.name,
       parts.message,
       parts.stack,
       fingerprint,
-      this.configuration.jsCrashPolicy,
+      initialPolicy,
       context.sdkVersion,
       CrashFeature.stringValue(rumContext['session.id']),
       CrashFeature.stringValue(rumContext['view.id']),
       CrashFeature.stringValue(rumContext['view.name']));
 
-    const command: Record<string, Object> = {
-      'type': 'crash_storage_write',
-      'target': CRASH_STORAGE_TARGET,
-      'incident_id': incident.incidentId,
-      'serialized': incident.serialize(),
-      'success': false
-    };
-    this.sendStorageCommand(command);
-    const written: boolean = command['success'] === true;
+    let written: boolean = this.persistPendingIncident(incident);
+    if (this.activePolicy === JsCrashPolicy.REPORT_AND_RECOVER) {
+      const decision: CrashLoopDecision = CrashLoopGuard.decide(
+        nowMs,
+        this.loadLoopHistory(),
+        this.configuration.crashLoopThreshold,
+        this.configuration.crashLoopWindowMs,
+        this.configuration.crashLoopCooldownMs);
+      const loopPersisted: boolean = this.persistLoopHistory(decision.updatedTimestamps);
+      if (!loopPersisted) {
+        FlashcatLog.e('crash.loop: history write failed; degrading to exit');
+      }
+      if (!decision.allowRestart) {
+        FlashcatLog.e(
+          `crash.loop: threshold reached (${decision.updatedTimestamps.length} in ` +
+          `${this.configuration.crashLoopWindowMs / 1000}s); degrading to exit`);
+      } else if (loopPersisted) {
+        const recoveryIncident: CrashIncidentRecord = new CrashIncidentRecord(
+          incidentId,
+          nowMs,
+          parts.name,
+          parts.message,
+          parts.stack,
+          fingerprint,
+          JsCrashPolicy.REPORT_AND_RECOVER,
+          context.sdkVersion,
+          CrashFeature.stringValue(rumContext['session.id']),
+          CrashFeature.stringValue(rumContext['view.id']),
+          CrashFeature.stringValue(rumContext['view.name']));
+        written = this.persistPendingIncident(recoveryIncident);
+        if (written) {
+          event['recover'] = true;
+        } else {
+          FlashcatLog.e('crash.recovery: incident update failed; degrading to exit');
+        }
+      }
+    }
     event['pending_written'] = written;
     // Termination is policy-driven, not write-driven: a rare pending-write
     // failure must not silently revert to keep-alive semantics. The report
@@ -146,6 +189,37 @@ export class CrashFeature implements Feature, FeatureEventReceiver {
     }
   }
 
+  private persistPendingIncident(incident: CrashIncidentRecord): boolean {
+    const command: Record<string, Object> = {
+      'type': 'crash_storage_write',
+      'target': CRASH_STORAGE_TARGET,
+      'incident_id': incident.incidentId,
+      'serialized': incident.serialize(),
+      'success': false
+    };
+    this.sendStorageCommand(command);
+    return command['success'] === true;
+  }
+
+  private enableRecovery(): void {
+    if (this.activePolicy !== JsCrashPolicy.REPORT_AND_RECOVER) {
+      return;
+    }
+    try {
+      appRecovery.enableAppRecovery(
+        appRecovery.RestartFlag.RESTART_WHEN_JS_CRASH,
+        appRecovery.SaveOccasionFlag.SAVE_WHEN_ERROR,
+        appRecovery.SaveModeFlag.SAVE_WITH_FILE
+      );
+      FlashcatLog.d('crash.recovery: app recovery enabled');
+    } catch (error) {
+      this.activePolicy = JsCrashPolicy.REPORT_THEN_EXIT;
+      FlashcatLog.e(
+        `crash.recovery: enableAppRecovery failed: ${CrashFeature.errorText(error)}; ` +
+        'degrading session policy to REPORT_THEN_EXIT');
+    }
+  }
+
   private publishPolicy(): void {
     const rum: FeatureScope | null = this.core.getFeature(RUM_FEATURE_NAME);
     if (rum === null) {
@@ -155,9 +229,9 @@ export class CrashFeature implements Feature, FeatureEventReceiver {
     rum.sendEvent({
       'type': 'js_crash_policy',
       'target': RUM_FEATURE_NAME,
-      'policy': this.configuration.jsCrashPolicy as string
+      'policy': this.activePolicy as string
     });
-    FlashcatLog.d(`crash.js: policy owner enabled policy=${this.configuration.jsCrashPolicy}`);
+    FlashcatLog.d(`crash.js: policy owner enabled policy=${this.activePolicy}`);
   }
 
   private replayPendingIncidents(): void {
@@ -226,6 +300,34 @@ export class CrashFeature implements Feature, FeatureEventReceiver {
     if (command['success'] !== true) {
       FlashcatLog.e('crash.pending: consumed sidecar write failed');
     }
+  }
+
+  private loadLoopHistory(): number[] {
+    const command: Record<string, Object> = {
+      'type': 'crash_storage_read_loop',
+      'target': CRASH_STORAGE_TARGET
+    };
+    this.sendStorageCommand(command);
+    const serialized: string = CrashFeature.stringValue(command['serialized']);
+    if (serialized.length === 0) {
+      return [];
+    }
+    const timestamps: number[] = CrashLoopGuard.parseHistory(serialized);
+    if (timestamps.length === 0 && serialized.trim() !== '[]') {
+      FlashcatLog.e('crash.loop: corrupted loop sidecar ignored; resetting');
+    }
+    return timestamps;
+  }
+
+  private persistLoopHistory(timestamps: number[]): boolean {
+    const command: Record<string, Object> = {
+      'type': 'crash_storage_write_loop',
+      'target': CRASH_STORAGE_TARGET,
+      'serialized': CrashLoopGuard.serializeHistory(timestamps),
+      'success': false
+    };
+    this.sendStorageCommand(command);
+    return command['success'] === true;
   }
 
   private deletePending(fileName: string): void {

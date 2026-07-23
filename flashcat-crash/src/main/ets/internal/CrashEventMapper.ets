@@ -1,5 +1,6 @@
 import { RumErrorSource } from './RumErrorSourceLite';
 import { CrashIncidentRecord } from './CrashIncident';
+import { JsCrashPolicy } from '../CrashConfiguration';
 
 /**
  * Pure translation of a hiAppEvent system-event payload (the `params` object of an
@@ -56,6 +57,9 @@ export class CrashEventMapper {
     event['original_session_id'] = incident.sessionId;
     event['original_view_id'] = incident.viewId;
     event['original_view_name'] = incident.viewName;
+    if (incident.policy === JsCrashPolicy.REPORT_AND_RECOVER) {
+      event['crash.recovered'] = true;
+    }
     return event;
   }
 
