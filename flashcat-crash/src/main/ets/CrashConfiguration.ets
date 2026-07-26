@@ -77,6 +77,13 @@ export class CrashConfigurationBuilder {
     return this;
   }
 
+  /**
+   * The Nth crash inside the loop window is blocked from restarting, i.e. the
+   * window allows at most N-1 recovery restarts. `1` therefore blocks the very
+   * first crash — equivalent to disabling recovery restarts entirely: crashes
+   * are still reported synchronously, but every one exits instead of restarting
+   * and is never labeled crash.recovered.
+   */
   setCrashLoopThreshold(threshold: number): CrashConfigurationBuilder {
     this.crashLoopThreshold = threshold < 1 ? 1 : threshold;
     return this;

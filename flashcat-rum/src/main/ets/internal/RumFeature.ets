@@ -49,6 +49,27 @@ export class RumFeature implements Feature, FeatureEventReceiver {
     this.core.setEventReceiver(RUM_FEATURE_NAME, this);
     FlashcatLog.d('rum: event receiver registered');
 
+    // Pull the JS crash policy in case the crash module was enabled first
+    // (its one-shot publishPolicy() push would have found no RUM receiver).
+    // Together with the push this makes policy delivery enable-order-proof.
+    try {
+      const crash: FeatureScope | null = this.core.getFeature(CRASH_FEATURE_NAME);
+      if (crash !== null) {
+        const request: Record<string, Object> = {
+          'type': 'js_crash_policy_request',
+          'target': CRASH_FEATURE_NAME
+        };
+        crash.sendEvent(request);
+        const policy: string = RumFeature.asString(request['policy']);
+        if (policy.length > 0) {
+          this.activeJsCrashPolicy = policy;
+          FlashcatLog.d(`rum.error: pulled js crash policy=${policy}`);
+        }
+      }
+    } catch (e) {
+      FlashcatLog.e(`rum.error: crash policy pull failed: ${RumFeature.errorText(e)}`);
+    }
+
     // Auto Error capture: turn uncaught ArkTS exceptions into RUM error events.
     // The callback reads `this.monitor` at error-time, by which point it is set.
     // CRITICAL: this runs inside the global exception handler — it must NEVER throw

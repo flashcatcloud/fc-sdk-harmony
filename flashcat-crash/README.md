@@ -44,8 +44,10 @@ FlashcatCrash.enable(new CrashConfigurationBuilder()
   .build());
 ```
 
-Enable RUM before the crash module so the crash module can publish its policy
-and replay pending incidents:
+Enable RUM before the crash module so pending incidents from a previous launch
+are replayed immediately. The JS crash policy itself is enable-order-proof: the
+crash module pushes it to RUM, and RUM also pulls it on start, so either order
+activates the policy.
 
 ```ts
 FlashcatRum.enable(rumConfiguration);
@@ -60,7 +62,7 @@ FlashcatCrash.enable(crashConfiguration);
 | `setTrackAppHangs(enabled)` | `true` | Watch post-mortem `hiAppEvent.APP_FREEZE` events. |
 | `setSampleRate(rate)` | `100` | Percentage of `hiAppEvent` crash and freeze events to report. Values are clamped to `0...100`. This does not sample synchronous JS policy reporting. |
 | `setJsCrashPolicy(policy)` | `REPORT_THEN_EXIT` | Select the behavior for uncaught main-thread ArkTS exceptions. |
-| `setCrashLoopThreshold(threshold)` | `3` | Crash count inside the rolling window at which the current restart is blocked. Values below `1` become `1`. |
+| `setCrashLoopThreshold(threshold)` | `3` | The Nth crash inside the rolling window is blocked from restarting (at most N-1 restarts per window). `1` disables recovery restarts entirely — every crash reports synchronously and exits. Values below `1` become `1`. |
 | `setCrashLoopWindowMs(windowMs)` | `60000` | Rolling interval used to count recoverable crashes before the guard trips. Values below `1` become `1`. |
 | `setCrashLoopCooldownMs(cooldownMs)` | `300000` | Required crash-free interval before a persisted tripped guard resets. Values below `1` become `1`. |
 

@@ -67,8 +67,14 @@ export class CrashFeature implements Feature, FeatureEventReceiver {
 
   onReceive(event: Record<string, Object>): void {
     try {
-      if (CrashFeature.stringValue(event['type']) === 'js_crash_callback') {
+      const type: string = CrashFeature.stringValue(event['type']);
+      if (type === 'js_crash_callback') {
         this.handleLiveCallback(event);
+      } else if (type === 'js_crash_policy_request') {
+        // RUM pulls the policy on its own start so enable order does not
+        // matter: crash-then-RUM pulls here, RUM-then-crash gets the push
+        // from publishPolicy().
+        event['policy'] = this.activePolicy as string;
       }
     } catch (error) {
       // Never let a policy failure keep a process alive after a REPORT_* crash.
@@ -223,7 +229,8 @@ export class CrashFeature implements Feature, FeatureEventReceiver {
   private publishPolicy(): void {
     const rum: FeatureScope | null = this.core.getFeature(RUM_FEATURE_NAME);
     if (rum === null) {
-      FlashcatLog.d('crash.js: RUM missing; policy announcement deferred permanently');
+      // Not fatal: RumFeature pulls the policy when it starts later.
+      FlashcatLog.d('crash.js: RUM not enabled yet; policy will be pulled on RUM start');
       return;
     }
     rum.sendEvent({
