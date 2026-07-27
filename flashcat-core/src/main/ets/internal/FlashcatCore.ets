@@ -7,6 +7,7 @@ import { FlashcatContext, UserInfo } from '../api/context/FlashcatContext';
 import { ContextProvider } from './context/ContextProvider';
 import { MessageBus } from './bus/MessageBus';
 import { FilePersistenceStrategy } from './persistence/FilePersistenceStrategy';
+import { CrashPendingStore, CRASH_STORAGE_TARGET } from './persistence/CrashPendingStore';
 import { DataUploader } from './upload/DataUploader';
 import { UploadScheduler } from './upload/UploadScheduler';
 import { DeferredUploadWorkRegistrar, DeferredUploadWorkOptions } from './upload/DeferredUploadWorkRegistrar';
@@ -24,6 +25,7 @@ export class FlashcatCore implements SdkCore {
 
   private readonly contextProvider: ContextProvider;
   private readonly bus: MessageBus = new MessageBus();
+  private readonly crashPendingStore: CrashPendingStore;
   private readonly features: Map<string, RegisteredFeature> = new Map<string, RegisteredFeature>();
   private readonly deferredUploadRegistrar: DeferredUploadWorkRegistrar = new DeferredUploadWorkRegistrar();
 
@@ -33,11 +35,13 @@ export class FlashcatCore implements SdkCore {
     this.configuration = configuration;
     this.consent = consent;
     this.contextProvider = new ContextProvider(context, configuration);
+    this.crashPendingStore = new CrashPendingStore(context);
   }
 
   /** Called by Flashcat.initialize. Flush buffered events when the app backgrounds. */
   initialize(): void {
     FlashcatLog.setEnabled(this.configuration.verbose);
+    this.bus.setReceiver(CRASH_STORAGE_TARGET, this.crashPendingStore);
     FlashcatLog.d(`initialize: instance="${this.name}" site=${this.configuration.site} consent=${this.consent}`);
     this.registerDeferredUploadWork();
     try {
@@ -142,6 +146,7 @@ export class FlashcatCore implements SdkCore {
       r.feature.onStop();
     });
     this.features.clear();
+    this.bus.removeReceiver(CRASH_STORAGE_TARGET);
   }
 
   flush(): void {
