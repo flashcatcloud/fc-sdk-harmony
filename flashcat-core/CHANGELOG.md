@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.0
+
+- Add core-owned synchronous crash-pending storage for next-launch replay.
+
 ## 0.1.3
 
 - Fix `SDK_VERSION` so events report the correct `_dd.sdk_version` (it was stuck

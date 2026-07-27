@@ -1,11 +1,11 @@
 {
   name: "@flashcatcloud/crash",
-  version: "0.1.3",
+  version: "0.2.0",
   description: "FlashCat HarmonyOS crash reporting: hiAppEvent APP_CRASH (native + ArkTS) + APP_FREEZE, reported as RUM is_crash errors.",
   main: "Index.ets",
   license: "Apache-2.0",
   author: "FlashCat",
   dependencies: {
-    "@flashcatcloud/core": "0.1.3"
+    "@flashcatcloud/core": "0.2.0"
   }
 }

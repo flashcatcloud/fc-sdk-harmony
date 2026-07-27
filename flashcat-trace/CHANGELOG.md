@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.0
+
+- Version bump to keep the SDK packages in lockstep.
+
 ## 0.1.3
 
 - Maintenance release; version aligned across the FlashCat HarmonyOS SDK packages.
