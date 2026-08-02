@@ -20,6 +20,7 @@ function testContext(): FlashcatContext {
       deviceType: 'phone'
     },
     user: {},
+    anonymousId: 'anon-device-1',
     network: { connectivity: 'wifi' },
     featureContext: {}
   };
@@ -85,6 +86,30 @@ export default function schemaAlignmentTests(): void {
       const view = record(event['view']);
       expect(view['url']).assertEqual('pages/Home');
       expect(view['name']).assertEqual('Home');
+    });
+
+    it('emitsAnonymousIdWithoutUserInfo', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+      // No setUserInfo call — usr.anonymous_id must still be present so the
+      // backend-derived session record has an identity.
+      const event = RumEventAssembler.view(
+        testContext(), 'app-1', 'session-1', 'view-id', 'Home',
+        1000, 0, 0, 0, 0, 0, 1, true, {});
+
+      const usr = record(event['usr']);
+      expect(usr['anonymous_id']).assertEqual('anon-device-1');
+      expect(usr['id']).assertUndefined();
+    });
+
+    it('emitsAnonymousIdAlongsideUserId', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+      const context: FlashcatContext = testContext();
+      context.user = { id: 'alice' };
+      const event = RumEventAssembler.error(
+        context, 'app-1', 'session-1', undefined, undefined,
+        'boom', 'source', 'stack', false, 'handled', 1000, {});
+
+      const usr = record(event['usr']);
+      expect(usr['anonymous_id']).assertEqual('anon-device-1');
+      expect(usr['id']).assertEqual('alice');
     });
 
     it('crashAttributesUseBackendErrorSchemaFields', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {

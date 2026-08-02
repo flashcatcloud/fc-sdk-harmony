@@ -1,10 +1,14 @@
 import { common, bundleManager } from '@kit.AbilityKit';
 import { deviceInfo } from '@kit.BasicServicesKit';
+import { preferences } from '@kit.ArkData';
+import { util } from '@kit.ArkTS';
 import { Configuration } from '../../config/Configuration';
 import { FlashcatContext, DeviceInfo, UserInfo, NetworkInfo } from '../../api/context/FlashcatContext';
 import { SDK_VERSION } from '../Version';
 
 const SOURCE: string = 'harmony';
+const PREFERENCES_NAME: string = 'flashcat_sdk';
+const ANONYMOUS_ID_KEY: string = 'anonymous_id';
 
 /**
  * Assembles the FlashcatContext attached to every event. Device info is read
@@ -17,6 +21,7 @@ const SOURCE: string = 'harmony';
 export class ContextProvider {
   private readonly configuration: Configuration;
   private readonly device: DeviceInfo;
+  private readonly anonymousId: string;
   private user: UserInfo = {};
   private network: NetworkInfo = { connectivity: 'unknown' };
   private readonly featureContext: Record<string, Record<string, Object>> = {};
@@ -26,7 +31,37 @@ export class ContextProvider {
   constructor(context: common.Context, configuration: Configuration) {
     this.configuration = configuration;
     this.device = ContextProvider.readDeviceInfo();
+    // Sync (like app info below) so the very first events — written before any
+    // async init could settle — already carry the anonymous id.
+    this.anonymousId = ContextProvider.loadOrCreateAnonymousId(context);
     this.prepareAppInfo();
+  }
+
+  /**
+   * Loads the persisted anonymous device id, generating + persisting one on
+   * first launch. Uses the synchronous Preferences API: an async read would race
+   * the first view event (written synchronously during RUM enable/startView) and
+   * ship it with an empty identity.
+   */
+  private static loadOrCreateAnonymousId(context: common.Context): string {
+    try {
+      const prefs: preferences.Preferences =
+        preferences.getPreferencesSync(context, { name: PREFERENCES_NAME });
+      const existing: preferences.ValueType = prefs.getSync(ANONYMOUS_ID_KEY, '');
+      if (typeof existing === 'string' && existing.length > 0) {
+        return existing;
+      }
+      const generated: string = util.generateRandomUUID(true);
+      prefs.putSync(ANONYMOUS_ID_KEY, generated);
+      prefs.flush((_err) => {
+        // Durability is best-effort: on flush failure the id regenerates next
+        // launch, which only splits the device identity — never blocks events.
+      });
+      return generated;
+    } catch (_e) {
+      // Preferences unavailable — degrade to a per-process id (still non-empty).
+      return util.generateRandomUUID(true);
+    }
   }
 
   // (app info is read synchronously below so the earliest events — e.g. an
@@ -87,6 +122,7 @@ export class ContextProvider {
       sdkVersion: SDK_VERSION,
       device: this.device,
       user: this.user,
+      anonymousId: this.anonymousId,
       network: this.network,
       featureContext: this.featureContext
     };

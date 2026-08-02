@@ -298,24 +298,30 @@ export class RumEventAssembler {
     connectivity['status'] = context.network.connectivity;
     event['connectivity'] = connectivity;
 
-    if (context.user.id !== undefined || context.user.name !== undefined
-      || context.user.email !== undefined || context.user.extraInfo !== undefined) {
-      const usr: Record<string, Object> = {};
-      if (context.user.id !== undefined) {
-        usr['id'] = context.user.id;
+    const usr: Record<string, Object> = {};
+    // Always attach the persisted anonymous device id so a session has an
+    // identity even before (or without) setUserInfo — the backend's session
+    // record is derived from the session's earliest view event, which is
+    // written at launch, before any login.
+    if (context.anonymousId.length > 0) {
+      usr['anonymous_id'] = context.anonymousId;
+    }
+    if (context.user.id !== undefined) {
+      usr['id'] = context.user.id;
+    }
+    if (context.user.name !== undefined) {
+      usr['name'] = context.user.name;
+    }
+    if (context.user.email !== undefined) {
+      usr['email'] = context.user.email;
+    }
+    if (context.user.extraInfo !== undefined) {
+      const extra: Record<string, Object> = context.user.extraInfo;
+      for (const k of Object.keys(extra)) {
+        usr[k] = extra[k];
       }
-      if (context.user.name !== undefined) {
-        usr['name'] = context.user.name;
-      }
-      if (context.user.email !== undefined) {
-        usr['email'] = context.user.email;
-      }
-      if (context.user.extraInfo !== undefined) {
-        const extra: Record<string, Object> = context.user.extraInfo;
-        for (const k of Object.keys(extra)) {
-          usr[k] = extra[k];
-        }
-      }
+    }
+    if (Object.keys(usr).length > 0) {
       event['usr'] = usr;
     }
 
