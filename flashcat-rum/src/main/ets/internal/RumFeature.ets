@@ -19,6 +19,12 @@ import { RumAutoInstrumentation } from './RumAutoInstrumentation';
 import { RumNavigationTracker } from './RumNavigationTracker';
 import { RumEventMapperHolder } from './RumEventMapperHolder';
 
+// OpenHarmony runtime banner substituted for the translated stack when the
+// module's sourcemap cannot be loaded. Never a meaningful error message.
+const SOURCEMAP_BANNER: string = 'Cannot get SourceMap info';
+// Cap for a JSON-serialized rejection reason used as message/stack text.
+const MAX_REJECTION_REASON_CHARS: number = 500;
+
 /**
  * The RUM feature. Installs the unhandled-exception hook (auto Error capture) and
  * consumes bus events: network requests published by the Trace interceptor (auto
@@ -79,12 +85,15 @@ export class RumFeature implements Feature, FeatureEventReceiver {
       this.errorObserverId = errorManager.on('error', {
         onUnhandledException: (errMsg: string) => {
           FlashcatLog.d(`rum.error: onUnhandledException len=${errMsg.length}`);
-          this.reportObservedError(errMsg, 'unhandled');
+          this.reportObservedError(errMsg, 'unhandled', RumFeature.errorMessageFromText(errMsg));
         },
         onException: (errObject: Error) => {
           const text: string = RumFeature.unhandledErrorText(errObject);
           FlashcatLog.d(`rum.error: onException len=${text.length}`);
-          this.reportObservedError(text, 'exception');
+          // The Error object carries name/message separately from the stack text, so
+          // the message survives even when the runtime replaced the stack with the
+          // "Cannot get SourceMap info" banner (frames-only / untranslatable stacks).
+          this.reportObservedError(text, 'exception', RumFeature.messageFromError(errObject));
         }
       });
       FlashcatLog.d(`rum.error: observer registered id=${this.errorObserverId}`);
@@ -268,7 +277,7 @@ export class RumFeature implements Feature, FeatureEventReceiver {
       RumFeature.asString(event['message']));
   }
 
-  private reportObservedError(stackText: string, callback: string): void {
+  private reportObservedError(stackText: string, callback: string, message: string): void {
     if (this.handlingError) {
       FlashcatLog.d('rum.error: skipped re-entrant unhandled error');
       return;
@@ -299,7 +308,7 @@ export class RumFeature implements Feature, FeatureEventReceiver {
           if (control['report_async'] === true) {
             asyncReportAttempted = true;
             try {
-              this.reportUnhandledToMonitor(stackText);
+              this.reportUnhandledToMonitor(stackText, message);
             } catch (reportError) {
               // Reporting failure must never bypass policy-driven termination.
               FlashcatLog.e(
@@ -314,12 +323,12 @@ export class RumFeature implements Feature, FeatureEventReceiver {
       }
 
       asyncReportAttempted = true;
-      this.reportUnhandledToMonitor(stackText);
+      this.reportUnhandledToMonitor(stackText, message);
     } catch (e) {
       FlashcatLog.e(`rum.error: policy path failed: ${RumFeature.errorText(e)}`);
       if (!asyncReportAttempted) {
         try {
-          this.reportUnhandledToMonitor(stackText);
+          this.reportUnhandledToMonitor(stackText, message);
         } catch (fallbackError) {
           FlashcatLog.e(`rum.error: fallback report failed: ${RumFeature.errorText(fallbackError)}`);
         }
@@ -329,11 +338,11 @@ export class RumFeature implements Feature, FeatureEventReceiver {
     }
   }
 
-  private reportUnhandledToMonitor(stackText: string): void {
+  private reportUnhandledToMonitor(stackText: string, message: string): void {
     const m: DefaultRumMonitor | null = this.monitor;
     if (m !== null) {
-      FlashcatLog.d(`rum.error: report unhandled firstLine="${RumFeature.firstLine(stackText)}"`);
-      m.reportError(RumFeature.firstLine(stackText), RumErrorSource.SOURCE, stackText, false, 'unhandled');
+      FlashcatLog.d(`rum.error: report unhandled message="${message}"`);
+      m.reportError(message, RumErrorSource.SOURCE, stackText, false, 'unhandled');
     } else {
       FlashcatLog.d('rum.error: dropped because monitor is null');
     }
@@ -347,10 +356,12 @@ export class RumFeature implements Feature, FeatureEventReceiver {
     this.handlingError = true;
     try {
       const text: string = RumFeature.rejectionErrorText(reason);
+      const message: string = reason instanceof Error ?
+        RumFeature.messageFromError(reason) : RumFeature.firstLine(text);
       const m: DefaultRumMonitor | null = this.monitor;
       if (m !== null) {
         m.reportError(
-          RumFeature.firstLine(text),
+          message,
           RumErrorSource.SOURCE,
           text,
           false,
@@ -463,8 +474,39 @@ export class RumFeature implements Feature, FeatureEventReceiver {
     return `${name}: ${errObject.message}`;
   }
 
+  /**
+   * Text form of a promise-rejection reason. HarmonyOS Kit APIs routinely reject
+   * with a BusinessError-shaped plain object ({ code, message }) rather than an
+   * Error instance; interpolating that yields "[object Object]", so unwrap the
+   * message/code fields (JSON as a last resort) before falling back.
+   */
   static rejectionErrorText(reason: Object): string {
-    return reason instanceof Error ? RumFeature.unhandledErrorText(reason) : `${reason}`;
+    if (reason instanceof Error) {
+      return RumFeature.unhandledErrorText(reason);
+    }
+    if (typeof reason === 'string') {
+      return reason;
+    }
+    if (reason !== null && reason !== undefined && typeof reason === 'object' && !Array.isArray(reason)) {
+      const record: Record<string, Object> = reason as Record<string, Object>;
+      const message: Object | undefined = record['message'];
+      const code: Object | undefined = record['code'];
+      if (typeof message === 'string' && message.length > 0) {
+        return typeof code === 'number' || typeof code === 'string' ? `${message} (code ${code})` : message;
+      }
+    }
+    if (reason !== null && reason !== undefined && typeof reason === 'object') {
+      try {
+        const json: string = JSON.stringify(reason);
+        if (json.length > 0 && json !== '{}') {
+          return json.length > MAX_REJECTION_REASON_CHARS ?
+            json.substring(0, MAX_REJECTION_REASON_CHARS) : json;
+        }
+      } catch (_e) {
+        // cyclic or non-serializable — fall through to interpolation
+      }
+    }
+    return `${reason}`;
   }
 
   static rejectionAttributes(): Record<string, Object> {
@@ -477,6 +519,40 @@ export class RumFeature implements Feature, FeatureEventReceiver {
   private static firstLine(text: string): string {
     const idx: number = text.indexOf('\n');
     return idx >= 0 ? text.substring(0, idx) : text;
+  }
+
+  /** "Name: message" from an Error object, independent of its stack text. */
+  static messageFromError(errObject: Error): string {
+    const name: string = errObject.name.length > 0 ? errObject.name : 'Error';
+    return `${name}: ${errObject.message}`;
+  }
+
+  /**
+   * Derives error.message from unhandled-exception callback text. ArkTS stacks
+   * carry no "Name: message" header line, so a blind first-line pick yields a
+   * frame — or the runtime's "Cannot get SourceMap info, dump raw stack:" banner
+   * when sourcemap translation failed. Prefer the labeled three-part format
+   * ("Error name:<n>\nError message:<m>\n..."), then the first line that is
+   * neither the banner nor a stack frame.
+   */
+  static errorMessageFromText(text: string): string {
+    const lines: string[] = text.split('\n');
+    if (lines.length >= 2 && lines[0].startsWith('Error name:') && lines[1].startsWith('Error message:')) {
+      const name: string = lines[0].substring('Error name:'.length).trim();
+      const message: string = lines[1].substring('Error message:'.length).trim();
+      return `${name.length > 0 ? name : 'Error'}: ${message}`;
+    }
+    for (let i: number = 0; i < lines.length; i++) {
+      const line: string = lines[i].trim();
+      if (line.length === 0 || line.startsWith(SOURCEMAP_BANNER)) {
+        continue;
+      }
+      if (line.startsWith('at ') || line.startsWith('#')) {
+        break; // reached stack frames without seeing a header
+      }
+      return line;
+    }
+    return 'Uncaught exception';
   }
 
   private static errorText(value: Object): string {

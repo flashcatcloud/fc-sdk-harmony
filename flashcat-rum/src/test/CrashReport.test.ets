@@ -72,5 +72,49 @@ export default function crashReportTests(): void {
         expect(attrs['error.category']).assertEqual('Unhandled Promise Rejection');
         expect(attrs['error.source_type']).assertEqual('promise');
       });
+
+    it('unwrapsBusinessErrorShapedRejectionReasons',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        const reason: Record<string, Object> = { 'code': 201, 'message': 'Permission denied' };
+
+        expect(RumFeature.rejectionErrorText(reason)).assertEqual('Permission denied (code 201)');
+      });
+
+    it('serializesMessagelessObjectRejectionReasons',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        const reason: Record<string, Object> = { 'status': 500 };
+
+        expect(RumFeature.rejectionErrorText(reason)).assertEqual('{"status":500}');
+      });
+
+    it('keepsStringRejectionReasonsVerbatim',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        expect(RumFeature.rejectionErrorText('plain refusal')).assertEqual('plain refusal');
+      });
+
+    it('buildsMessageFromErrorNameAndMessage',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        const err: Error = new TypeError('boom');
+        // Frames-only stack (ArkTS has no "Name: message" header line).
+        err.stack = '    at Demo.throwArkTsError (Index.ets:68:13)';
+
+        expect(RumFeature.messageFromError(err)).assertEqual('TypeError: boom');
+      });
+
+    it('parsesLabeledUnhandledExceptionText',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        const text: string = 'Error name:RangeError\nError message:out of bounds\nStacktrace:\nat f (a.ets:1:1)';
+
+        expect(RumFeature.errorMessageFromText(text)).assertEqual('RangeError: out of bounds');
+      });
+
+    it('skipsSourceMapBannerWhenDerivingMessage',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        const bannerOnly: string = 'Cannot get SourceMap info, dump raw stack:';
+        const bannerWithFrames: string = 'Cannot get SourceMap info, dump raw stack:\nat f (a.ets:1:1)';
+
+        expect(RumFeature.errorMessageFromText(bannerOnly)).assertEqual('Uncaught exception');
+        expect(RumFeature.errorMessageFromText(bannerWithFrames)).assertEqual('Uncaught exception');
+      });
   });
 }

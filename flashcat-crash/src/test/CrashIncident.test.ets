@@ -42,6 +42,17 @@ export default function crashIncidentTests(): void {
       expect(live).assertEqual(watcher);
     });
 
+    it('ignoresSourceMapBannerWhenParsingParts', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+      const bannerText: string =
+        'Cannot get SourceMap info, dump raw stack:\n    at anonymous (entry|entry|1.0.0|src/main/ets/pages/Index.ts:12:5)';
+      const parts = CrashFingerprint.partsFromText(bannerText);
+
+      expect(parts.name).assertEqual('Error');
+      expect(parts.message).assertEqual('');
+      // The raw text (banner included) is still retained as the stack.
+      expect(parts.stack.indexOf('Cannot get SourceMap info')).assertEqual(0);
+    });
+
     it('changesWhenMessageChanges', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
       const first: string = CrashFingerprint.fromParts(
         'Error', 'first', 'Error: first\n    at run (/data/app/Index.ets:10:2)');

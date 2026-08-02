@@ -46,7 +46,21 @@ export class CrashFingerprint {
         lines[1].substring('Error message:'.length).trim(),
         stack);
     }
-    const header: string = lines.length > 0 ? lines[0].trim() : '';
+    // Header = first line that is neither the runtime's "Cannot get SourceMap
+    // info" banner (substituted when sourcemap translation fails — never a
+    // message) nor a stack frame.
+    let header: string = '';
+    for (let i: number = 0; i < lines.length; i++) {
+      const line: string = lines[i].trim();
+      if (line.length === 0 || line.startsWith('Cannot get SourceMap info')) {
+        continue;
+      }
+      if (line.startsWith('at ') || line.startsWith('#')) {
+        break;
+      }
+      header = line;
+      break;
+    }
     const separator: number = header.indexOf(':');
     if (separator > 0) {
       const candidate: string = header.substring(0, separator).trim();
