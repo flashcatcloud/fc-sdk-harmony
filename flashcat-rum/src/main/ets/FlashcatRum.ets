@@ -1,4 +1,4 @@
-import { Flashcat, SdkCore, FeatureScope, RUM_FEATURE_NAME } from '@flashcatcloud/core';
+import { Flashcat, SdkCore, FeatureScope, RUM_FEATURE_NAME, FlashcatLog } from '@flashcatcloud/core';
 import { RumConfiguration } from './RumConfiguration';
 import { GlobalRumMonitor } from './RumMonitor';
 import { RumFeature } from './internal/RumFeature';
@@ -21,6 +21,16 @@ import { RumEventMapperHolder } from './internal/RumEventMapperHolder';
 export class FlashcatRum {
   static enable(configuration: RumConfiguration, sdkCore?: SdkCore): void {
     const core: SdkCore = sdkCore ?? Flashcat.getInstance();
+
+    // Idempotency guard (Android parity: "RUM feature is already enabled").
+    // registerFeature silently ignores a duplicate, but proceeding here would
+    // build a SECOND application scope + keep-alive timer attached to an orphan
+    // feature: events split across two sessions, and the orphan's timer is
+    // never stopped by onStop — it would keep writing after SDK stop, forever.
+    if (core.getFeature(RUM_FEATURE_NAME) !== null) {
+      FlashcatLog.e('FlashcatRum.enable ignored: RUM is already enabled for this instance');
+      return;
+    }
 
     const feature: RumFeature = new RumFeature(core, configuration);
     core.registerFeature(feature);
