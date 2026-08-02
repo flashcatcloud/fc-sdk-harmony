@@ -65,6 +65,15 @@ export class FlashcatCore implements SdkCore {
       return; // already enabled — ignore the duplicate (avoids leaking a 2nd hook)
     }
     const persistence: FilePersistenceStrategy = new FilePersistenceStrategy(this.context, feature.name);
+    // Settle a pre-consent buffer left by an EARLIER launch. Without this, an
+    // app that persisted the user's consent itself (init with GRANTED on launch
+    // 2) leaves the launch-1 buffer orphaned forever — and under NOT_GRANTED
+    // the denied data would be retained indefinitely.
+    if (this.consent === TrackingConsent.GRANTED) {
+      persistence.migratePending();
+    } else if (this.consent === TrackingConsent.NOT_GRANTED) {
+      persistence.wipePending();
+    }
     const uploader: DataUploader = new DataUploader(
       this.configuration,
       FlashcatCore.trackPathFor(feature.name),
