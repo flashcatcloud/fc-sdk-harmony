@@ -140,6 +140,9 @@ export class FlashcatCore implements SdkCore {
   }
 
   stop(): void {
+    // Final view refresh before shutdown — without it the last view keeps the
+    // time_spent of its last incidental write (0 for a quiet session).
+    this.bus.send(RUM_FEATURE_NAME, { 'type': 'keep_alive' } as Record<string, Object>);
     this.features.forEach((r: RegisteredFeature) => {
       r.persistence.rollActive(); // close buffered events so they're recovered next launch
       r.scheduler.stop();
@@ -150,12 +153,14 @@ export class FlashcatCore implements SdkCore {
   }
 
   flush(): void {
+    // Let RUM emit a final view update (current time_spent) before we roll + upload,
+    // so the session/view duration reflects real dwell time at backgrounding.
+    // Sent even under PENDING consent: those writes land in the pending buffer
+    // and migrate on GRANTED — they must carry the final time_spent too.
+    this.bus.send(RUM_FEATURE_NAME, { 'type': 'keep_alive' } as Record<string, Object>);
     if (this.consent !== TrackingConsent.GRANTED) {
       return;
     }
-    // Let RUM emit a final view update (current time_spent) before we roll + upload,
-    // so the session/view duration reflects real dwell time at backgrounding.
-    this.bus.send(RUM_FEATURE_NAME, { 'type': 'keep_alive' } as Record<string, Object>);
     this.features.forEach((r: RegisteredFeature) => {
       r.persistence.rollActive();
       r.scheduler.triggerNow();
@@ -163,10 +168,10 @@ export class FlashcatCore implements SdkCore {
   }
 
   async flushAndWait(maxBatchesPerFeature: number = 20): Promise<void> {
+    this.bus.send(RUM_FEATURE_NAME, { 'type': 'keep_alive' } as Record<string, Object>);
     if (this.consent !== TrackingConsent.GRANTED) {
       return;
     }
-    this.bus.send(RUM_FEATURE_NAME, { 'type': 'keep_alive' } as Record<string, Object>);
     const drains: Array<Promise<void>> = [];
     this.features.forEach((r: RegisteredFeature) => {
       r.persistence.rollActive();

@@ -162,6 +162,14 @@ export class RumViewScope implements RumScope {
     return this.viewId;
   }
 
+  getViewKey(): string {
+    return this.key;
+  }
+
+  getViewName(): string {
+    return this.viewName;
+  }
+
   private writeViewEvent(nowMs: number): void {
     this.documentVersion += 1;
     const timeSpentNs: number = Math.max(0, nowMs - this.startedAtMs) * MS_TO_NS;

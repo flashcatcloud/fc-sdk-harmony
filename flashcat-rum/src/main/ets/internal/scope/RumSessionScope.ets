@@ -21,6 +21,14 @@ export class RumSessionScope implements RumScope {
   private readonly startedAtMs: number;
   private lastActivityMs: number;
   private activeView: RumViewScope | null = null;
+  // View that was active when this session expired, so the parent can restart
+  // it in the replacement session (Android/iOS parity). Without this, a session
+  // renewed after the 15-min inactivity gap has no view at all: actions and
+  // resources are silently dropped, errors go out viewless, and the backend —
+  // which materializes session rows exclusively from view events — never
+  // creates the session, so its duration reads as 0/missing.
+  private expiredViewKey: string | null = null;
+  private expiredViewName: string | null = null;
 
   constructor(
     featureScope: FeatureScope,
@@ -46,6 +54,8 @@ export class RumSessionScope implements RumScope {
     if (this.isExpired(event.timestampMs)) {
       // Close the open view before discarding the session, so its final state is sent.
       if (this.activeView !== null) {
+        this.expiredViewKey = this.activeView.getViewKey();
+        this.expiredViewName = this.activeView.getViewName();
         this.activeView.forceStop(event.timestampMs);
         this.activeView = null;
       }
@@ -92,6 +102,14 @@ export class RumSessionScope implements RumScope {
 
   getSessionId(): string {
     return this.sessionId;
+  }
+
+  getExpiredViewKey(): string | null {
+    return this.expiredViewKey;
+  }
+
+  getExpiredViewName(): string | null {
+    return this.expiredViewName;
   }
 
   isSampled(): boolean {
