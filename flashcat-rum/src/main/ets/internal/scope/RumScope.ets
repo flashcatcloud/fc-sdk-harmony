@@ -6,7 +6,10 @@
 export interface RumRawEvent {
   kind: string;                 // 'startView' | 'stopView' | 'addAction' | 'addError'
                                 // | 'startResource' | 'stopResource' | 'stopResourceWithError'
-                                // | 'keepAlive'
+                                // | 'keepAlive' | 'markCrash'
+                                // markCrash: bump the active view's error+crash counts without
+                                // writing an error event (the error itself is delivered by the
+                                // durable pending-incident replay at next launch).
   key?: string;                 // view key, or resource key
   name?: string;
   attributes: Record<string, Object>;

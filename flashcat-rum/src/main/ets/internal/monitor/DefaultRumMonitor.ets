@@ -86,6 +86,16 @@ export class DefaultRumMonitor implements RumMonitor {
     this.applicationScope.handleEvent({ kind: 'keepAlive', attributes: {}, timestampMs: Date.now() });
   }
 
+  /**
+   * Internal: a terminating crash was persisted for next-launch replay. Bump the
+   * active view's error/crash counts now (only the crashing process can), so the
+   * final view document feeds session_crash_count → crash-free rate. The error
+   * event itself is written by the replay.
+   */
+  markCrash(): void {
+    this.applicationScope.handleEvent({ kind: 'markCrash', attributes: {}, timestampMs: Date.now() });
+  }
+
   private startKeepAlive(): void {
     this.keepAliveTimerId = setInterval(() => {
       this.keepAlive();

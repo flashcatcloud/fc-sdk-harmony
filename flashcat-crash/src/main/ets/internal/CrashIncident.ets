@@ -378,6 +378,7 @@ export class CrashIncidentRecord {
   readonly sessionId: string;
   readonly viewId: string;
   readonly viewName: string;
+  readonly viewUrl: string;
 
   constructor(
     incidentId: string,
@@ -390,7 +391,8 @@ export class CrashIncidentRecord {
     sdkVersion: string,
     sessionId: string,
     viewId: string,
-    viewName: string
+    viewName: string,
+    viewUrl: string = ''
   ) {
     this.incidentId = incidentId;
     this.timestampMs = timestampMs;
@@ -403,6 +405,7 @@ export class CrashIncidentRecord {
     this.sessionId = sessionId;
     this.viewId = viewId;
     this.viewName = viewName;
+    this.viewUrl = viewUrl;
   }
 
   serialize(): string {
@@ -417,7 +420,8 @@ export class CrashIncidentRecord {
       'sdk_version': this.sdkVersion,
       'session_id': this.sessionId,
       'view_id': this.viewId,
-      'view_name': this.viewName
+      'view_name': this.viewName,
+      'view_url': this.viewUrl
     };
     return JSON.stringify(record);
   }
@@ -451,7 +455,8 @@ export class CrashIncidentRecord {
         CrashIncidentRecord.stringValue(record['sdk_version']),
         CrashIncidentRecord.stringValue(record['session_id']),
         CrashIncidentRecord.stringValue(record['view_id']),
-        CrashIncidentRecord.stringValue(record['view_name']));
+        CrashIncidentRecord.stringValue(record['view_name']),
+        CrashIncidentRecord.stringValue(record['view_url']));
     } catch (_error) {
       return null;
     }

@@ -108,6 +108,20 @@ export default function crashReportTests(): void {
         expect(RumFeature.errorMessageFromText(text)).assertEqual('RangeError: out of bounds');
       });
 
+    it('rendersLabeledTextMatchingOsCallbackShape',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        // Both errorManager callbacks must feed the crash module the same
+        // labeled shape, or live dedup fingerprints never match across them.
+        const err: Error = new RangeError('index out of bounds');
+        err.stack = '    at pick (Index.ets:12:5)';
+
+        const text: string = RumFeature.labeledErrorText(err);
+
+        expect(text.indexOf('Error name:RangeError')).assertEqual(0);
+        expect(text.indexOf('\nError message:index out of bounds\n')).assertLarger(-1);
+        expect(text.indexOf('Stacktrace:\n    at pick (Index.ets:12:5)')).assertLarger(-1);
+      });
+
     it('skipsSourceMapBannerWhenDerivingMessage',
       TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
         const bannerOnly: string = 'Cannot get SourceMap info, dump raw stack:';

@@ -42,6 +42,28 @@ export default function crashIncidentTests(): void {
       expect(live).assertEqual(watcher);
     });
 
+    it('roundTripsViewUrlThroughSerialization', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+      const record: CrashIncidentRecord = new CrashIncidentRecord(
+        'inc-1', 1000, 'Error', 'boom', 'Error: boom\n    at f (a.ets:1:1)', 'fp-1',
+        JsCrashPolicy.REPORT_THEN_EXIT, '0.2.0', 's-1', 'v-1', 'Home', 'pages/Home');
+
+      const parsed: CrashIncidentRecord | null = CrashIncidentRecord.parse(record.serialize());
+
+      expect(parsed !== null).assertTrue();
+      if (parsed !== null) {
+        expect(parsed.viewUrl).assertEqual('pages/Home');
+      }
+      // Records written by older SDK versions (no view_url key) still parse.
+      const legacy: CrashIncidentRecord | null = CrashIncidentRecord.parse(
+        '{"incident_id":"inc-2","timestamp_ms":1,"exception_name":"Error","message":"m",' +
+        '"stack":"s","fingerprint":"fp","policy":"REPORT_THEN_EXIT","sdk_version":"0.1.0",' +
+        '"session_id":"s","view_id":"v","view_name":"n"}');
+      expect(legacy !== null).assertTrue();
+      if (legacy !== null) {
+        expect(legacy.viewUrl).assertEqual('');
+      }
+    });
+
     it('ignoresSourceMapBannerWhenParsingParts', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
       const bannerText: string =
         'Cannot get SourceMap info, dump raw stack:\n    at anonymous (entry|entry|1.0.0|src/main/ets/pages/Index.ts:12:5)';

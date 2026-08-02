@@ -20,15 +20,16 @@ export class RumSessionScope implements RumScope {
   private readonly sampled: boolean;
   private readonly startedAtMs: number;
   private lastActivityMs: number;
+  private lastKeepAliveMs: number = 0;
   private activeView: RumViewScope | null = null;
-  // View that was active when this session expired, so the parent can restart
-  // it in the replacement session (Android/iOS parity). Without this, a session
-  // renewed after the 15-min inactivity gap has no view at all: actions and
-  // resources are silently dropped, errors go out viewless, and the backend —
-  // which materializes session rows exclusively from view events — never
+  // Last view this session started, so the parent can restart it in the
+  // replacement session after expiry (Android/iOS parity). Without this, a
+  // session renewed after the 15-min inactivity gap has no view at all: actions
+  // and resources are silently dropped, errors go out viewless, and the backend
+  // — which materializes session rows exclusively from view events — never
   // creates the session, so its duration reads as 0/missing.
-  private expiredViewKey: string | null = null;
-  private expiredViewName: string | null = null;
+  private lastViewKey: string | null = null;
+  private lastViewName: string = '';
 
   constructor(
     featureScope: FeatureScope,
@@ -52,19 +53,28 @@ export class RumSessionScope implements RumScope {
 
   handleEvent(event: RumRawEvent): RumScope | null {
     if (this.isExpired(event.timestampMs)) {
-      // Close the open view before discarding the session, so its final state is sent.
+      // Close the open view before discarding the session, so its final state is
+      // sent. Close it at the last observed-alive time, NOT at the detecting
+      // event's time: after a background gap the detecting event can be hours
+      // later, and stamping it would credit the whole idle gap to the view
+      // (a 5-min visit reads as 4 h of time_spent).
       if (this.activeView !== null) {
-        this.expiredViewKey = this.activeView.getViewKey();
-        this.expiredViewName = this.activeView.getViewName();
-        this.activeView.forceStop(event.timestampMs);
+        const closeAtMs: number = Math.max(this.lastActivityMs, this.lastKeepAliveMs);
+        this.activeView.forceStop(closeAtMs);
         this.activeView = null;
       }
+      // Un-publish the session identity so a crash in the gap before the next
+      // session isn't attributed to this dead one (the context is merge-only).
+      const cleared: Record<string, Object> = {};
+      cleared['session.id'] = '';
+      this.core.updateFeatureContext('rum', cleared);
       return null; // parent starts a fresh session and replays the event
     }
 
     // Keep-alive only refreshes the active view's time_spent; it must NOT count as
     // activity (else inactivity expiry never fires) and must not start a view.
     if (event.kind === 'keepAlive') {
+      this.lastKeepAliveMs = event.timestampMs;
       if (this.sampled && this.activeView !== null) {
         this.activeView.handleEvent(event);
       }
@@ -82,6 +92,8 @@ export class RumSessionScope implements RumScope {
       if (this.activeView !== null) {
         this.activeView.forceStop(event.timestampMs);
       }
+      this.lastViewKey = event.key ?? '';
+      this.lastViewName = event.name ?? '';
       const viewId: string = util.generateRandomUUID(true);
       this.activeView = new RumViewScope(
         this.featureScope, this.core, this.applicationId, this.sessionId,
@@ -104,12 +116,12 @@ export class RumSessionScope implements RumScope {
     return this.sessionId;
   }
 
-  getExpiredViewKey(): string | null {
-    return this.expiredViewKey;
+  getLastViewKey(): string | null {
+    return this.lastViewKey;
   }
 
-  getExpiredViewName(): string | null {
-    return this.expiredViewName;
+  getLastViewName(): string {
+    return this.lastViewName;
   }
 
   isSampled(): boolean {

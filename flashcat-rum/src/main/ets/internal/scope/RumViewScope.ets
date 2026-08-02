@@ -84,8 +84,18 @@ export class RumViewScope implements RumScope {
           // keeps the view alive until its resources settle).
           this.pendingResources.clear();
           this.writeViewEvent(event.timestampMs);
+          this.clearViewContext();
           return null;
         }
+        return this;
+      case 'markCrash':
+        // A crash is being persisted for next-launch replay: count it on this
+        // view NOW (the crashing process is the only one that can), so
+        // view.crash.count → session_crash_count → crash-free rate include it.
+        // The error event itself is written by the replay, not here.
+        this.errorCount += 1;
+        this.crashCount += 1;
+        this.writeViewEvent(event.timestampMs);
         return this;
       case 'addAction':
         this.actionCount += 1;
@@ -152,6 +162,20 @@ export class RumViewScope implements RumScope {
     this.active = false;
     this.pendingResources.clear(); // drop in-flight resources with the view
     this.writeViewEvent(nowMs);
+    this.clearViewContext();
+  }
+
+  /**
+   * Clear the published view identity once this view ends. The feature context
+   * is merge-only, so without this a later crash (CrashFeature reads view.id at
+   * crash time) would be stamped with a view from a session it doesn't belong to.
+   */
+  private clearViewContext(): void {
+    const update: Record<string, Object> = {};
+    update['view.id'] = '';
+    update['view.name'] = '';
+    update['view.url'] = '';
+    this.core.updateFeatureContext('rum', update);
   }
 
   isActive(): boolean {

@@ -112,6 +112,17 @@ export default function schemaAlignmentTests(): void {
       expect(usr['id']).assertEqual('alice');
     });
 
+    it('extraInfoCannotOverrideAnonymousId', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+      const context: FlashcatContext = testContext();
+      context.user = { extraInfo: { 'anonymous_id': 'spoofed' } };
+      const event = RumEventAssembler.view(
+        context, 'app-1', 'session-1', 'view-id', 'Home',
+        1000, 0, 0, 0, 0, 0, 1, true, {});
+
+      const usr = record(event['usr']);
+      expect(usr['anonymous_id']).assertEqual('anon-device-1');
+    });
+
     it('crashAttributesUseBackendErrorSchemaFields', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
       const images: Array<Record<string, Object>> = [
         { 'uuid': 'abc123', 'name': 'libentry.so', 'is_system': false, 'arch': 'arm64' }

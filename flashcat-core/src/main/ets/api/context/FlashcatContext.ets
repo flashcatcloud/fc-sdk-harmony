@@ -41,7 +41,8 @@ export interface FlashcatContext {
   // Stable pseudonymous device identity (usr.anonymous_id). Generated once,
   // persisted in Preferences, and attached to every event so sessions can be
   // attributed to a returning device even before setUserInfo is called.
-  anonymousId: string;
+  // Optional so existing FlashcatContext literals keep compiling.
+  anonymousId?: string;
   network: NetworkInfo;
   // Per-feature mutable baggage (e.g. RUM publishes the active view/session here
   // so Logs and Trace can correlate). Keyed by feature name.

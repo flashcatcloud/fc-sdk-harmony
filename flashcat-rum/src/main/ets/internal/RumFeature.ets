@@ -91,11 +91,15 @@ export class RumFeature implements Feature, FeatureEventReceiver {
           this.reportObservedError(errMsg, 'unhandled', RumFeature.errorMessageFromText(errMsg));
         },
         onException: (errObject: Error) => {
-          const text: string = RumFeature.unhandledErrorText(errObject);
+          // Use the labeled three-part text (same shape onUnhandledException
+          // receives from the OS) rather than the bare frames-only stack: the
+          // crash module fingerprints this text, and mismatched shapes between
+          // the two callbacks made the live dedup guard never match — one throw
+          // reported twice. The Error object's name/message also survive even
+          // when the runtime replaced the stack with the "Cannot get SourceMap
+          // info" banner.
+          const text: string = RumFeature.labeledErrorText(errObject);
           FlashcatLog.d(`rum.error: onException len=${text.length}`);
-          // The Error object carries name/message separately from the stack text, so
-          // the message survives even when the runtime replaced the stack with the
-          // "Cannot get SourceMap info" banner (frames-only / untranslatable stacks).
           this.reportObservedError(text, 'exception', RumFeature.messageFromError(errObject));
         }
       });
@@ -207,14 +211,19 @@ export class RumFeature implements Feature, FeatureEventReceiver {
     // No original session to attach to (crash before the first session, or an
     // unsampled one) — report into the current session at the current time. A
     // backdated timestamp would start the session in the past and expire it
-    // instantly, so the original crash time is NOT restored on this path.
+    // instantly, so the original crash time is preserved as an attribute only.
+    const attributes: Record<string, Object> = RumFeature.crashAttributes(event);
+    const crashedAtMs: number | undefined = RumFeature.optionalPositiveNumber(event['timestamp_ms']);
+    if (crashedAtMs !== undefined) {
+      attributes['crash.crashed_at_ms'] = crashedAtMs;
+    }
     m.reportError(
       RumFeature.asString(event['message']),
       RumErrorSource.SOURCE,
       RumFeature.asString(event['stack']),
       true,
       'unhandled',
-      RumFeature.crashAttributes(event));
+      attributes);
   }
 
   /** Assemble + persist a replayed crash error stamped with the crashed run's
@@ -269,6 +278,9 @@ export class RumFeature implements Feature, FeatureEventReceiver {
     RumFeature.copyNonEmptyString(event, attributes, 'original_session_id', 'crash.original_session_id');
     RumFeature.copyNonEmptyString(event, attributes, 'original_view_id', 'crash.original_view_id');
     RumFeature.copyNonEmptyString(event, attributes, 'original_view_name', 'crash.original_view_name');
+    // Internal attribute: RumEventAssembler lifts it into view.url so the
+    // replayed error's view.url matches the crashed view's own view events.
+    RumFeature.copyNonEmptyString(event, attributes, 'original_view_url', 'view.url');
     if (event['crash.recovered'] === true) {
       attributes['crash.recovered'] = true;
     }
@@ -350,6 +362,20 @@ export class RumFeature implements Feature, FeatureEventReceiver {
           crash.sendEvent(control);
           if (control['duplicate'] === true) {
             return;
+          }
+          // The incident was durably persisted: the error event arrives via
+          // next-launch replay (bypassing the scope tree), so count the crash on
+          // the active view here — this is the only process that can.
+          if (control['pending_written'] === true) {
+            try {
+              const monitor: DefaultRumMonitor | null = this.monitor;
+              if (monitor !== null) {
+                monitor.markCrash();
+              }
+            } catch (countError) {
+              // Counting must never interfere with policy-driven termination.
+              FlashcatLog.e(`rum.error: crash count failed: ${RumFeature.errorText(countError)}`);
+            }
           }
           if (control['report_async'] === true) {
             asyncReportAttempted = true;
@@ -518,6 +544,18 @@ export class RumFeature implements Feature, FeatureEventReceiver {
     }
     const name: string = errObject.name.length > 0 ? errObject.name : 'Error';
     return `${name}: ${errObject.message}`;
+  }
+
+  /**
+   * Renders an Error object in the labeled three-part shape the OS uses for
+   * onUnhandledException text, so both live callbacks produce the same
+   * name/message and the crash module's fingerprints (live dedup guard,
+   * cross-launch consumed matching) agree across channels.
+   */
+  static labeledErrorText(errObject: Error): string {
+    const name: string = errObject.name.length > 0 ? errObject.name : 'Error';
+    const stack: string = errObject.stack ?? '';
+    return `Error name:${name}\nError message:${errObject.message}\nStacktrace:\n${stack}`;
   }
 
   /**

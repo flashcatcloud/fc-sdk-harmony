@@ -131,6 +131,7 @@ export class CrashFeature implements Feature, FeatureEventReceiver {
     const originSessionId: string = sessionSampled ? CrashFeature.stringValue(rumContext['session.id']) : '';
     const originViewId: string = sessionSampled ? CrashFeature.stringValue(rumContext['view.id']) : '';
     const originViewName: string = sessionSampled ? CrashFeature.stringValue(rumContext['view.name']) : '';
+    const originViewUrl: string = sessionSampled ? CrashFeature.stringValue(rumContext['view.url']) : '';
     const incidentId: string = util.generateRandomUUID(true);
     // Persist a conservative exit outcome first. Recovery policy is written to
     // the same incident only after loop history is durable and restart is allowed,
@@ -148,7 +149,8 @@ export class CrashFeature implements Feature, FeatureEventReceiver {
       context.sdkVersion,
       originSessionId,
       originViewId,
-      originViewName);
+      originViewName,
+      originViewUrl);
 
     let written: boolean = this.persistPendingIncident(incident);
     if (this.activePolicy === JsCrashPolicy.REPORT_AND_RECOVER) {
@@ -178,7 +180,8 @@ export class CrashFeature implements Feature, FeatureEventReceiver {
           context.sdkVersion,
           originSessionId,
           originViewId,
-          originViewName);
+          originViewName,
+          originViewUrl);
         written = this.persistPendingIncident(recoveryIncident);
         if (written) {
           event['recover'] = true;

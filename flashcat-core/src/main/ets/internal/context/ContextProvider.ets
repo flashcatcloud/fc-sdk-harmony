@@ -28,12 +28,12 @@ export class ContextProvider {
   private appVersion: string = '0.0.0';
   private bundleId: string = '';
 
-  constructor(context: common.Context, configuration: Configuration) {
+  constructor(context: common.Context, configuration: Configuration, persistIdentity: boolean = true) {
     this.configuration = configuration;
     this.device = ContextProvider.readDeviceInfo();
     // Sync (like app info below) so the very first events — written before any
     // async init could settle — already carry the anonymous id.
-    this.anonymousId = ContextProvider.loadOrCreateAnonymousId(context);
+    this.anonymousId = ContextProvider.loadOrCreateAnonymousId(context, persistIdentity);
     this.prepareAppInfo();
   }
 
@@ -41,9 +41,11 @@ export class ContextProvider {
    * Loads the persisted anonymous device id, generating + persisting one on
    * first launch. Uses the synchronous Preferences API: an async read would race
    * the first view event (written synchronously during RUM enable/startView) and
-   * ship it with an empty identity.
+   * ship it with an empty identity. When persistence is not allowed (tracking
+   * consent NOT_GRANTED), no durable identifier is written — a per-process id
+   * is used instead.
    */
-  private static loadOrCreateAnonymousId(context: common.Context): string {
+  private static loadOrCreateAnonymousId(context: common.Context, persistIdentity: boolean): string {
     try {
       const prefs: preferences.Preferences =
         preferences.getPreferencesSync(context, { name: PREFERENCES_NAME });
@@ -52,11 +54,13 @@ export class ContextProvider {
         return existing;
       }
       const generated: string = util.generateRandomUUID(true);
-      prefs.putSync(ANONYMOUS_ID_KEY, generated);
-      prefs.flush((_err) => {
-        // Durability is best-effort: on flush failure the id regenerates next
-        // launch, which only splits the device identity — never blocks events.
-      });
+      if (persistIdentity) {
+        prefs.putSync(ANONYMOUS_ID_KEY, generated);
+        prefs.flush((_err) => {
+          // Durability is best-effort: on flush failure the id regenerates next
+          // launch, which only splits the device identity — never blocks events.
+        });
+      }
       return generated;
     } catch (_e) {
       // Preferences unavailable — degrade to a per-process id (still non-empty).

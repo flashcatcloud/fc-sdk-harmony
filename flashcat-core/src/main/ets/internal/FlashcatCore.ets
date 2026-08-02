@@ -34,7 +34,9 @@ export class FlashcatCore implements SdkCore {
     this.context = context;
     this.configuration = configuration;
     this.consent = consent;
-    this.contextProvider = new ContextProvider(context, configuration);
+    // Under NOT_GRANTED no durable device identifier may be written.
+    this.contextProvider = new ContextProvider(
+      context, configuration, consent !== TrackingConsent.NOT_GRANTED);
     this.crashPendingStore = new CrashPendingStore(context);
   }
 
@@ -141,8 +143,11 @@ export class FlashcatCore implements SdkCore {
 
   stop(): void {
     // Final view refresh before shutdown — without it the last view keeps the
-    // time_spent of its last incidental write (0 for a quiet session).
-    this.bus.send(RUM_FEATURE_NAME, { 'type': 'keep_alive' } as Record<string, Object>);
+    // time_spent of its last incidental write (0 for a quiet session). Skipped
+    // under NOT_GRANTED where every write is dropped anyway.
+    if (this.consent !== TrackingConsent.NOT_GRANTED) {
+      this.bus.send(RUM_FEATURE_NAME, { 'type': 'keep_alive' } as Record<string, Object>);
+    }
     this.features.forEach((r: RegisteredFeature) => {
       r.persistence.rollActive(); // close buffered events so they're recovered next launch
       r.scheduler.stop();
@@ -153,10 +158,13 @@ export class FlashcatCore implements SdkCore {
   }
 
   flush(): void {
+    if (this.consent === TrackingConsent.NOT_GRANTED) {
+      return; // every write is dropped — nothing to refresh or upload
+    }
     // Let RUM emit a final view update (current time_spent) before we roll + upload,
     // so the session/view duration reflects real dwell time at backgrounding.
-    // Sent even under PENDING consent: those writes land in the pending buffer
-    // and migrate on GRANTED — they must carry the final time_spent too.
+    // Sent under PENDING consent too: those writes land in the pending buffer
+    // and migrate on GRANTED — they must carry the final time_spent as well.
     this.bus.send(RUM_FEATURE_NAME, { 'type': 'keep_alive' } as Record<string, Object>);
     if (this.consent !== TrackingConsent.GRANTED) {
       return;
@@ -168,6 +176,9 @@ export class FlashcatCore implements SdkCore {
   }
 
   async flushAndWait(maxBatchesPerFeature: number = 20): Promise<void> {
+    if (this.consent === TrackingConsent.NOT_GRANTED) {
+      return;
+    }
     this.bus.send(RUM_FEATURE_NAME, { 'type': 'keep_alive' } as Record<string, Object>);
     if (this.consent !== TrackingConsent.GRANTED) {
       return;

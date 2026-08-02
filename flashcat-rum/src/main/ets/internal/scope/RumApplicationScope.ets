@@ -51,27 +51,35 @@ export class RumApplicationScope implements RumScope {
   }
 
   private rememberExpiredView(session: RumSessionScope): void {
-    const key: string | null = session.getExpiredViewKey();
+    const key: string | null = session.getLastViewKey();
     if (key !== null) {
       this.lastExpiredViewKey = key;
-      this.lastExpiredViewName = session.getExpiredViewName() ?? '';
+      this.lastExpiredViewName = session.getLastViewName();
     }
   }
 
   /**
-   * Restart the view that was active when the previous session expired (Datadog
-   * Android/iOS parity), unless the triggering event starts its own view.
-   * Without this, a renewed session has no view: actions/resources are silently
-   * dropped, errors go out viewless, and the backend — which materializes
-   * session rows exclusively from view events — never creates the session, so
-   * its duration reads as 0/missing.
+   * Restart the previous session's last view in the replacement session
+   * (Datadog Android/iOS parity). Without this, a renewed session has no view:
+   * actions/resources are silently dropped, errors go out viewless, and the
+   * backend — which materializes session rows exclusively from view events —
+   * never creates the session, so its duration reads as 0/missing.
+   *
+   * Only events that represent NEW user activity warrant a restart. A
+   * startView brings its own view, and a stopView / stopResource* merely closes
+   * out something from the dead session — restarting for those would let the
+   * act of leaving manufacture a phantom zero-duration session.
    */
   private maybeRestartExpiredView(session: RumSessionScope, event: RumRawEvent): void {
     const key: string | null = this.lastExpiredViewKey;
     const name: string = this.lastExpiredViewName;
     this.lastExpiredViewKey = null; // one-shot: consumed or superseded
     this.lastExpiredViewName = '';
-    if (key === null || event.kind === 'startView') {
+    if (key === null) {
+      return;
+    }
+    if (event.kind !== 'addAction' && event.kind !== 'addError'
+      && event.kind !== 'startResource' && event.kind !== 'markCrash') {
       return;
     }
     const restart: RumRawEvent = {

@@ -299,13 +299,6 @@ export class RumEventAssembler {
     event['connectivity'] = connectivity;
 
     const usr: Record<string, Object> = {};
-    // Always attach the persisted anonymous device id so a session has an
-    // identity even before (or without) setUserInfo — the backend's session
-    // record is derived from the session's earliest view event, which is
-    // written at launch, before any login.
-    if (context.anonymousId.length > 0) {
-      usr['anonymous_id'] = context.anonymousId;
-    }
     if (context.user.id !== undefined) {
       usr['id'] = context.user.id;
     }
@@ -320,6 +313,15 @@ export class RumEventAssembler {
       for (const k of Object.keys(extra)) {
         usr[k] = extra[k];
       }
+    }
+    // Always attach the persisted anonymous device id so a session has an
+    // identity even before (or without) setUserInfo — the backend's session
+    // record is derived from the session's earliest view event, which is
+    // written at launch, before any login. Written last so an extraInfo key
+    // cannot overwrite the device identity.
+    const anonymousId: string = context.anonymousId ?? '';
+    if (anonymousId.length > 0) {
+      usr['anonymous_id'] = anonymousId;
     }
     if (Object.keys(usr).length > 0) {
       event['usr'] = usr;
