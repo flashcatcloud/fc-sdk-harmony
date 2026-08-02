@@ -1,5 +1,6 @@
 import { common, bundleManager } from '@kit.AbilityKit';
 import { deviceInfo } from '@kit.BasicServicesKit';
+import { connection } from '@kit.NetworkKit';
 import { preferences } from '@kit.ArkData';
 import { util } from '@kit.ArkTS';
 import { Configuration } from '../../config/Configuration';
@@ -13,17 +14,17 @@ const ANONYMOUS_ID_KEY: string = 'anonymous_id';
 /**
  * Assembles the FlashcatContext attached to every event. Device info is read
  * synchronously at init; app version/bundle id is read asynchronously (best
- * effort) and backfilled. User and feature baggage are mutable.
- *
- * Network connectivity is left as a TODO subscription (not required for the
- * phase-1 View/Error events).
+ * effort) and backfilled. User and feature baggage are mutable. Network
+ * connectivity is snapshotted at init and kept fresh via a NetConnection
+ * subscription (best-effort; requires ohos.permission.GET_NETWORK_INFO).
  */
 export class ContextProvider {
   private readonly configuration: Configuration;
   private readonly device: DeviceInfo;
   private readonly anonymousId: string;
   private user: UserInfo = {};
-  private network: NetworkInfo = { connectivity: 'unknown' };
+  private network: NetworkInfo = { status: 'maybe', interfaces: [] };
+  private netConnection: connection.NetConnection | null = null;
   private readonly featureContext: Record<string, Record<string, Object>> = {};
   private appVersion: string = '0.0.0';
   private bundleId: string = '';
@@ -35,6 +36,69 @@ export class ContextProvider {
     // async init could settle — already carry the anonymous id.
     this.anonymousId = ContextProvider.loadOrCreateAnonymousId(context, persistIdentity);
     this.prepareAppInfo();
+    this.readInitialNetwork();
+    this.subscribeNetwork();
+  }
+
+  /**
+   * Best-effort connectivity. Requires ohos.permission.GET_NETWORK_INFO; when
+   * the host app lacks it every call throws and the context stays at
+   * status 'maybe' (the schema's "unknown" value) — never a crash.
+   */
+  private readInitialNetwork(): void {
+    try {
+      const net: connection.NetHandle = connection.getDefaultNetSync();
+      if (net === undefined || net.netId === 0) {
+        this.network = { status: 'not_connected', interfaces: [] };
+        return;
+      }
+      const caps: connection.NetCapabilities = connection.getNetCapabilitiesSync(net);
+      this.network = { status: 'connected', interfaces: ContextProvider.interfacesFrom(caps) };
+    } catch (_e) {
+      // permission missing or API unavailable — keep 'maybe'
+    }
+  }
+
+  private subscribeNetwork(): void {
+    try {
+      const conn: connection.NetConnection = connection.createNetConnection();
+      conn.register((_err) => {
+        // registration result is best-effort; callbacks simply won't fire on error
+      });
+      conn.on('netCapabilitiesChange', (info: connection.NetCapabilityInfo) => {
+        this.network = {
+          status: 'connected',
+          interfaces: ContextProvider.interfacesFrom(info.netCap)
+        };
+      });
+      conn.on('netLost', (_net: connection.NetHandle) => {
+        this.network = { status: 'not_connected', interfaces: [] };
+      });
+      conn.on('netUnavailable', () => {
+        this.network = { status: 'not_connected', interfaces: [] };
+      });
+      this.netConnection = conn;
+    } catch (_e) {
+      // subscription unavailable — the initial snapshot (or 'maybe') stands
+    }
+  }
+
+  private static interfacesFrom(caps: connection.NetCapabilities): string[] {
+    const interfaces: string[] = [];
+    const bearers: connection.NetBearType[] = caps.bearerTypes ?? [];
+    for (let i: number = 0; i < bearers.length; i++) {
+      const bearer: connection.NetBearType = bearers[i];
+      if (bearer === connection.NetBearType.BEARER_WIFI) {
+        interfaces.push('wifi');
+      } else if (bearer === connection.NetBearType.BEARER_CELLULAR) {
+        interfaces.push('cellular');
+      } else if (bearer === connection.NetBearType.BEARER_ETHERNET) {
+        interfaces.push('ethernet');
+      } else {
+        interfaces.push('other');
+      }
+    }
+    return interfaces;
   }
 
   /**

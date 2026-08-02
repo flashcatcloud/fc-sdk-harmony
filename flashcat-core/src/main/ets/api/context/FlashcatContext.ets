@@ -16,9 +16,16 @@ export interface UserInfo {
   extraInfo?: Record<string, Object>;
 }
 
-/** Current connectivity. */
+/**
+ * Current connectivity, in the RUM schema's vocabulary:
+ * `status` ∈ connected / not_connected / maybe (unknown), and the active
+ * `interfaces` (wifi / cellular / ethernet / other). The previous shape put an
+ * interface-style word into `status`, which is outside the backend's enum and
+ * made the connectivity facet unusable.
+ */
 export interface NetworkInfo {
-  connectivity: string;  // wifi / cellular / ethernet / none
+  status: string;         // connected / not_connected / maybe
+  interfaces: string[];   // wifi / cellular / ethernet / other (empty when unknown)
   carrierName?: string;
 }
 

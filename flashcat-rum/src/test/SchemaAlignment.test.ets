@@ -21,7 +21,7 @@ function testContext(): FlashcatContext {
     },
     user: {},
     anonymousId: 'anon-device-1',
-    network: { connectivity: 'wifi' },
+    network: { status: 'connected', interfaces: ['wifi'] },
     featureContext: {}
   };
 }
@@ -110,6 +110,38 @@ export default function schemaAlignmentTests(): void {
       const usr = record(event['usr']);
       expect(usr['anonymous_id']).assertEqual('anon-device-1');
       expect(usr['id']).assertEqual('alice');
+    });
+
+    it('emitsSchemaVocabularyForOsDeviceConnectivityAndErrorId',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        const context: FlashcatContext = testContext();
+        context.device.osVersion = '5.0.0.102';
+        context.device.deviceType = 'phone';
+        const event = RumEventAssembler.error(
+          context, 'app-1', 'session-1', undefined, undefined,
+          'boom', 'source', 'stack', false, 'handled', 1000, {});
+
+        const os = record(event['os']);
+        const device = record(event['device']);
+        const connectivity = record(event['connectivity']);
+        const error = record(event['error']);
+        expect(os['version_major']).assertEqual('5');
+        expect(device['type']).assertEqual('mobile');
+        expect(device['name']).assertEqual('Pura');
+        expect(connectivity['status']).assertEqual('connected');
+        expect((connectivity['interfaces'] as string[])[0]).assertEqual('wifi');
+        expect((error['id'] as string).length > 0).assertTrue();
+      });
+
+    it('mapsHarmonyDeviceTypesToSchemaEnum', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+      expect(RumEventAssembler.deviceTypeFor('phone')).assertEqual('mobile');
+      expect(RumEventAssembler.deviceTypeFor('default')).assertEqual('mobile');
+      expect(RumEventAssembler.deviceTypeFor('tablet')).assertEqual('tablet');
+      expect(RumEventAssembler.deviceTypeFor('2in1')).assertEqual('desktop');
+      expect(RumEventAssembler.deviceTypeFor('tv')).assertEqual('tv');
+      expect(RumEventAssembler.deviceTypeFor('wearable')).assertEqual('other');
+      expect(RumEventAssembler.majorVersion('5.0.0.102')).assertEqual('5');
+      expect(RumEventAssembler.majorVersion('NEXT')).assertEqual('');
     });
 
     it('extraInfoCannotOverrideAnonymousId', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
