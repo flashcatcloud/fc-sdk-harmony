@@ -12,6 +12,21 @@ const MS_TO_NS: number = 1e6;
 // interaction. Android uses 5 min; we use a finer cadence for tighter mobile
 // session-duration accuracy. See RumViewScope keep-alive handling.
 const KEEP_ALIVE_MS: number = 30 * 1000;
+// Timed actions: cap duration and prune abandoned entries. A startAction whose
+// stopAction never comes (user navigated away mid-gesture) must not leak, and a
+// later same-key stopAction must not report an hours-long loading_time.
+const ACTION_MAX_DURATION_MS: number = 10 * 60 * 1000;
+const MAX_ACTIVE_ACTIONS: number = 128;
+
+class ActiveActionRecord {
+  readonly startMs: number;
+  readonly attributes?: Record<string, Object>;
+
+  constructor(startMs: number, attributes?: Record<string, Object>) {
+    this.startMs = startMs;
+    this.attributes = attributes;
+  }
+}
 
 /**
  * Default RumMonitor. Translates the public API into RumRawEvents fed to the
@@ -24,7 +39,7 @@ const KEEP_ALIVE_MS: number = 30 * 1000;
 export class DefaultRumMonitor implements RumMonitor {
   private readonly applicationScope: RumApplicationScope;
   private readonly globalAttributes: Map<string, Object> = new Map<string, Object>();
-  private readonly activeActions: Map<string, number> = new Map<string, number>(); // key → start ms
+  private readonly activeActions: Map<string, ActiveActionRecord> = new Map<string, ActiveActionRecord>();
   private keepAliveTimerId: number = -1;
 
   constructor(core: SdkCore, featureScope: FeatureScope, configuration: RumConfiguration) {
@@ -53,23 +68,61 @@ export class DefaultRumMonitor implements RumMonitor {
 
   /** Begin a timed action; stopAction emits the ActionEvent with the measured duration. */
   startAction(type: RumActionType, name: string, attributes?: Record<string, Object>): void {
-    this.activeActions.set(DefaultRumMonitor.actionKey(type, name), Date.now());
+    if (this.activeActions.size >= MAX_ACTIVE_ACTIONS) {
+      // Evict the oldest abandoned entry (Map preserves insertion order).
+      const oldest: IterableIterator<string> = this.activeActions.keys();
+      const first: IteratorResult<string> = oldest.next();
+      if (!first.done) {
+        this.activeActions.delete(first.value);
+      }
+    }
+    this.activeActions.set(
+      DefaultRumMonitor.actionKey(type, name), new ActiveActionRecord(Date.now(), attributes));
   }
 
   stopAction(type: RumActionType, name: string, attributes?: Record<string, Object>): void {
     const k: string = DefaultRumMonitor.actionKey(type, name);
-    const start: number | undefined = this.activeActions.get(k);
+    const record: ActiveActionRecord | undefined = this.activeActions.get(k);
     let durationNs: number = 0;
-    if (start !== undefined) {
-      durationNs = Math.max(0, Date.now() - start) * MS_TO_NS;
+    let dateMs: number | undefined = undefined;
+    let merged: Record<string, Object> | undefined = attributes;
+    if (record !== undefined) {
+      // Cap the measured duration: a stale entry from an abandoned gesture must
+      // not surface as an hours-long action.
+      const elapsedMs: number = Math.min(
+        Math.max(0, Date.now() - record.startMs), ACTION_MAX_DURATION_MS);
+      durationNs = elapsedMs * MS_TO_NS;
+      dateMs = record.startMs; // the action happened when it STARTED
+      merged = DefaultRumMonitor.mergeAttributes(record.attributes, attributes);
       this.activeActions.delete(k);
     }
-    this.emitAction(type, name, durationNs, attributes);
+    this.emitAction(type, name, durationNs, merged, dateMs);
+  }
+
+  private static mergeAttributes(
+    base?: Record<string, Object>, extra?: Record<string, Object>
+  ): Record<string, Object> | undefined {
+    if (base === undefined) {
+      return extra;
+    }
+    const merged: Record<string, Object> = {};
+    for (const k of Object.keys(base)) {
+      merged[k] = base[k];
+    }
+    if (extra !== undefined) {
+      for (const k of Object.keys(extra)) {
+        merged[k] = extra[k];
+      }
+    }
+    return merged;
   }
 
   private emitAction(type: RumActionType, name: string, durationNs: number,
-    attributes?: Record<string, Object>): void {
+    attributes?: Record<string, Object>, dateMs?: number): void {
     const e: RumRawEvent = this.raw('addAction', attributes);
+    if (dateMs !== undefined) {
+      e.timestampMs = dateMs;
+    }
     e.name = name;
     e.actionType = type as string;
     e.actionId = util.generateRandomUUID(true);

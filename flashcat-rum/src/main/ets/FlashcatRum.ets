@@ -70,8 +70,15 @@ export class FlashcatRum {
     RumNavigationTracker.attach(context);
   }
 
-  /** Stop automatic View tracking (detach the navigation observer). */
-  static stopViewTracking(): void {
-    RumNavigationTracker.detach();
+  /**
+   * Stop automatic View tracking. With `context`, detaches only that context's
+   * observer (call before an ability is destroyed); without, detaches all.
+   */
+  static stopViewTracking(context?: NavContext): void {
+    if (context !== undefined) {
+      RumNavigationTracker.detachContext(context);
+    } else {
+      RumNavigationTracker.detach();
+    }
   }
 }

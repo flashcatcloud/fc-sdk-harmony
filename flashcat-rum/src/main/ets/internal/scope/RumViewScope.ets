@@ -29,6 +29,7 @@ export class RumViewScope implements RumScope {
   private resourceCount: number = 0;
   private crashCount: number = 0;
   private documentVersion: number = 0;
+  private maxTimeSpentNs: number = 0;
   private active: boolean = true;
   private readonly pendingResources: Map<string, RumResourceScope> = new Map<string, RumResourceScope>();
 
@@ -71,7 +72,12 @@ export class RumViewScope implements RumScope {
         attrs[k] = extra[k];
       }
     }
-    attrs['view.url'] = this.key;
+    // Fallback only: a caller-supplied view.url (the nav tracker passes the real
+    // route path) must win — clobbering it with the key turned every
+    // auto-tracked view's URL into an opaque pageId, making views ungroupable.
+    if (attrs['view.url'] === undefined) {
+      attrs['view.url'] = this.key;
+    }
     return attrs;
   }
 
@@ -80,9 +86,9 @@ export class RumViewScope implements RumScope {
       case 'stopView':
         if (event.key === this.key) {
           this.active = false;
-          // Phase-1 simplification: in-flight resources die with the view (Android
-          // keeps the view alive until its resources settle).
-          this.pendingResources.clear();
+          // In-flight resources are NOT dropped: the session keeps this scope in
+          // its draining set until they settle (Android parity). Clearing them
+          // here systematically lost exactly the slow and failing requests.
           this.writeViewEvent(event.timestampMs);
           this.clearViewContext();
           return null;
@@ -154,15 +160,23 @@ export class RumViewScope implements RumScope {
     }
   }
 
-  /** Close this view (new view started, or session expired) and emit a final event. */
+  /** Close this view (new view started, or session expired) and emit a final
+   * event. In-flight resources stay pending — the session drains them. */
   forceStop(nowMs: number): void {
     if (!this.active) {
       return;
     }
     this.active = false;
-    this.pendingResources.clear(); // drop in-flight resources with the view
     this.writeViewEvent(nowMs);
     this.clearViewContext();
+  }
+
+  hasPendingResources(): boolean {
+    return this.pendingResources.size > 0;
+  }
+
+  hasPendingResource(key: string): boolean {
+    return this.pendingResources.has(key);
   }
 
   /**
@@ -196,7 +210,12 @@ export class RumViewScope implements RumScope {
 
   private writeViewEvent(nowMs: number): void {
     this.documentVersion += 1;
-    const timeSpentNs: number = Math.max(0, nowMs - this.startedAtMs) * MS_TO_NS;
+    // Monotonic per view: a backwards wall-clock jump (NTP correction, manual
+    // change) must never shrink time_spent — the backend keeps the newest
+    // document, so a clamped-to-0 write would permanently erase real dwell time.
+    const timeSpentNs: number =
+      Math.max(this.maxTimeSpentNs, Math.max(0, nowMs - this.startedAtMs) * MS_TO_NS);
+    this.maxTimeSpentNs = timeSpentNs;
     const version: number = this.documentVersion;
     const actions: number = this.actionCount;
     const errors: number = this.errorCount;

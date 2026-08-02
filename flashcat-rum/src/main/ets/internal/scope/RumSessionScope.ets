@@ -1,4 +1,4 @@
-import { FeatureScope, FlashcatContext, EventWriter, SdkCore } from '@flashcatcloud/core';
+import { FeatureScope, FlashcatContext, EventWriter, SdkCore, FlashcatLog } from '@flashcatcloud/core';
 import { util } from '@kit.ArkTS';
 import { RumScope, RumRawEvent } from './RumScope';
 import { RumViewScope } from './RumViewScope';
@@ -7,6 +7,9 @@ import { writeMapped } from '../RumEventMapperHolder';
 
 const SESSION_INACTIVITY_MS: number = 15 * 60 * 1000;     // 15 min
 const SESSION_MAX_DURATION_MS: number = 4 * 60 * 60 * 1000; // 4 h
+// Closed views kept alive until their in-flight resources settle. Bounded so a
+// leak of never-settling requests can't pin unbounded view scopes.
+const MAX_DRAINING_VIEWS: number = 3;
 
 /**
  * One user session. Owns the current view scope, applies the sampling decision,
@@ -30,6 +33,10 @@ export class RumSessionScope implements RumScope {
   // creates the session, so its duration reads as 0/missing.
   private lastViewKey: string | null = null;
   private lastViewName: string = '';
+  // Closed/superseded views still owning in-flight resources — late responses
+  // are routed here so the slow and failing requests (exactly the ones that
+  // outlive a navigation) are not systematically lost.
+  private readonly drainingViews: RumViewScope[] = [];
 
   constructor(
     featureScope: FeatureScope,
@@ -91,6 +98,7 @@ export class RumSessionScope implements RumScope {
       // A new view supersedes the current one — stop the old view first.
       if (this.activeView !== null) {
         this.activeView.forceStop(event.timestampMs);
+        this.retireView(this.activeView);
       }
       this.lastViewKey = event.key ?? '';
       this.lastViewName = event.name ?? '';
@@ -101,15 +109,57 @@ export class RumSessionScope implements RumScope {
       return this;
     }
 
+    // Late resource completions may belong to an already-closed view held in
+    // the draining set — route by ownership, not blindly to the active view.
+    if (event.kind === 'stopResource' || event.kind === 'stopResourceWithError') {
+      const resourceKey: string = event.key ?? '';
+      if (this.activeView !== null && this.activeView.hasPendingResource(resourceKey)) {
+        this.activeView.handleEvent(event);
+      } else {
+        this.dispatchToDrainingViews(event, resourceKey);
+      }
+      return this;
+    }
+
     if (this.activeView !== null) {
       const result: RumScope | null = this.activeView.handleEvent(event);
       if (result === null) {
+        this.retireView(this.activeView);
         this.activeView = null;
       }
     } else if (event.kind === 'addError') {
       this.writeViewlessError(event); // error before any view started
+    } else if (event.kind === 'addAction' || event.kind === 'startResource') {
+      // Surfaced so integrators can see why their data is missing — previously
+      // these were dropped with no trace at any log level.
+      FlashcatLog.d(`rum.session: dropped viewless ${event.kind} — no active view (missing startView?)`);
     }
     return this;
+  }
+
+  /** Keep a closed view alive (bounded) while it still owns in-flight resources. */
+  private retireView(view: RumViewScope): void {
+    if (!view.hasPendingResources()) {
+      return;
+    }
+    this.drainingViews.push(view);
+    while (this.drainingViews.length > MAX_DRAINING_VIEWS) {
+      this.drainingViews.shift();
+    }
+  }
+
+  private dispatchToDrainingViews(event: RumRawEvent, resourceKey: string): void {
+    for (let i: number = 0; i < this.drainingViews.length; i++) {
+      const view: RumViewScope = this.drainingViews[i];
+      if (view.hasPendingResource(resourceKey)) {
+        view.handleEvent(event);
+        if (!view.hasPendingResources()) {
+          this.drainingViews.splice(i, 1); // fully drained — release the scope
+        }
+        return;
+      }
+    }
+    FlashcatLog.d('rum.session: dropped resource completion for unknown key');
   }
 
   getSessionId(): string {
