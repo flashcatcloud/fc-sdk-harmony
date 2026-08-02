@@ -14,9 +14,15 @@ const STALE_UPLOADING_MS: number = 11 * 60 * 1000;
 
 class RecordingWorkClient implements DeferredUploadWorkSchedulerClient {
   readonly started: Array<workScheduler.WorkInfo> = [];
+  readonly stopped: Array<workScheduler.WorkInfo> = [];
 
   startWork(work: workScheduler.WorkInfo): boolean {
     this.started.push(work);
+    return true;
+  }
+
+  stopWork(work: workScheduler.WorkInfo): boolean {
+    this.stopped.push(work);
     return true;
   }
 }
@@ -27,6 +33,10 @@ class RejectingThenRecordingWorkClient implements DeferredUploadWorkSchedulerCli
   startWork(work: workScheduler.WorkInfo): boolean {
     this.started.push(work);
     return this.started.length > 1;
+  }
+
+  stopWork(_work: workScheduler.WorkInfo): boolean {
+    return true;
   }
 }
 
@@ -175,6 +185,27 @@ export default function deferredUploadTests(): void {
       registrar.register(options);
       registrar.register(options);
 
+      expect(client.started.length).assertEqual(2);
+    });
+
+    it('deregistersPersistedWorkAndAllowsReRegistration', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+      const client = new RecordingWorkClient();
+      const registrar = new DeferredUploadWorkRegistrar(client);
+      const options: DeferredUploadWorkOptions = {
+        workId: 1001,
+        bundleName: 'com.example.demo',
+        abilityName: 'FlashcatUploadWorkAbility',
+        uploadOnWifiOnly: false,
+        requiresCharging: true
+      };
+
+      registrar.register(options);
+      registrar.deregister();     // consent revoked / SDK stopped
+      registrar.deregister();     // idempotent
+      registrar.register(options); // consent granted again
+
+      expect(client.stopped.length).assertEqual(1);
+      expect(client.stopped[0].workId).assertEqual(1001);
       expect(client.started.length).assertEqual(2);
     });
   });

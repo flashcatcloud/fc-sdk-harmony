@@ -1,4 +1,5 @@
 import { common, bundleManager } from '@kit.AbilityKit';
+import { preferences } from '@kit.ArkData';
 import { Configuration } from '../config/Configuration';
 import { TrackingConsent } from '../privacy/TrackingConsent';
 import { SdkCore } from '../api/SdkCore';
@@ -12,6 +13,9 @@ import { DataUploader } from './upload/DataUploader';
 import { UploadScheduler } from './upload/UploadScheduler';
 import { DeferredUploadWorkRegistrar, DeferredUploadWorkOptions } from './upload/DeferredUploadWorkRegistrar';
 import { FlashcatLog } from './FlashcatLog';
+
+const PREFERENCES_NAME: string = 'flashcat_sdk';
+const CONSENT_KEY: string = 'tracking_consent';
 
 /**
  * Default SdkCore implementation. Owns the context provider, message bus, and the
@@ -33,16 +37,27 @@ export class FlashcatCore implements SdkCore {
     this.name = name;
     this.context = context;
     this.configuration = configuration;
-    this.consent = consent;
+    // A persisted NOT_GRANTED from an earlier launch overrides the constructor
+    // literal: consent lives only in app memory otherwise, and a second process
+    // (the deferred-upload WorkScheduler extension) re-initializing with a
+    // hardcoded GRANTED would upload data the user already refused.
+    const persisted: TrackingConsent | null = FlashcatCore.readPersistedConsent(context);
+    if (persisted === TrackingConsent.NOT_GRANTED && consent !== TrackingConsent.NOT_GRANTED) {
+      FlashcatLog.d(`consent: persisted NOT_GRANTED overrides initial ${consent}`);
+      this.consent = TrackingConsent.NOT_GRANTED;
+    } else {
+      this.consent = consent;
+    }
     // Under NOT_GRANTED no durable device identifier may be written.
     this.contextProvider = new ContextProvider(
-      context, configuration, consent !== TrackingConsent.NOT_GRANTED);
+      context, configuration, this.consent !== TrackingConsent.NOT_GRANTED);
     this.crashPendingStore = new CrashPendingStore(context);
   }
 
   /** Called by Flashcat.initialize. Flush buffered events when the app backgrounds. */
   initialize(): void {
     FlashcatLog.setEnabled(this.configuration.verbose);
+    FlashcatCore.persistConsent(this.context, this.consent);
     this.bus.setReceiver(CRASH_STORAGE_TARGET, this.crashPendingStore);
     FlashcatLog.d(`initialize: instance="${this.name}" site=${this.configuration.site} consent=${this.consent}`);
     this.registerDeferredUploadWork();
@@ -132,18 +147,23 @@ export class FlashcatCore implements SdkCore {
     if (previous === consent) {
       return;
     }
+    FlashcatCore.persistConsent(this.context, consent);
     if (consent === TrackingConsent.GRANTED) {
       // Flush the pre-consent buffer into the upload dir, then start uploading.
       this.features.forEach((r: RegisteredFeature) => {
         r.persistence.migratePending();
         r.scheduler.start();
       });
+      this.registerDeferredUploadWork(); // re-arm background delivery
     } else if (consent === TrackingConsent.NOT_GRANTED) {
-      // Discard any pre-consent buffer and stop uploading.
+      // Discard any pre-consent buffer, stop uploading, and cancel the persisted
+      // background job — it would otherwise keep waking the extension to upload
+      // after the user said no.
       this.features.forEach((r: RegisteredFeature) => {
         r.persistence.wipePending();
         r.scheduler.stop();
       });
+      this.deferredUploadRegistrar.deregister();
     } else {
       // → PENDING: stop uploading; new events buffer separately until a decision.
       this.features.forEach((r: RegisteredFeature) => r.scheduler.stop());
@@ -164,6 +184,7 @@ export class FlashcatCore implements SdkCore {
     });
     this.features.clear();
     this.bus.removeReceiver(CRASH_STORAGE_TARGET);
+    this.deferredUploadRegistrar.deregister(); // persisted job must not outlive the SDK
   }
 
   flush(): void {
@@ -223,6 +244,39 @@ export class FlashcatCore implements SdkCore {
       requiresCharging: this.configuration.deferredUploadRequiresCharging
     };
     this.deferredUploadRegistrar.register(options);
+  }
+
+  private static readPersistedConsent(context: common.Context): TrackingConsent | null {
+    try {
+      const prefs: preferences.Preferences =
+        preferences.getPreferencesSync(context, { name: PREFERENCES_NAME });
+      const value: preferences.ValueType = prefs.getSync(CONSENT_KEY, '');
+      if (value === TrackingConsent.GRANTED as string) {
+        return TrackingConsent.GRANTED;
+      }
+      if (value === TrackingConsent.NOT_GRANTED as string) {
+        return TrackingConsent.NOT_GRANTED;
+      }
+      if (value === TrackingConsent.PENDING as string) {
+        return TrackingConsent.PENDING;
+      }
+      return null;
+    } catch (_e) {
+      return null;
+    }
+  }
+
+  private static persistConsent(context: common.Context, consent: TrackingConsent): void {
+    try {
+      const prefs: preferences.Preferences =
+        preferences.getPreferencesSync(context, { name: PREFERENCES_NAME });
+      prefs.putSync(CONSENT_KEY, consent as string);
+      prefs.flush((_err) => {
+        // best-effort durability; worst case the next launch re-reads the old value
+      });
+    } catch (_e) {
+      // best-effort
+    }
   }
 
   private bundleName(): string {
