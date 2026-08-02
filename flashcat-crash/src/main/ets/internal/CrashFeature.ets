@@ -124,6 +124,13 @@ export class CrashFeature implements Feature, FeatureEventReceiver {
     const parts: CrashExceptionParts = CrashFingerprint.partsFromText(text);
     const context: FlashcatContext = this.core.getContext();
     const rumContext: Record<string, Object> = context.featureContext[RUM_FEATURE_NAME] ?? {};
+    // Only record the crashed run's session/view when that session was sampled
+    // in: the replay stamps these ids onto the reported error, and stamping an
+    // unsampled session would surface a session that emitted no other events.
+    const sessionSampled: boolean = rumContext['session.sampled'] !== false;
+    const originSessionId: string = sessionSampled ? CrashFeature.stringValue(rumContext['session.id']) : '';
+    const originViewId: string = sessionSampled ? CrashFeature.stringValue(rumContext['view.id']) : '';
+    const originViewName: string = sessionSampled ? CrashFeature.stringValue(rumContext['view.name']) : '';
     const incidentId: string = util.generateRandomUUID(true);
     // Persist a conservative exit outcome first. Recovery policy is written to
     // the same incident only after loop history is durable and restart is allowed,
@@ -139,9 +146,9 @@ export class CrashFeature implements Feature, FeatureEventReceiver {
       fingerprint,
       initialPolicy,
       context.sdkVersion,
-      CrashFeature.stringValue(rumContext['session.id']),
-      CrashFeature.stringValue(rumContext['view.id']),
-      CrashFeature.stringValue(rumContext['view.name']));
+      originSessionId,
+      originViewId,
+      originViewName);
 
     let written: boolean = this.persistPendingIncident(incident);
     if (this.activePolicy === JsCrashPolicy.REPORT_AND_RECOVER) {
@@ -169,9 +176,9 @@ export class CrashFeature implements Feature, FeatureEventReceiver {
           fingerprint,
           JsCrashPolicy.REPORT_AND_RECOVER,
           context.sdkVersion,
-          CrashFeature.stringValue(rumContext['session.id']),
-          CrashFeature.stringValue(rumContext['view.id']),
-          CrashFeature.stringValue(rumContext['view.name']));
+          originSessionId,
+          originViewId,
+          originViewName);
         written = this.persistPendingIncident(recoveryIncident);
         if (written) {
           event['recover'] = true;

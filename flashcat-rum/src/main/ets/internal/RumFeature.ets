@@ -4,6 +4,8 @@ import {
   Feature,
   FeatureScope,
   FeatureEventReceiver,
+  FlashcatContext,
+  EventWriter,
   RUM_FEATURE_NAME,
   CRASH_FEATURE_NAME,
   FlashcatLog
@@ -16,8 +18,9 @@ import { RumErrorSource, RumResourceKind, RumResourceMethod } from '../RumTypes'
 import { GlobalRumMonitor } from '../RumMonitor';
 import { DefaultRumMonitor } from './monitor/DefaultRumMonitor';
 import { RumAutoInstrumentation } from './RumAutoInstrumentation';
+import { RumEventAssembler } from './assembly/RumEventAssembler';
 import { RumNavigationTracker } from './RumNavigationTracker';
-import { RumEventMapperHolder } from './RumEventMapperHolder';
+import { RumEventMapperHolder, writeMapped } from './RumEventMapperHolder';
 
 // OpenHarmony runtime banner substituted for the translated stack when the
 // module's sourcemap cannot be loaded. Never a meaningful error message.
@@ -183,20 +186,63 @@ export class RumFeature implements Feature, FeatureEventReceiver {
    * attributes that RumEventAssembler lifts into backend-consumed error fields.
    */
   private onCrashReport(event: Record<string, Object>): void {
+    // A replayed pending incident carries the crashed run's session/view ids.
+    // Write the crash directly into THAT session instead of routing it through
+    // the live scope tree: the live tree would mint a fresh session at the old
+    // crash timestamp — a session that (a) is not the one the user crashed in,
+    // (b) usually expires on the very next real event (>15 min since the crash),
+    // and (c) never emits a view event, so the backend never materializes a
+    // session row for it and the crash becomes unfindable from the session list.
+    const originalSessionId: string = RumFeature.asString(event['original_session_id']);
+    if (originalSessionId.length > 0) {
+      this.writeCrashToOriginalSession(event, originalSessionId);
+      return;
+    }
     const m: DefaultRumMonitor | null = this.monitor;
     if (m === null) {
       FlashcatLog.d('rum.crash: dropped because monitor is null');
       return;
     }
     FlashcatLog.d(`rum.crash: reporting crash kind=${RumFeature.asString(event['crash_kind'])}`);
+    // No original session to attach to (crash before the first session, or an
+    // unsampled one) — report into the current session at the current time. A
+    // backdated timestamp would start the session in the past and expire it
+    // instantly, so the original crash time is NOT restored on this path.
     m.reportError(
       RumFeature.asString(event['message']),
       RumErrorSource.SOURCE,
       RumFeature.asString(event['stack']),
       true,
       'unhandled',
-      RumFeature.crashAttributes(event),
-      RumFeature.optionalPositiveNumber(event['timestamp_ms']));
+      RumFeature.crashAttributes(event));
+  }
+
+  /** Assemble + persist a replayed crash error stamped with the crashed run's
+   * session/view, bypassing the live scope tree. */
+  private writeCrashToOriginalSession(event: Record<string, Object>, sessionId: string): void {
+    const scope: FeatureScope | null = this.core.getFeature(RUM_FEATURE_NAME);
+    if (scope === null) {
+      FlashcatLog.d('rum.crash: dropped because rum feature scope is null');
+      return;
+    }
+    const viewId: string = RumFeature.asString(event['original_view_id']);
+    const viewName: string = RumFeature.asString(event['original_view_name']);
+    const dateMs: number = RumFeature.optionalPositiveNumber(event['timestamp_ms']) ?? Date.now();
+    const attributes: Record<string, Object> = RumFeature.crashAttributes(event);
+    const applicationId: string = this.configuration.applicationId;
+    scope.withWriteContext((context: FlashcatContext, writer: EventWriter) => {
+      const errorEvent: Record<string, Object> = RumEventAssembler.error(
+        context, applicationId, sessionId,
+        viewId.length > 0 ? viewId : undefined,
+        viewId.length > 0 ? viewName : undefined,
+        RumFeature.asString(event['message']),
+        RumErrorSource.SOURCE as string,
+        RumFeature.asString(event['stack']),
+        true, 'unhandled', dateMs, attributes);
+      writeMapped(writer, errorEvent, true);
+    });
+    FlashcatLog.d(
+      `rum.crash: replayed crash into original session=${sessionId} view=${viewId.length > 0 ? viewId : '(none)'}`);
   }
 
   /** Pure: extract native-symbolication metadata from a crash_report bus event. */
