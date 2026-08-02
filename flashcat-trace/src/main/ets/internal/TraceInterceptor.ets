@@ -161,7 +161,12 @@ export function publishResourceStarted(core: SdkCore | null, key: string, url: s
     event['trace_id'] = traceId;
   }
   if (spanId !== undefined) {
-    event['span_id'] = spanId;
+    // _dd.span_id must be the unsigned-decimal form (Datadog convention; the
+    // intake parses it base-10). The hex form lives only in traceparent.
+    const decimal: string = TraceContext.hexToUnsignedDecimalString(spanId);
+    if (decimal.length > 0) {
+      event['span_id'] = decimal;
+    }
   }
   scope.sendEvent(event);
 }
