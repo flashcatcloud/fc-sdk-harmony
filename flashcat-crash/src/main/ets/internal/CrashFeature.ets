@@ -45,6 +45,9 @@ export class CrashFeature implements Feature, FeatureEventReceiver {
   private activePolicy: JsCrashPolicy;
   private consumed: ConsumedCrashIncident[] = [];
   private watching: boolean = false;
+  // Newest incident persisted with REPORT_AND_RECOVER this run, so a failed
+  // restart can downgrade it before exit (crash.recovered must not lie).
+  private lastRecoveryIncident: CrashIncidentRecord | null = null;
 
   constructor(core: SdkCore, configuration: CrashConfiguration) {
     this.core = core;
@@ -75,6 +78,13 @@ export class CrashFeature implements Feature, FeatureEventReceiver {
         // matter: crash-then-RUM pulls here, RUM-then-crash gets the push
         // from publishPolicy().
         event['policy'] = this.activePolicy as string;
+      } else if (type === 'crash_replay_request') {
+        // RUM enabled after crash: replay incidents that were retained because
+        // RUM was missing at crash-feature start. Makes pending delivery
+        // enable-order-proof, like the policy handshake.
+        this.replayPendingIncidents();
+      } else if (type === 'js_crash_recovery_failed') {
+        this.downgradeRecoveryIncident();
       }
     } catch (error) {
       // Never let a policy failure keep a process alive after a REPORT_* crash.
@@ -116,6 +126,16 @@ export class CrashFeature implements Feature, FeatureEventReceiver {
     if (this.activePolicy === JsCrashPolicy.OBSERVE_ONLY) {
       event['report_async'] = true;
       event['should_exit'] = false;
+      // The process survives, so hiAppEvent will deliver the SAME crash to the
+      // in-process watcher shortly. Record it as consumed so the watcher's
+      // dedup can suppress it — under OBSERVE_ONLY nothing is ever persisted,
+      // which left the consumed set permanently empty and every observed crash
+      // triple-reported (two live callbacks + the watcher event).
+      this.consumed.push(new ConsumedCrashIncident(
+        util.generateRandomUUID(true), fingerprint, nowMs));
+      this.consumed = CrashDeduplication.retainRecent(
+        this.consumed, nowMs, CONSUMED_RETENTION_MS);
+      this.persistConsumed();
       return;
     }
 
@@ -185,6 +205,7 @@ export class CrashFeature implements Feature, FeatureEventReceiver {
         written = this.persistPendingIncident(recoveryIncident);
         if (written) {
           event['recover'] = true;
+          this.lastRecoveryIncident = recoveryIncident;
         } else {
           FlashcatLog.e('crash.recovery: incident update failed; degrading to exit');
         }
@@ -202,6 +223,35 @@ export class CrashFeature implements Feature, FeatureEventReceiver {
         `crash.js: synchronously persisted incident=${incident.incidentId} fingerprint=${fingerprint}`);
     } else {
       FlashcatLog.e('crash.js: pending write failed; async report + exit per policy');
+    }
+  }
+
+  /**
+   * appRecovery.restartApp threw — the process is about to hard-exit instead of
+   * restarting. Rewrite the pending incident's policy so the replay does not
+   * emit crash.recovered=true for a recovery that never happened.
+   */
+  private downgradeRecoveryIncident(): void {
+    const incident: CrashIncidentRecord | null = this.lastRecoveryIncident;
+    if (incident === null) {
+      return;
+    }
+    this.lastRecoveryIncident = null;
+    const downgraded: CrashIncidentRecord = new CrashIncidentRecord(
+      incident.incidentId,
+      incident.timestampMs,
+      incident.exceptionName,
+      incident.message,
+      incident.stack,
+      incident.fingerprint,
+      JsCrashPolicy.REPORT_THEN_EXIT,
+      incident.sdkVersion,
+      incident.sessionId,
+      incident.viewId,
+      incident.viewName,
+      incident.viewUrl);
+    if (!this.persistPendingIncident(downgraded)) {
+      FlashcatLog.e('crash.recovery: downgrade write failed; replay may over-report recovery');
     }
   }
 
@@ -277,7 +327,24 @@ export class CrashFeature implements Feature, FeatureEventReceiver {
         this.deletePending(fileName);
         continue;
       }
-      rum.sendEvent(CrashEventMapper.fromPendingIncident(incident));
+      // A previous launch may have replayed this incident but died before the
+      // delete — the consumed sidecar is written first precisely so this check
+      // can suppress the duplicate.
+      if (CrashDeduplication.containsIncident(incident.incidentId, this.consumed)) {
+        FlashcatLog.d(`crash.pending: already consumed incident=${incident.incidentId}`);
+        this.deletePending(fileName);
+        continue;
+      }
+      const event: Record<string, Object> = CrashEventMapper.fromPendingIncident(incident);
+      rum.sendEvent(event);
+      // The bus is synchronous: RumFeature acknowledges a persisted write via
+      // event.delivered. On failure (disk full, no receiver) keep the durable
+      // incident for the next launch instead of deleting the crash report.
+      if (event['delivered'] !== true) {
+        FlashcatLog.e(
+          `crash.pending: delivery failed, retained incident=${incident.incidentId}`);
+        continue;
+      }
       FlashcatLog.d(
         `crash.pending: reported incident=${incident.incidentId} fingerprint=${incident.fingerprint}`);
       this.consumed.push(new ConsumedCrashIncident(
@@ -409,14 +476,26 @@ export class CrashFeature implements Feature, FeatureEventReceiver {
           const params: Record<string, Object> = info.params as Record<string, Object>;
           const event: Record<string, Object> =
             isFreeze ? CrashEventMapper.fromAppFreeze(params) : CrashEventMapper.fromAppCrash(params);
+          // Carry the real fault time on every watcher event. Native crashes /
+          // watchdog freezes are delivered on the NEXT launch — without this the
+          // error is dated (and attributed) to the relaunch, days later.
+          const paramTimestampMs: number = CrashFeature.faultTimestamp(params, 0);
+          if (paramTimestampMs > 0) {
+            event['timestamp_ms'] = paramTimestampMs;
+          }
           if (!isFreeze && CrashFeature.stringValue(params['crash_type']) === 'JsError') {
             const fingerprint: string = CrashFingerprint.fromText(
               `${CrashFeature.stringValue(event['message'])}\n${CrashFeature.stringValue(event['stack'])}`);
-            const eventTimestampMs: number = CrashFeature.faultTimestamp(params, Date.now());
-            if (CrashDeduplication.matchesConsumed(
-              fingerprint, eventTimestampMs, this.consumed, CROSS_LAUNCH_WINDOW_MS)) {
+            // With no usable fault timestamp the ±30 s window would compare
+            // against "now" and fail open for any relaunch >30 s after the
+            // crash — fall back to fingerprint-only matching.
+            const duplicate: boolean = paramTimestampMs > 0
+              ? CrashDeduplication.matchesConsumed(
+                fingerprint, paramTimestampMs, this.consumed, CROSS_LAUNCH_WINDOW_MS)
+              : CrashDeduplication.matchesConsumedFingerprint(fingerprint, this.consumed);
+            if (duplicate) {
               FlashcatLog.d(
-                `crash: skipped duplicate APP_CRASH fingerprint=${fingerprint} timestamp=${eventTimestampMs}`);
+                `crash: skipped duplicate APP_CRASH fingerprint=${fingerprint} timestamp=${paramTimestampMs}`);
               continue;
             }
           }

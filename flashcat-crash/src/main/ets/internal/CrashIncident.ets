@@ -41,8 +41,12 @@ export class CrashFingerprint {
     // header heuristic here made the two sides disagree ("Error name:Error"
     // became the message) and broke cross-launch deduplication.
     if (lines.length >= 2 && lines[0].startsWith('Error name:') && lines[1].startsWith('Error message:')) {
+      // Non-Error throws (throw 'x' / throw {}) come through with an empty name;
+      // default it like the generic branch does — an empty exception_name makes
+      // CrashIncidentRecord.parse reject the record at replay ("corrupted").
+      const labeledName: string = lines[0].substring('Error name:'.length).trim();
       return new CrashExceptionParts(
-        lines[0].substring('Error name:'.length).trim(),
+        labeledName.length > 0 ? labeledName : 'Error',
         lines[1].substring('Error message:'.length).trim(),
         stack);
     }
@@ -198,9 +202,13 @@ export class CrashLoopGuard {
     const safeCooldownMs: number = cooldownMs < 1 ? 1 : cooldownMs;
     const valid: number[] = [];
     let newestTimestamp: number = 0;
+    // Discard timestamps from the future (clock set ahead, then corrected):
+    // a future newestTimestamp makes `nowMs - newestTimestamp` negative forever,
+    // so cooldown never fires and the guard stays tripped for the install's life.
+    const futureCutoffMs: number = nowMs + 60 * 1000;
     for (let i: number = 0; i < persistedTimestamps.length; i++) {
       const timestamp: number = persistedTimestamps[i];
-      if (timestamp > 0) {
+      if (timestamp > 0 && timestamp <= futureCutoffMs) {
         valid.push(timestamp);
         if (timestamp > newestTimestamp) {
           newestTimestamp = timestamp;
@@ -335,6 +343,28 @@ export class CrashDeduplication {
       const incident: ConsumedCrashIncident = consumed[i];
       if (incident.fingerprint === fingerprint &&
         Math.abs(eventTimestampMs - incident.timestampMs) <= windowMs) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /** Fingerprint-only match — used when the fault payload carries no usable
+   * timestamp (unknown ROM param name), where the time-window check would fail
+   * open and double-report every crash relaunched >30 s later. */
+  static matchesConsumedFingerprint(fingerprint: string, consumed: ConsumedCrashIncident[]): boolean {
+    for (let i: number = 0; i < consumed.length; i++) {
+      if (consumed[i].fingerprint === fingerprint) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /** True when this exact incident id has already been replayed. */
+  static containsIncident(incidentId: string, consumed: ConsumedCrashIncident[]): boolean {
+    for (let i: number = 0; i < consumed.length; i++) {
+      if (consumed[i].incidentId === incidentId) {
         return true;
       }
     }

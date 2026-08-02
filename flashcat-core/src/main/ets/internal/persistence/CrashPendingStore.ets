@@ -85,6 +85,13 @@ export class CrashPendingStore implements FeatureEventReceiver {
     if (!fileName.startsWith(INCIDENT_PREFIX) || !fileName.endsWith(INCIDENT_SUFFIX)) {
       return;
     }
+    // Validate the id segment too — prefix/suffix checks alone let a crafted
+    // "incident-../../x.json" escape rootDir.
+    const id: string = fileName.substring(
+      INCIDENT_PREFIX.length, fileName.length - INCIDENT_SUFFIX.length);
+    if (id.length === 0 || CrashPendingStore.safeId(id).length === 0) {
+      return;
+    }
     try {
       fs.unlinkSync(`${this.rootDir}/${fileName}`);
     } catch (_error) {
@@ -104,21 +111,35 @@ export class CrashPendingStore implements FeatureEventReceiver {
     }
   }
 
+  /**
+   * Atomic write: temp file + fsync + rename. TRUNC-in-place emptied the target
+   * before the new content landed, so a kill mid-write reset the file — for
+   * loop.json that resets the crash-loop guard exactly when it's needed (the
+   * write happens on the crash path right before process exit), letting a
+   * boot-crash restart loop run unbounded.
+   */
   private writeFile(path: string, content: string): boolean {
     this.ensureDir();
+    const tmpPath: string = `${path}.tmp`;
     try {
       const mode: number = fs.OpenMode.WRITE_ONLY | fs.OpenMode.CREATE |
         fs.OpenMode.TRUNC | fs.OpenMode.SYNC;
-      const file: fs.File = fs.openSync(path, mode);
+      const file: fs.File = fs.openSync(tmpPath, mode);
       try {
         fs.writeSync(file.fd, content);
         fs.fsyncSync(file.fd);
-        return true;
       } finally {
         fs.closeSync(file);
       }
+      fs.renameSync(tmpPath, path);
+      return true;
     } catch (error) {
       FlashcatLog.e(`crash.storage: synchronous write failed: ${CrashPendingStore.errorText(error)}`);
+      try {
+        fs.unlinkSync(tmpPath);
+      } catch (_cleanup) {
+        // best-effort temp cleanup
+      }
       return false;
     }
   }

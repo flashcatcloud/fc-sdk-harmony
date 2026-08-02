@@ -6,6 +6,7 @@ import {
   FeatureEventReceiver,
   FlashcatContext,
   EventWriter,
+  TrackingConsent,
   RUM_FEATURE_NAME,
   CRASH_FEATURE_NAME,
   FlashcatLog
@@ -20,7 +21,7 @@ import { DefaultRumMonitor } from './monitor/DefaultRumMonitor';
 import { RumAutoInstrumentation } from './RumAutoInstrumentation';
 import { RumEventAssembler } from './assembly/RumEventAssembler';
 import { RumNavigationTracker } from './RumNavigationTracker';
-import { RumEventMapperHolder, writeMapped } from './RumEventMapperHolder';
+import { RumEventMapperHolder } from './RumEventMapperHolder';
 
 // OpenHarmony runtime banner substituted for the translated stack when the
 // module's sourcemap cannot be loaded. Never a meaningful error message.
@@ -52,6 +53,22 @@ export class RumFeature implements Feature, FeatureEventReceiver {
   attachMonitor(monitor: DefaultRumMonitor): void {
     this.monitor = monitor;
     FlashcatLog.d('rum: monitor attached');
+    // If the crash feature was enabled BEFORE RUM, its startup replay found no
+    // RUM receiver and retained the pending incidents — ask it to replay now.
+    // Without this, a crash-before-RUM enable order strands every pending
+    // incident forever (replay otherwise runs only once, at crash onInitialize).
+    try {
+      const crash: FeatureScope | null = this.core.getFeature(CRASH_FEATURE_NAME);
+      if (crash !== null) {
+        const request: Record<string, Object> = {
+          'type': 'crash_replay_request',
+          'target': CRASH_FEATURE_NAME
+        };
+        crash.sendEvent(request);
+      }
+    } catch (e) {
+      FlashcatLog.e(`rum.crash: replay request failed: ${RumFeature.errorText(e)}`);
+    }
   }
 
   onInitialize(): void {
@@ -199,13 +216,13 @@ export class RumFeature implements Feature, FeatureEventReceiver {
     // session row for it and the crash becomes unfindable from the session list.
     const originalSessionId: string = RumFeature.asString(event['original_session_id']);
     if (originalSessionId.length > 0) {
-      this.writeCrashToOriginalSession(event, originalSessionId);
+      event['delivered'] = this.writeCrashToOriginalSession(event, originalSessionId);
       return;
     }
     const m: DefaultRumMonitor | null = this.monitor;
     if (m === null) {
       FlashcatLog.d('rum.crash: dropped because monitor is null');
-      return;
+      return; // delivered stays unset — a durable incident is retained for retry
     }
     FlashcatLog.d(`rum.crash: reporting crash kind=${RumFeature.asString(event['crash_kind'])}`);
     // No original session to attach to (crash before the first session, or an
@@ -224,21 +241,25 @@ export class RumFeature implements Feature, FeatureEventReceiver {
       true,
       'unhandled',
       attributes);
+    event['delivered'] = true;
   }
 
   /** Assemble + persist a replayed crash error stamped with the crashed run's
-   * session/view, bypassing the live scope tree. */
-  private writeCrashToOriginalSession(event: Record<string, Object>, sessionId: string): void {
+   * session/view, bypassing the live scope tree. Returns whether the event was
+   * durably written (or intentionally dropped — mapper / consent), so the crash
+   * feature only deletes the pending incident on real delivery. */
+  private writeCrashToOriginalSession(event: Record<string, Object>, sessionId: string): boolean {
     const scope: FeatureScope | null = this.core.getFeature(RUM_FEATURE_NAME);
     if (scope === null) {
       FlashcatLog.d('rum.crash: dropped because rum feature scope is null');
-      return;
+      return false;
     }
     const viewId: string = RumFeature.asString(event['original_view_id']);
     const viewName: string = RumFeature.asString(event['original_view_name']);
     const dateMs: number = RumFeature.optionalPositiveNumber(event['timestamp_ms']) ?? Date.now();
     const attributes: Record<string, Object> = RumFeature.crashAttributes(event);
     const applicationId: string = this.configuration.applicationId;
+    let delivered: boolean = false;
     scope.withWriteContext((context: FlashcatContext, writer: EventWriter) => {
       const errorEvent: Record<string, Object> = RumEventAssembler.error(
         context, applicationId, sessionId,
@@ -248,10 +269,22 @@ export class RumFeature implements Feature, FeatureEventReceiver {
         RumErrorSource.SOURCE as string,
         RumFeature.asString(event['stack']),
         true, 'unhandled', dateMs, attributes);
-      writeMapped(writer, errorEvent, true);
+      const mapped: Record<string, Object> | null = RumEventMapperHolder.apply(errorEvent);
+      if (mapped === null) {
+        delivered = true; // the app's mapper dropped it on purpose — handled
+        return;
+      }
+      delivered = writer.write(mapped, true);
     });
+    // NOT_GRANTED writes return false by design — that is a deliberate drop,
+    // not an infra failure; retaining the incident would retry it every launch.
+    if (!delivered && this.core.getTrackingConsent() === TrackingConsent.NOT_GRANTED) {
+      delivered = true;
+    }
     FlashcatLog.d(
-      `rum.crash: replayed crash into original session=${sessionId} view=${viewId.length > 0 ? viewId : '(none)'}`);
+      `rum.crash: replayed crash into original session=${sessionId} ` +
+      `view=${viewId.length > 0 ? viewId : '(none)'} delivered=${delivered}`);
+    return delivered;
   }
 
   /** Pure: extract native-symbolication metadata from a crash_report bus event. */
@@ -471,6 +504,20 @@ export class RumFeature implements Feature, FeatureEventReceiver {
         return;
       } catch (e) {
         FlashcatLog.e(`rum.error: recovery restartApp failed: ${RumFeature.errorText(e)}; exiting`);
+        // Tell the crash feature the restart did not happen so the pending
+        // incident's policy is downgraded — crash.recovered must not lie.
+        try {
+          const crash: FeatureScope | null = this.core.getFeature(CRASH_FEATURE_NAME);
+          if (crash !== null) {
+            const notice: Record<string, Object> = {
+              'type': 'js_crash_recovery_failed',
+              'target': CRASH_FEATURE_NAME
+            };
+            crash.sendEvent(notice);
+          }
+        } catch (_notify) {
+          // best-effort
+        }
       }
     }
     // ProcessManager.exit restores the host's terminating crash semantics without
