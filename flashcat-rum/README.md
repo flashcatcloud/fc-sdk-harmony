@@ -25,6 +25,19 @@ FlashcatRum.enable(rumConfig);
 FlashcatRum.startView('home', 'Home');
 ```
 
+## Instrumentation coverage (read before integrating)
+
+- **Network resources** require `setTrackNetworkRequests(true)` AND one of the
+  instrumented paths: the rcp interceptor (`FlashcatTrace.interceptor()`), the
+  `FlashcatHttp.request` wrapper, or manual `startResource`/`stopResource`.
+  Plain `@ohos.net.http` calls are NOT hooked automatically.
+- **View auto-tracking** (`setTrackNavigation(true)` + `startViewTracking(ctx)`)
+  covers `router`-based navigation only; `Navigation`/`NavDestination` apps
+  should emit views manually. Pair every `startViewTracking(ctx)` with
+  `stopViewTracking(ctx)` in the ability's `onDestroy`.
+- **Tap tracking** is semi-manual: wrap click handlers with
+  `FlashcatRum.trackTap(...)` — there is no zero-touch AOP capture yet.
+
 ## Automatic error capture
 
 RUM registers both `errorManager.on('error')` and

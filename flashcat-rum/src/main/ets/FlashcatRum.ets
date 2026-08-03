@@ -67,6 +67,14 @@ export class FlashcatRum {
    * (a UIAbilityContext or a UIContext from UI land). Each page show/hide then
    * emits start/stopView automatically. No-op unless RUM is enabled with
    * `setTrackNavigation(true)`. Idempotent.
+   *
+   * IMPORTANT: pair with `stopViewTracking(context)` in the ability's
+   * onDestroy — the registry holds a strong reference per context, so
+   * create/destroy churn without the stop call pins each dead context for the
+   * lifetime of the RUM enablement.
+   *
+   * Covers `router`-based navigation only; `Navigation`/`NavDestination`-based
+   * apps should call startView/stopView manually for now.
    */
   static startViewTracking(context: NavContext): void {
     RumNavigationTracker.attach(context);

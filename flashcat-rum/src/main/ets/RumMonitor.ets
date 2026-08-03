@@ -24,8 +24,19 @@ export interface RumMonitor {
 
   addAttribute(key: string, value: Object): void;
   removeAttribute(key: string): void;
+  /** Snapshot of the global attributes attached to every event. */
+  getAttributes(): Record<string, Object>;
+  /** Remove ALL global attributes. */
+  clearAttributes(): void;
 
   getCurrentSessionId(callback: (sessionId: string | undefined) => void): void;
+
+  /**
+   * End the current session immediately (e.g. on logout). The active view is
+   * closed with its final time_spent; the next tracked event starts a fresh
+   * session and restarts the last view in it.
+   */
+  stopSession(): void;
 }
 
 /** No-op fallback used before RUM is enabled. */
@@ -43,9 +54,14 @@ class NoOpRumMonitor implements RumMonitor {
   addError(message: string, source: RumErrorSource, stack?: string, attributes?: Record<string, Object>): void {}
   addAttribute(key: string, value: Object): void {}
   removeAttribute(key: string): void {}
+  getAttributes(): Record<string, Object> {
+    return {};
+  }
+  clearAttributes(): void {}
   getCurrentSessionId(callback: (sessionId: string | undefined) => void): void {
     callback(undefined);
   }
+  stopSession(): void {}
 }
 
 /**

@@ -28,12 +28,16 @@ export class RumApplicationScope implements RumScope {
 
   handleEvent(event: RumRawEvent): RumScope | null {
     if (this.session === null) {
-      // A keep-alive carries no user intent — it must never start a session.
-      // A crash mark alone must not either: the crash belongs to the PREVIOUS
-      // session (the persisted incident already snapshots its ids), so minting
-      // a fresh session here would count the crash in a phantom session the
-      // replayed error never joins.
-      if (event.kind === 'keepAlive' || event.kind === 'markCrash') {
+      // Only events that carry NEW user intent may mint a session:
+      // - keepAlive carries none.
+      // - markCrash belongs to the PREVIOUS session (the persisted incident
+      //   already snapshots its ids) — a fresh session here would count the
+      //   crash in a phantom session the replayed error never joins.
+      // - stop-type events merely close out something from a dead session; a
+      //   session minted for them emits zero view documents (invisible to the
+      //   backend) yet publishes its session.id — a ghost that swallows
+      //   subsequent activity and mis-stamps crash snapshots.
+      if (!RumApplicationScope.startsUserActivity(event)) {
         return this;
       }
       this.session = this.startNewSession(event.timestampMs);
@@ -42,10 +46,8 @@ export class RumApplicationScope implements RumScope {
     const result: RumScope | null = this.session.handleEvent(event);
     if (result === null) {
       this.rememberExpiredView(this.session);
-      // Session expired. Don't recreate from a keep-alive (no user intent) or a
-      // crash mark (already counted in the expired session's final view doc by
-      // the expiry path) — only a real event starts the next session.
-      if (event.kind === 'keepAlive' || event.kind === 'markCrash') {
+      // Session expired. Same rule as above for the replacement session.
+      if (!RumApplicationScope.startsUserActivity(event)) {
         this.session = null;
         return this;
       }
@@ -54,6 +56,12 @@ export class RumApplicationScope implements RumScope {
       this.session.handleEvent(event);
     }
     return this;
+  }
+
+  private static startsUserActivity(event: RumRawEvent): boolean {
+    return event.kind !== 'keepAlive' && event.kind !== 'markCrash'
+      && event.kind !== 'stopView' && event.kind !== 'stopResource'
+      && event.kind !== 'stopResourceWithError';
   }
 
   private rememberExpiredView(session: RumSessionScope): void {
@@ -78,17 +86,19 @@ export class RumApplicationScope implements RumScope {
    * act of leaving manufacture a phantom zero-duration session.
    */
   private maybeRestartExpiredView(session: RumSessionScope, event: RumRawEvent): void {
+    if (event.kind !== 'addAction' && event.kind !== 'addError'
+      && event.kind !== 'startResource') {
+      // NOT consumed: a non-qualifying event must not burn the remembered view,
+      // or the next qualifying event finds nothing to restart.
+      return;
+    }
     const key: string | null = this.lastExpiredViewKey;
     const name: string = this.lastExpiredViewName;
     const attributes: Record<string, Object> = this.lastExpiredViewAttributes;
-    this.lastExpiredViewKey = null; // one-shot: consumed or superseded
+    this.lastExpiredViewKey = null; // one-shot: consumed
     this.lastExpiredViewName = '';
     this.lastExpiredViewAttributes = {};
     if (key === null) {
-      return;
-    }
-    if (event.kind !== 'addAction' && event.kind !== 'addError'
-      && event.kind !== 'startResource') {
       return;
     }
     // Restart with the ORIGINAL start attributes — they carry the resolved
@@ -102,6 +112,20 @@ export class RumApplicationScope implements RumScope {
       timestampMs: event.timestampMs
     };
     session.handleEvent(restart);
+  }
+
+  /**
+   * RumMonitor.stopSession: end the current session immediately. The last view
+   * is remembered so the next tracked event starts a fresh session and
+   * restarts it there (same recovery path as inactivity expiry).
+   */
+  stopCurrentSession(nowMs: number): void {
+    if (this.session === null) {
+      return;
+    }
+    this.rememberExpiredView(this.session);
+    this.session.end(nowMs);
+    this.session = null;
   }
 
   getApplicationId(): string {

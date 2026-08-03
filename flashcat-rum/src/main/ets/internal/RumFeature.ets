@@ -148,7 +148,12 @@ export class RumFeature implements Feature, FeatureEventReceiver {
     this.core.removeEventReceiver(RUM_FEATURE_NAME);
     if (this.errorObserverId !== -1) {
       try {
-        errorManager.off('error', this.errorObserverId);
+        // Callback overload: the promise overload's rejection (invalid id) is
+        // not catchable by this try and would surface as an unhandled
+        // rejection during teardown.
+        errorManager.off('error', this.errorObserverId, (_err) => {
+          // best-effort removal
+        });
       } catch (_e) {
         // already removed
       }
@@ -179,12 +184,20 @@ export class RumFeature implements Feature, FeatureEventReceiver {
    * events from the Crash feature (hiAppEvent → CrashEventMapper). */
   onReceive(event: Record<string, Object>): void {
     const type: Object | undefined = event['type'];
-    if (type === 'network_request_started') {
-      this.onNetworkRequestStarted(event);
-    } else if (type === 'network_request_completed') {
-      this.onNetworkRequestCompleted(event);
-    } else if (type === 'network_request_failed') {
-      this.onNetworkRequestFailed(event);
+    if (type === 'network_request_started' || type === 'network_request_completed'
+      || type === 'network_request_failed') {
+      // setTrackNetworkRequests(false) must actually disable resource capture —
+      // the option was previously accepted and ignored, violating its contract.
+      if (!this.configuration.trackNetworkRequests) {
+        return;
+      }
+      if (type === 'network_request_started') {
+        this.onNetworkRequestStarted(event);
+      } else if (type === 'network_request_completed') {
+        this.onNetworkRequestCompleted(event);
+      } else {
+        this.onNetworkRequestFailed(event);
+      }
     } else if (type === 'crash_report') {
       this.onCrashReport(event);
     } else if (type === 'js_crash_policy') {

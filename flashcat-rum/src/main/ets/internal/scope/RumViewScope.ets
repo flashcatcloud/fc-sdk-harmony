@@ -146,7 +146,15 @@ export class RumViewScope implements RumScope {
         return this;
       case 'startResource': {
         const key: string = event.key ?? '';
-        if (key !== '' && this.pendingResources.size < MAX_PENDING_RESOURCES) {
+        if (key !== '') {
+          // Evict the OLDEST pending entry when full (Map preserves insertion
+          // order): abandoned starts (caller dropped, key mismatch) must not
+          // permanently saturate the cap on a long-lived view and silently
+          // disable resource tracking for every later request.
+          if (this.pendingResources.size >= MAX_PENDING_RESOURCES) {
+            const oldest: string = this.pendingResources.keys().next().value as string;
+            this.pendingResources.delete(oldest);
+          }
           this.pendingResources.set(key, new RumResourceScope(
             this.featureScope, this.applicationId, this.sessionId,
             this.viewId, this.viewName, this.resolvedViewUrl(), event));

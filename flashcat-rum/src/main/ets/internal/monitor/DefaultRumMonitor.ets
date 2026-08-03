@@ -218,8 +218,24 @@ export class DefaultRumMonitor implements RumMonitor {
     this.globalAttributes.delete(key);
   }
 
+  getAttributes(): Record<string, Object> {
+    const snapshot: Record<string, Object> = {};
+    this.globalAttributes.forEach((v: Object, k: string) => {
+      snapshot[k] = v;
+    });
+    return snapshot;
+  }
+
+  clearAttributes(): void {
+    this.globalAttributes.clear();
+  }
+
   getCurrentSessionId(callback: (sessionId: string | undefined) => void): void {
     callback(this.applicationScope.getCurrentSessionId());
+  }
+
+  stopSession(): void {
+    this.applicationScope.stopCurrentSession(Date.now());
   }
 
   private raw(kind: string, attributes?: Record<string, Object>): RumRawEvent {

@@ -13,7 +13,7 @@ export type NavContext = common.UIAbilityContext | UIContext;
  * start/stopView calls — so apps using `router` navigation get a correct view
  * tree without any manual `startView`/`stopView`.
  *
- * Mapping (see docs/PHASE-2-PLAN.md A1):
+ * Mapping:
  * - `ON_PAGE_SHOW`  → startView (page becomes visible)
  * - `ON_PAGE_HIDE`  → stopView  (page hidden — closes its time_spent)
  * - key  = stable `pageId` (falls back to `path`); name = `name` (falls back to

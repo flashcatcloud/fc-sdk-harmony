@@ -68,6 +68,11 @@ export class RumConfigurationBuilder {
     return this;
   }
 
+  /**
+   * @deprecated NOT YET IMPLEMENTED — accepted for Android-parity source
+   * compatibility only. Frustration signals (rage tap / error tap) are not
+   * detected on HarmonyOS yet; enabling this has no effect.
+   */
   setTrackFrustrations(enabled: boolean): RumConfigurationBuilder {
     this.trackFrustrations = enabled;
     return this;

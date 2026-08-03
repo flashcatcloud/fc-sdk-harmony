@@ -80,6 +80,11 @@ export class RumSessionScope implements RumScope {
         }
         this.activeView.forceStop(closeAtMs);
         this.activeView = null;
+      } else if (event.kind === 'markCrash' && this.lastStoppedView !== null) {
+        // Crash in a view gap AND past expiry (backgrounded crash after a
+        // page-hide stopView is the common path): count it on the last closed
+        // view so it still reaches session_crash_count.
+        this.lastStoppedView.handleEvent(event);
       }
       // Un-publish the session identity so a crash in the gap before the next
       // session isn't attributed to this dead one (the context is merge-only).
@@ -104,24 +109,32 @@ export class RumSessionScope implements RumScope {
     // next event read as a >15-min gap and force-expire a healthy session.
     this.lastActivityMs = Math.max(this.lastActivityMs, event.timestampMs);
 
-    if (!this.sampled) {
-      return this; // session dropped — track lifecycle but emit nothing
-    }
-
     if (event.kind === 'startView') {
+      // View BOOKKEEPING runs regardless of sampling: an unsampled session must
+      // still remember its last view, or one unsampled session in the middle of
+      // a chain permanently breaks view restoration for every (sampled) session
+      // after it — errors go out viewless and the backend never materializes
+      // those sessions. The sampling gate applies to WRITES, not bookkeeping.
+      this.lastViewKey = event.key ?? '';
+      this.lastViewName = event.name ?? '';
+      this.lastViewAttributes = event.attributes;
+      if (!this.sampled) {
+        return this;
+      }
       // A new view supersedes the current one — stop the old view first.
       if (this.activeView !== null) {
         this.activeView.forceStop(event.timestampMs);
         this.retireView(this.activeView);
       }
-      this.lastViewKey = event.key ?? '';
-      this.lastViewName = event.name ?? '';
-      this.lastViewAttributes = event.attributes;
       const viewId: string = util.generateRandomUUID(true);
       this.activeView = new RumViewScope(
         this.featureScope, this.core, this.applicationId, this.sessionId,
         event.key ?? '', event.name ?? '', viewId, event.timestampMs, event.attributes);
       return this;
+    }
+
+    if (!this.sampled) {
+      return this; // session dropped — track lifecycle but emit nothing
     }
 
     // Late resource completions may belong to an already-closed view held in
@@ -187,6 +200,21 @@ export class RumSessionScope implements RumScope {
       }
     }
     FlashcatLog.d('rum.session: dropped resource completion for unknown key');
+  }
+
+  /**
+   * Explicit end (RumMonitor.stopSession, e.g. logout): close the active view
+   * at the caller's timestamp (a real user action, unlike lazy expiry) and
+   * un-publish the session identity.
+   */
+  end(nowMs: number): void {
+    if (this.activeView !== null) {
+      this.activeView.forceStop(nowMs);
+      this.activeView = null;
+    }
+    const cleared: Record<string, Object> = {};
+    cleared['session.id'] = '';
+    this.core.updateFeatureContext('rum', cleared);
   }
 
   getSessionId(): string {
