@@ -19,8 +19,8 @@ PORT=19533
 CAPTURE=/tmp/flashcat-e2e-capture.ndjson
 HAP=entry/build/default/outputs/default/entry-default-unsigned.hap
 
-TARGET=$("$HDC" list targets | head -1)
-if [ -z "$TARGET" ] || [ "$TARGET" = "[Empty]" ]; then
+TARGET=$("$HDC" list targets 2>/dev/null | grep -v '\[Empty\]' | head -1 | tr -d '\r')
+if [ -z "$TARGET" ]; then
   echo "No emulator/device connected (hdc list targets is empty)"; exit 2
 fi
 echo "==> target: $TARGET"
@@ -33,7 +33,14 @@ fi
 echo "==> (re)installing"
 "$HDC" -t "$TARGET" shell aa force-stop "$BUNDLE" >/dev/null 2>&1 || true
 "$HDC" -t "$TARGET" uninstall "$BUNDLE" >/dev/null 2>&1 || true
-"$HDC" -t "$TARGET" install "$HAP" | tail -1
+INSTALL_OUT=$("$HDC" -t "$TARGET" install "$HAP" 2>&1 | tail -1)
+echo "    $INSTALL_OUT"
+case "$INSTALL_OUT" in *successfully*|*finish*) ;; *) echo "install failed"; exit 2;; esac
+# Let bms finish indexing before aa start — an immediate start silently no-ops.
+for i in $(seq 1 10); do
+  "$HDC" -t "$TARGET" shell "bm dump -n $BUNDLE" 2>/dev/null | grep -q appId && break; sleep 1
+done
+sleep 2
 
 echo "==> starting mock intake on :$PORT"
 pkill -f 'mock-intake.mjs' 2>/dev/null || true
@@ -49,8 +56,22 @@ rm -f "$CAPTURE"  # drop the healthcheck artifact
 run_scenario() {
   local scenario=$1 settle=$2
   echo "==> scenario: $scenario"
-  "$HDC" -t "$TARGET" shell aa start -b "$BUNDLE" -a "$ABILITY" \
-    --ps e2e_endpoint "http://10.0.2.2:$PORT" --ps e2e_scenario "$scenario" >/dev/null
+  local out
+  out=$("$HDC" -t "$TARGET" shell aa start -b "$BUNDLE" -a "$ABILITY" \
+    --ps e2e_endpoint "http://10.0.2.2:$PORT" --ps e2e_scenario "$scenario" 2>&1)
+  case "$out" in *successfully*) ;; *) echo "    aa start: $out";; esac
+  # Verify the process actually came up; retry once (bms indexing race).
+  local pid=""
+  for i in $(seq 1 10); do
+    pid=$("$HDC" -t "$TARGET" shell "pidof $BUNDLE" 2>/dev/null | tr -d '\r\n ')
+    [ -n "$pid" ] && break; sleep 1
+  done
+  if [ -z "$pid" ]; then
+    echo "    app did not start; retrying aa start once"
+    "$HDC" -t "$TARGET" shell aa start -b "$BUNDLE" -a "$ABILITY" \
+      --ps e2e_endpoint "http://10.0.2.2:$PORT" --ps e2e_scenario "$scenario" >/dev/null 2>&1
+    sleep 3
+  fi
   sleep "$settle"
 }
 
@@ -75,7 +96,10 @@ for i in $(seq 1 20); do
   [ -z "$ALIVE" ] && break; sleep 1
 done
 echo "    app exited (crash) after ${i}s"
-sleep 2
+# AMS silently suppresses restarting a recently-crashed app ("start ability
+# successfully" but no process is created). Cool down past the throttle window.
+echo "    cooling down 45s past the AMS crash-restart throttle"
+sleep 45
 run_scenario events 14
 node scripts/e2e/assert.mjs crash "$CAPTURE"
 
