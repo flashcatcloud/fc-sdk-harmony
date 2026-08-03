@@ -1,4 +1,5 @@
 import { common, bundleManager, ApplicationStateChangeCallback } from '@kit.AbilityKit';
+import { fileIo as fs } from '@kit.CoreFileKit';
 import { preferences } from '@kit.ArkData';
 import { Configuration } from '../config/Configuration';
 import { TrackingConsent } from '../privacy/TrackingConsent';
@@ -35,6 +36,11 @@ export class FlashcatCore implements SdkCore {
   private appStateCallback: ApplicationStateChangeCallback | null = null;
   private active: boolean = true;
   private readonly backgroundProcess: boolean;
+  // Extension-process upload-only pipelines (no Feature object): built by
+  // scanning the feature dirs the MAIN process left on disk, because no
+  // feature is ever enabled in the extension — without these, flushAndWait
+  // iterated an empty features map and deferred upload shipped nothing, ever.
+  private readonly uploadPipelines: Array<UploadPipeline> = [];
 
   constructor(
     name: string,
@@ -85,6 +91,8 @@ export class FlashcatCore implements SdkCore {
     if (this.backgroundProcess) {
       // The extension is a consumer only: it never persists consent, never
       // (de)registers the deferred job, and needs no lifecycle observer.
+      // It DOES need upload pipelines for the batches the main process wrote.
+      this.discoverUploadPipelines();
       return;
     }
     FlashcatCore.persistConsent(this.context, this.consent);
@@ -124,7 +132,7 @@ export class FlashcatCore implements SdkCore {
     if (this.consent === TrackingConsent.GRANTED) {
       persistence.migratePending();
     } else if (this.consent === TrackingConsent.NOT_GRANTED) {
-      persistence.wipePending();
+      persistence.wipeAll(); // sticky revocation: leftover batches are refused data
     }
     const uploader: DataUploader = new DataUploader(
       this.configuration,
@@ -205,11 +213,12 @@ export class FlashcatCore implements SdkCore {
       });
       this.registerDeferredUploadWork(); // re-arm background delivery
     } else if (consent === TrackingConsent.NOT_GRANTED) {
-      // Discard any pre-consent buffer, stop uploading, and cancel the persisted
-      // background job — it would otherwise keep waking the extension to upload
-      // after the user said no.
+      // Discard the pre-consent buffer AND the already-collected batches, stop
+      // uploading, and cancel the persisted background job. Keeping collected
+      // batches was pointless retention: revocation stops every drain, so the
+      // refused user's data would sit on disk indefinitely.
       this.features.forEach((r: RegisteredFeature) => {
-        r.persistence.wipePending();
+        r.persistence.wipeAll();
         r.scheduler.stop();
       });
       this.deferredUploadRegistrar.deregister(this.deferredWorkOptions());
@@ -285,8 +294,50 @@ export class FlashcatCore implements SdkCore {
       r.persistence.rollActive();
       drains.push(r.scheduler.flushForWork(maxBatchesPerFeature));
     });
+    for (const pipeline of this.uploadPipelines) {
+      drains.push(pipeline.scheduler.flushForWork(maxBatchesPerFeature));
+    }
     for (const drain of drains) {
       await drain;
+    }
+  }
+
+  /**
+   * Extension process only: build an upload-only pipeline per feature dir the
+   * main process left under files/flashcat/. Runs only under persisted GRANTED.
+   */
+  private discoverUploadPipelines(): void {
+    if (this.consent !== TrackingConsent.GRANTED) {
+      return;
+    }
+    try {
+      const base: string = `${this.context.filesDir}/flashcat`;
+      const names: string[] = fs.listFileSync(base);
+      for (const name of names) {
+        if (name === 'crash-pending') {
+          continue; // not an upload dir (incident sidecars)
+        }
+        let isDir: boolean = false;
+        try {
+          isDir = fs.statSync(`${base}/${name}`).isDirectory();
+        } catch (_e) {
+          isDir = false;
+        }
+        if (!isDir) {
+          continue;
+        }
+        const persistence: FilePersistenceStrategy = new FilePersistenceStrategy(this.context, name);
+        const uploader: DataUploader = new DataUploader(
+          this.configuration,
+          FlashcatCore.trackPathFor(name),
+          () => this.contextProvider.snapshot());
+        const scheduler: UploadScheduler =
+          new UploadScheduler(persistence, uploader, this.configuration.batchUploadFrequencyMs);
+        this.uploadPipelines.push({ persistence, scheduler });
+        FlashcatLog.d(`deferred: upload pipeline for feature dir "${name}"`);
+      }
+    } catch (_e) {
+      // No feature dirs yet — nothing to deliver.
     }
   }
 
@@ -358,6 +409,11 @@ export class FlashcatCore implements SdkCore {
       return '';
     }
   }
+}
+
+interface UploadPipeline {
+  persistence: FilePersistenceStrategy;
+  scheduler: UploadScheduler;
 }
 
 interface RegisteredFeature {

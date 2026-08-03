@@ -167,7 +167,13 @@ export class FilePersistenceStrategy implements UploadPersistence {
       this.pendingBytes = FilePersistenceStrategy.sizeOf(path); // lazy init from disk
     }
     if (this.pendingBytes + lineBytes > MAX_PENDING_BYTES) {
-      return false; // pending buffer full — drop rather than grow without bound
+      // Evict the OLDEST half. Dropping the incoming write kept the stalest
+      // data (which the intake will discard as >24 h anyway) and lost exactly
+      // the events that would still be deliverable on a late GRANT.
+      this.trimPendingOldest(path);
+      if (this.pendingBytes + lineBytes > MAX_PENDING_BYTES) {
+        return false; // single line larger than half the cap — give up
+      }
     }
     const ok: boolean = FilePersistenceStrategy.append(path, line);
     if (ok) {
@@ -190,7 +196,16 @@ export class FilePersistenceStrategy implements UploadPersistence {
       }
       const data: string = fs.readTextSync(path);
       if (data.length > 0) {
-        const lines: string[] = data.split('\n').filter((l: string) => l.length > 0);
+        // Age-filter: migrated batches are named with TODAY's timestamp, so the
+        // 23 h batch age-out can never catch stale pending events — and the
+        // intake 2xx-discards >24 h events. Uploading them is pure waste.
+        const cutoffMs: number = Date.now() - MAX_BATCH_RETENTION_MS;
+        const lines: string[] = data.split('\n')
+          .filter((l: string) => l.length > 0)
+          .filter((l: string) => {
+            const dateMs: number = FilePersistenceStrategy.eventDateMs(l);
+            return dateMs === 0 || dateMs >= cutoffMs; // unparseable → keep
+          });
         let chunk: string[] = [];
         let chunkBytes: number = 0;
         for (const l of lines) {
@@ -236,11 +251,58 @@ export class FilePersistenceStrategy implements UploadPersistence {
   }
 
   private writeMigratedBatch(lines: string[]): void {
+    this.enforceQuota(); // migration must not bypass the per-feature disk cap
     const now: number = Date.now();
     this.seq += 1;
     const rand: number = Math.floor(Math.random() * 1e6);
     const name: string = `${BATCH_PREFIX}${now}-${this.seq}-${rand}${BATCH_SUFFIX}`;
     FilePersistenceStrategy.append(`${this.rootDir}/${name}`, lines.join('\n') + '\n');
+  }
+
+  /** Rewrite the pending file keeping only the newer half of its lines. */
+  private trimPendingOldest(path: string): void {
+    try {
+      const data: string = fs.readTextSync(path);
+      const lines: string[] = data.split('\n').filter((l: string) => l.length > 0);
+      const kept: string[] = lines.slice(Math.ceil(lines.length / 2));
+      const content: string = kept.length > 0 ? kept.join('\n') + '\n' : '';
+      const file = fs.openSync(path, fs.OpenMode.READ_WRITE | fs.OpenMode.TRUNC | fs.OpenMode.CREATE);
+      try {
+        if (content.length > 0) {
+          fs.writeSync(file.fd, content);
+        }
+      } finally {
+        fs.closeSync(file);
+      }
+      this.pendingBytes = FilePersistenceStrategy.utf8Length(content);
+    } catch (_e) {
+      // best-effort — the size guard above still prevents unbounded growth
+    }
+  }
+
+  /** Extract the event's epoch-ms `date` without a full JSON parse; 0 = unknown. */
+  private static eventDateMs(line: string): number {
+    const marker: string = '"date":';
+    const at: number = line.indexOf(marker);
+    if (at < 0) {
+      return 0;
+    }
+    let i: number = at + marker.length;
+    while (i < line.length && line.charCodeAt(i) === 32) {
+      i += 1;
+    }
+    let value: number = 0;
+    let digits: number = 0;
+    while (i < line.length) {
+      const c: number = line.charCodeAt(i);
+      if (c < 48 || c > 57) {
+        break;
+      }
+      value = value * 10 + (c - 48);
+      digits += 1;
+      i += 1;
+    }
+    return digits > 0 ? value : 0;
   }
 
   /** NOT_GRANTED transition: discard pre-consent buffer. */
@@ -251,6 +313,33 @@ export class FilePersistenceStrategy implements UploadPersistence {
         fs.unlinkSync(path);
       }
       this.pendingBytes = 0;
+    } catch (_e) {
+      // best-effort
+    }
+  }
+
+  /**
+   * NOT_GRANTED transition: discard EVERYTHING — the pre-consent buffer and the
+   * already-collected batches. The schedulers stop on revocation and even the
+   * 23 h age-out runs only from a drain, so without this the refused user's
+   * data sat on disk indefinitely.
+   */
+  wipeAll(): void {
+    this.wipePending();
+    this.activeName = null;
+    this.activeBytes = 0;
+    this.ownNames.clear();
+    try {
+      const names: string[] = fs.listFileSync(this.rootDir)
+        .filter((n: string) => n.startsWith(BATCH_PREFIX)
+          && (n.endsWith(BATCH_SUFFIX) || n.endsWith(UPLOADING_SUFFIX)));
+      for (const name of names) {
+        try {
+          fs.unlinkSync(`${this.rootDir}/${name}`);
+        } catch (_e) {
+          // best-effort
+        }
+      }
     } catch (_e) {
       // best-effort
     }
