@@ -27,6 +27,7 @@ const SPIKE_PAGE_MARKER: string = 'pages/Index';
 export default class EntryAbility extends UIAbility {
   private spikeMode: SpikeMode = SpikeMode.OFF;
   private recoveryStarted: boolean = false;
+  private spikeObserverId: number = -1;
 
   onCreate(want: Want, launchParam: AbilityConstant.LaunchParam): void {
     hilog.info(DOMAIN, TAG, 'EntryAbility onCreate');
@@ -101,6 +102,20 @@ export default class EntryAbility extends UIAbility {
     });
   }
 
+  onDestroy(): void {
+    // Unregister per-ability state: re-created ability instances would stack
+    // one observer per create/destroy cycle within the process otherwise.
+    if (this.spikeObserverId !== -1) {
+      try {
+        errorManager.off('error', this.spikeObserverId, (_err) => {
+        });
+      } catch (_e) {
+        // already removed
+      }
+      this.spikeObserverId = -1;
+    }
+  }
+
   private registerSpikeObserver(): void {
     const observer: errorManager.ErrorObserver = {
       onUnhandledException: (errMsg: string): void => {
@@ -113,6 +128,7 @@ export default class EntryAbility extends UIAbility {
     };
     try {
       const observerId: number = errorManager.on('error', observer);
+      this.spikeObserverId = observerId;
       hilog.info(DOMAIN, SPIKE_TAG, 'observer registered id=%{public}d mode=%{public}s',
         observerId, this.spikeMode);
     } catch (error) {

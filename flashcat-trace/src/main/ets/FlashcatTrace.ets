@@ -2,7 +2,7 @@ import { rcp } from '@kit.RemoteCommunicationKit';
 import { Flashcat, SdkCore } from '@flashcatcloud/core';
 import { TraceConfiguration } from './TraceConfiguration';
 import { TraceContext } from './internal/TraceContext';
-import { TraceInterceptor, publishTraceId, isInjectionAllowed } from './internal/TraceInterceptor';
+import { TraceInterceptor, publishTraceId, isInjectionAllowed, hostOfUrl } from './internal/TraceInterceptor';
 
 /**
  * Distributed-tracing context propagation for HarmonyOS.
@@ -51,10 +51,17 @@ export class FlashcatTrace {
   /**
    * Manual fallback: trace headers for any network stack (@ohos.net.http, WebSocket, …).
    * Returns an empty object when tracking consent is not GRANTED (no header injected).
+   *
+   * Pass the request `url` so the configured `firstPartyHosts` gate applies —
+   * without it the caller takes over that responsibility, and trace ids
+   * attached to third-party hosts leak correlation identifiers.
    */
-  static getHeaders(): Record<string, string> {
+  static getHeaders(url?: string): Record<string, string> {
     const headers: Record<string, string> = {};
     if (!isInjectionAllowed(FlashcatTrace.core)) {
+      return headers;
+    }
+    if (url !== undefined && !FlashcatTrace.configuration.isFirstParty(hostOfUrl(url))) {
       return headers;
     }
     const tc: TraceContext = TraceContext.generate(FlashcatTrace.configuration.sampleRate);

@@ -35,7 +35,7 @@ Verified working on the local emulator (2026-06-13): `upload: POST /api/v2/rum -
 ## Build from CLI (compile check, no signing)
 
 ```sh
-# env (same as repo HANDOFF.md)
+# env
 export PATH="$HOME/Downloads/command-line-tools/bin:$HOME/Downloads/command-line-tools/ohpm/bin:/Applications/DevEco-Studio.app/Contents/sdk/default/openharmony/toolchains:$PATH"
 export DEVECO_SDK_HOME="/Applications/DevEco-Studio.app/Contents/sdk"
 ohpm install

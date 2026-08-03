@@ -95,6 +95,12 @@ export function hostOfUrl(rawUrl: string): string {
   if (at >= 0) {
     s = s.substring(at + 1);
   }
+  // IPv6 literal (https://[2001:db8::1]:8443/...): the host is the bracket
+  // content — the generic colon strip below would truncate it to "[2001".
+  if (s.startsWith('[')) {
+    const close: number = s.indexOf(']');
+    return close > 0 ? s.substring(1, close) : s;
+  }
   const colon: number = s.indexOf(':');
   if (colon >= 0) {
     s = s.substring(0, colon);
