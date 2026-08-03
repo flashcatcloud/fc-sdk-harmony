@@ -54,7 +54,10 @@ export function flashcatSymbolUploadPlugin(options: FlashcatPluginOptions): Hvig
     apply(node: HvigorNode): void {
       node.registerTask({
         name: 'uploadFlashcatSymbols',
-        postDependencies: ['assembleHap', 'assembleHar'],
+        // hvigor semantics: `dependencies` are tasks that run BEFORE this task
+        // (`postDependencies` would schedule this task before them — i.e. before
+        // the build, uploading the previous build's symbols under the new version).
+        dependencies: ['assembleHap', 'assembleHar'],
         run: async (): Promise<void> => {
           if (options.enabled === false) {
             return;

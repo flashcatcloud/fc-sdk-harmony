@@ -58,7 +58,9 @@ export class FlashcatTrace {
       return headers;
     }
     const tc: TraceContext = TraceContext.generate(FlashcatTrace.configuration.sampleRate);
-    publishTraceId(FlashcatTrace.core, tc.traceId);
+    if (tc.sampled) {
+      publishTraceId(FlashcatTrace.core, tc.traceId);
+    }
     headers['traceparent'] = tc.traceparent();
     headers['tracestate'] = tc.tracestate();
     return headers;

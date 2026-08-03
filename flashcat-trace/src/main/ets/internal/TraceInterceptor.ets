@@ -30,7 +30,9 @@ export class TraceInterceptor implements rcp.Interceptor {
     // traffic unless the user has granted consent. (RUM resource events are still
     // reported — the consent-gated writer buffers or drops them itself.)
     let tc: TraceContext | null = null;
-    if (isInjectionAllowed(this.core) && shouldInjectTraceHeaders(context.request.headers)) {
+    if (isInjectionAllowed(this.core)
+      && this.configuration.isFirstParty(hostOfUrl(context.request.url.toString()))
+      && shouldInjectTraceHeaders(context.request.headers)) {
       tc = TraceContext.generate(this.configuration.sampleRate);
       if (context.request.headers === undefined) {
         context.request.headers = {};
@@ -38,10 +40,14 @@ export class TraceInterceptor implements rcp.Interceptor {
       setHeaderValue(context.request.headers as Record<string, Object>, 'traceparent', tc.traceparent());
       setHeaderValue(context.request.headers as Record<string, Object>, 'tracestate',
         tc.tracestate(headerStringValue(context.request.headers, 'tracestate')));
-      publishTraceId(this.core, tc.traceId);
+      if (tc.sampled) {
+        publishTraceId(this.core, tc.traceId);
+      }
     }
     const requestKey: string = util.generateRandomUUID(true);
-    notifyRequestStarted(this.core, requestKey, context.request, tc);
+    // An unsampled trace is dropped by the APM backend, so advertising its ids on
+    // the RUM resource would create a dead RUM->APM link. Correlate only when sampled.
+    notifyRequestStarted(this.core, requestKey, context.request, tc !== null && tc.sampled ? tc : null);
     try {
       const response: rcp.Response = await next.handle(context);
       notifyRequestCompleted(this.core, requestKey, response);
@@ -54,9 +60,9 @@ export class TraceInterceptor implements rcp.Interceptor {
   }
 }
 
-/** Injection is only allowed when consent is explicitly GRANTED. */
+/** Injection requires a live (non-stopped) core with explicitly GRANTED consent. */
 export function isInjectionAllowed(core: SdkCore | null): boolean {
-  return core !== null && core.getTrackingConsent() === TrackingConsent.GRANTED;
+  return core !== null && core.isActive() && core.getTrackingConsent() === TrackingConsent.GRANTED;
 }
 
 /** Publishes the latest trace_id into core context under the 'trace' feature key. */
@@ -67,6 +73,33 @@ export function publishTraceId(core: SdkCore | null, traceId: string): void {
   const update: Record<string, Object> = {};
   update['trace.id'] = traceId;
   core.updateFeatureContext(TRACE_FEATURE_NAME, update);
+}
+
+/** Pure: extract the host from a URL (no @ohos.url dependency). */
+export function hostOfUrl(rawUrl: string): string {
+  let s: string = rawUrl;
+  const scheme: number = s.indexOf('://');
+  if (scheme >= 0) {
+    s = s.substring(scheme + 3);
+  }
+  let end: number = s.length;
+  const seps: string[] = ['/', '?', '#'];
+  for (const sep of seps) {
+    const i: number = s.indexOf(sep);
+    if (i >= 0 && i < end) {
+      end = i;
+    }
+  }
+  s = s.substring(0, end);
+  const at: number = s.indexOf('@');
+  if (at >= 0) {
+    s = s.substring(at + 1);
+  }
+  const colon: number = s.indexOf(':');
+  if (colon >= 0) {
+    s = s.substring(0, colon);
+  }
+  return s;
 }
 
 /** Do not take over a request that already carries a W3C trace context. */

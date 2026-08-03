@@ -158,8 +158,10 @@ struct Index {
   }
 
   private async request(method: string, url: string): Promise<void> {
+    // rcp caps live sessions per process — close in finally so failed requests
+    // (this demo has a button that always fails) don't leak the session.
+    const session: rcp.Session = rcp.createSession({ interceptors: [FlashcatTrace.interceptor()] });
     try {
-      const session: rcp.Session = rcp.createSession({ interceptors: [FlashcatTrace.interceptor()] });
       let resp: rcp.Response;
       if (method === 'POST') {
         resp = await session.post(url, '{"demo":true}');
@@ -169,9 +171,10 @@ struct Index {
         resp = await session.get(url);
       }
       this.append(`net ${method} ${shortUrl(url)} → ${resp.statusCode}`);
-      session.close();
     } catch (e) {
       this.append(`net ${method} ${shortUrl(url)} FAILED: ${e instanceof Error ? e.message : 'error'}`);
+    } finally {
+      session.close();
     }
   }
 
