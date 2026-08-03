@@ -130,5 +130,27 @@ export default function crashReportTests(): void {
         expect(RumFeature.errorMessageFromText(bannerOnly)).assertEqual('Uncaught exception');
         expect(RumFeature.errorMessageFromText(bannerWithFrames)).assertEqual('Uncaught exception');
       });
+
+    it('emptyMessagesProduceNameAloneNotDanglingColon',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        // Production symptom: events titled "Error name:Error" with no stack —
+        // a message-less non-Error throw. The derived message must be the name
+        // alone, never the raw label line and never "Error: ".
+        const labeledEmpty: string = 'Error name:Error\nError message:\nStacktrace:';
+        expect(RumFeature.errorMessageFromText(labeledEmpty)).assertEqual('Error');
+
+        const err: Error = new Error();
+        err.stack = '';
+        expect(RumFeature.messageFromError(err)).assertEqual('Error');
+      });
+
+    it('emptyObjectRejectionNeverReportsObjectObject',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        // `Promise.reject({})` JSON-serializes to '{}' which is skipped — the
+        // fallback must not interpolate the object into "[object Object]".
+        const text: string = RumFeature.rejectionErrorText({} as Object);
+        expect(text.indexOf('[object')).assertEqual(-1);
+        expect(text.length > 0).assertTrue();
+      });
   });
 }

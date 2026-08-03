@@ -673,10 +673,13 @@ export class RumFeature implements Feature, FeatureEventReceiver {
             json.substring(0, MAX_REJECTION_REASON_CHARS) : json;
         }
       } catch (_e) {
-        // cyclic or non-serializable — fall through to interpolation
+        // cyclic or non-serializable — fall through
       }
+      // Empty ({}) or unserializable object: NEVER interpolate — `${reason}`
+      // is exactly the "[object Object]" report this function exists to kill.
+      return 'Unhandled promise rejection (unserializable object)';
     }
-    return `${reason}`;
+    return `${reason}`; // null/undefined/number/boolean — readable primitives
   }
 
   static rejectionAttributes(): Record<string, Object> {
@@ -691,10 +694,11 @@ export class RumFeature implements Feature, FeatureEventReceiver {
     return idx >= 0 ? text.substring(0, idx) : text;
   }
 
-  /** "Name: message" from an Error object, independent of its stack text. */
+  /** "Name: message" from an Error object, independent of its stack text.
+   *  Name alone when the message is empty — no dangling "Error: ". */
   static messageFromError(errObject: Error): string {
     const name: string = errObject.name.length > 0 ? errObject.name : 'Error';
-    return `${name}: ${errObject.message}`;
+    return errObject.message.length > 0 ? `${name}: ${errObject.message}` : name;
   }
 
   /**
@@ -710,7 +714,10 @@ export class RumFeature implements Feature, FeatureEventReceiver {
     if (lines.length >= 2 && lines[0].startsWith('Error name:') && lines[1].startsWith('Error message:')) {
       const name: string = lines[0].substring('Error name:'.length).trim();
       const message: string = lines[1].substring('Error message:'.length).trim();
-      return `${name.length > 0 ? name : 'Error'}: ${message}`;
+      const safeName: string = name.length > 0 ? name : 'Error';
+      // Name alone when the message is empty (throw of a message-less value) —
+      // "Error: " with a dangling colon reads as a broken report in the console.
+      return message.length > 0 ? `${safeName}: ${message}` : safeName;
     }
     for (let i: number = 0; i < lines.length; i++) {
       const line: string = lines[i].trim();
