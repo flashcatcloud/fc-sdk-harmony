@@ -33,3 +33,4 @@ entry/src/main/resources/rawfile/demo_config.json
 
 # OS
 .DS_Store
+.node-tests/
