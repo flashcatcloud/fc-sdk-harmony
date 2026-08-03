@@ -71,8 +71,10 @@ export default function crashIncidentTests(): void {
 
       expect(parts.name).assertEqual('Error');
       expect(parts.message).assertEqual('');
-      // The raw text (banner included) is still retained as the stack.
-      expect(parts.stack.indexOf('Cannot get SourceMap info')).assertEqual(0);
+      // The banner is STRIPPED from the outgoing stack (it polluted the
+      // backend's parsed frames); the real frames survive.
+      expect(parts.stack.indexOf('Cannot get SourceMap info')).assertEqual(-1);
+      expect(parts.stack.indexOf('at anonymous') >= 0).assertTrue();
     });
 
     it('changesWhenMessageChanges', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
@@ -118,6 +120,21 @@ export default function crashIncidentTests(): void {
 
         expect(recent.length).assertEqual(1);
         expect(recent[0].incidentId).assertEqual('recent');
+      });
+
+    it('stackSentToBackendContainsFramesOnlyNoLabelLines',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        // The labeled callback text titled issues "Error name" on the backend
+        // (its parser reads the first stack line as "Type: message").
+        const labeled: string =
+          'Error name:Error\nError message:E2E crash marker\nStacktrace:\nat f (Index.ets:1:1)';
+        const parts: CrashExceptionParts = CrashFingerprint.partsFromText(labeled);
+        expect(parts.stack).assertEqual('at f (Index.ets:1:1)');
+        expect(parts.name).assertEqual('Error');
+        expect(parts.message).assertEqual('E2E crash marker');
+        // Banner lines are stripped too.
+        const banner: string = 'Cannot get SourceMap info, dump raw stack:\nat g (a.ets:2:2)';
+        expect(CrashFingerprint.framesOnly(banner)).assertEqual('at g (a.ets:2:2)');
       });
 
     it('retentionIsKeyedOnConsumptionTimeNotFaultTime',

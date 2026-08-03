@@ -128,6 +128,13 @@ export class RumFeature implements Feature, FeatureEventReceiver {
 
     // Promise rejections are ordinary RUM errors. They are not terminating
     // ArkTS crashes, so they never enter the pending store or policy path.
+    // trackErrors=false suppresses this AUTO capture entirely.
+    if (this.configuration.trackErrors) {
+      this.registerRejectionObserver();
+    }
+  }
+
+  private registerRejectionObserver(): void {
     try {
       const observer: errorManager.UnhandledRejectionObserver = (reason: Object): void => {
         this.reportUnhandledRejection(reason);
@@ -139,7 +146,6 @@ export class RumFeature implements Feature, FeatureEventReceiver {
       this.rejectionObserver = null;
       FlashcatLog.e(`rum.error: unhandled-rejection registration failed: ${RumFeature.errorText(e)}`);
     }
-
     // Network auto-instrumentation arrives via the bus (Trace interceptor →
     // onReceive). TODO phase 2: navigation auto-tracking, compile-time AOP.
   }
@@ -483,10 +489,18 @@ export class RumFeature implements Feature, FeatureEventReceiver {
   }
 
   private reportUnhandledToMonitor(stackText: string, message: string): void {
+    if (!this.configuration.trackErrors) {
+      // trackErrors=false: suppress the non-crash live copy. The crash-flagged
+      // path (markCrash + durable replay) does not come through here.
+      FlashcatLog.d('rum.error: non-crash report suppressed (trackErrors=false)');
+      return;
+    }
     const m: DefaultRumMonitor | null = this.monitor;
     if (m !== null) {
       FlashcatLog.d(`rum.error: report unhandled message="${message}"`);
-      m.reportError(message, RumErrorSource.SOURCE, stackText, false, 'unhandled');
+      // Frames only: the labeled callback text is for fingerprinting; sending
+      // it as error.stack made the backend title issues "Error name".
+      m.reportError(message, RumErrorSource.SOURCE, RumFeature.stackFramesOnly(stackText), false, 'unhandled');
     } else {
       FlashcatLog.d('rum.error: dropped because monitor is null');
     }
@@ -692,6 +706,23 @@ export class RumFeature implements Feature, FeatureEventReceiver {
   private static firstLine(text: string): string {
     const idx: number = text.indexOf('\n');
     return idx >= 0 ? text.substring(0, idx) : text;
+  }
+
+  /** Strips label lines and the sourcemap banner, leaving stack frames. */
+  static stackFramesOnly(text: string): string {
+    const kept: string[] = [];
+    for (const line of text.split('\n')) {
+      const trimmed: string = line.trim();
+      if (trimmed.startsWith('Error name:') || trimmed.startsWith('Error message:')
+        || trimmed === 'Stacktrace:' || trimmed.startsWith(SOURCEMAP_BANNER)) {
+        continue;
+      }
+      kept.push(line);
+    }
+    while (kept.length > 0 && kept[0].trim().length === 0) {
+      kept.shift();
+    }
+    return kept.join('\n');
   }
 
   /** "Name: message" from an Error object, independent of its stack text.

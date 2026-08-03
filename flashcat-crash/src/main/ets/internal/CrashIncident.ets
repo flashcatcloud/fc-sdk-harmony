@@ -31,8 +31,33 @@ export class CrashFingerprint {
     return CrashFingerprint.fnv1a(`${normalizedName}\n${normalizedMessage}\n${frame}`);
   }
 
+  /**
+   * Strips the errorManager label lines ("Error name:", "Error message:",
+   * "Stacktrace:") and the sourcemap banner from a callback text, leaving the
+   * frames. The labels are an OS callback FORMAT, not stack content — sending
+   * them as `error.stack` made the backend parse "Error name:Error" as the
+   * exception header, mis-titling issues and polluting the stack view.
+   */
+  static framesOnly(text: string): string {
+    const kept: string[] = [];
+    for (const line of text.split('\n')) {
+      const trimmed: string = line.trim();
+      if (trimmed.startsWith('Error name:') || trimmed.startsWith('Error message:')
+        || trimmed === 'Stacktrace:' || trimmed.startsWith('Cannot get SourceMap info')) {
+        continue;
+      }
+      kept.push(line);
+    }
+    // Drop leading blank lines left by the removals.
+    while (kept.length > 0 && kept[0].trim().length === 0) {
+      kept.shift();
+    }
+    return kept.join('\n');
+  }
+
   static partsFromText(text: string): CrashExceptionParts {
-    const stack: string = CrashFingerprint.truncate(text, MAX_STACK_CHARS);
+    const stack: string = CrashFingerprint.framesOnly(
+      CrashFingerprint.truncate(text, MAX_STACK_CHARS));
     const lines: string[] = text.split('\n');
     // errorManager.on('error') callback text uses a labeled three-part format
     // ("Error name:<n>\nError message:<m>\nStacktrace:\n..."). Parse it

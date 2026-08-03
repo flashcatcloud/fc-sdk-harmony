@@ -61,6 +61,20 @@ if (phase === 'events') {
     `crash sessions: ${JSON.stringify(marker.map((e) => e.session && e.session.id))}`);
   const crashCounted = byType('view').some((v) => v.view && v.view.crash && v.view.crash.count >= 1);
   check('crash counted in a view document (crash-free rate)', crashCounted);
+} else if (phase === 'crash-only') {
+  // trackErrors=false: the auto-captured rejection must NOT appear; the crash must.
+  const errors = byType('error');
+  const suppressed = errors.filter((e) => (e.error && e.error.message || '').includes('suppressed rejection'));
+  check('auto-captured rejection suppressed', suppressed.length === 0,
+    JSON.stringify(errors.map((e) => e.error && e.error.message)));
+  const crash = errors.filter((e) => e.error && e.error.is_crash === true
+    && (e.error.message || '').includes('E2E crash-only marker'));
+  check('crash still delivered with trackErrors=false', crash.length >= 1,
+    JSON.stringify(errors.map((e) => e.error && e.error.message)));
+  const viewSessionIds = new Set(byType('view').map((v) => v.session && v.session.id).filter(Boolean));
+  check('crash session has view docs', crash.every((e) => e.session && viewSessionIds.has(e.session.id)));
+  const crashCounted = byType('view').some((v) => v.view && v.view.crash && v.view.crash.count >= 1);
+  check('crash counted in a view document', crashCounted);
 } else {
   console.error(`unknown phase: ${phase}`);
   process.exit(2);

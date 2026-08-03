@@ -11,6 +11,7 @@ export class RumConfiguration {
   readonly trackNavigation: boolean;        // auto page tracking via UIObserver
   readonly trackNetworkRequests: boolean;   // auto resource tracking
   readonly trackFrustrations: boolean;
+  readonly trackErrors: boolean;            // AUTO error capture (crashes unaffected)
   readonly eventMapper: RumEventMapper | null;  // phase 2 R3: PII scrubbing / drop
 
   constructor(
@@ -20,7 +21,8 @@ export class RumConfiguration {
     trackNavigation: boolean,
     trackNetworkRequests: boolean,
     trackFrustrations: boolean,
-    eventMapper: RumEventMapper | null = null
+    eventMapper: RumEventMapper | null = null,
+    trackErrors: boolean = true
   ) {
     this.applicationId = applicationId;
     this.sessionSampleRate = sessionSampleRate;
@@ -28,6 +30,7 @@ export class RumConfiguration {
     this.trackNavigation = trackNavigation;
     this.trackNetworkRequests = trackNetworkRequests;
     this.trackFrustrations = trackFrustrations;
+    this.trackErrors = trackErrors;
     this.eventMapper = eventMapper;
   }
 }
@@ -42,6 +45,7 @@ export class RumConfigurationBuilder {
   private trackNavigation: boolean = false;
   private trackNetworkRequests: boolean = false;
   private trackFrustrations: boolean = false;
+  private trackErrors: boolean = true;
   private eventMapper: RumEventMapper | null = null;
 
   constructor(applicationId: string) {
@@ -88,6 +92,21 @@ export class RumConfigurationBuilder {
     return this;
   }
 
+  /**
+   * Enable/disable AUTOMATIC error capture (uncaught non-crash reports and
+   * unhandled Promise rejections). Default true.
+   *
+   * Crash reporting is NOT affected: with the crash module enabled, uncaught
+   * exceptions still follow the crash policy (persisted, counted, replayed as
+   * `is_crash` errors into the crashed session). Manual `addError` calls are
+   * the app's explicit intent and also remain delivered — use the event
+   * mapper to drop those too if needed.
+   */
+  setTrackErrors(enabled: boolean): RumConfigurationBuilder {
+    this.trackErrors = enabled;
+    return this;
+  }
+
   build(): RumConfiguration {
     return new RumConfiguration(
       this.applicationId,
@@ -96,7 +115,8 @@ export class RumConfigurationBuilder {
       this.trackNavigation,
       this.trackNetworkRequests,
       this.trackFrustrations,
-      this.eventMapper
+      this.eventMapper,
+      this.trackErrors
     );
   }
 }

@@ -5,6 +5,7 @@ import {
 } from '@flashcatcloud/core';
 import { RumApplicationScope } from '../main/ets/internal/scope/RumApplicationScope';
 import { RumRawEvent } from '../main/ets/internal/scope/RumScope';
+import { RumConfigurationBuilder } from '../main/ets/RumConfiguration';
 
 const MIN_15: number = 15 * 60 * 1000;
 
@@ -194,6 +195,20 @@ export default function sessionLifecycleTests(): void {
         const latest: Record<string, Object> =
           scope.ofType('view')[scope.ofType('view').length - 1];
         expect(sessionIdOf(latest) === sessionA).assertFalse();
+      });
+  });
+
+  describe('RumConfigTrackErrors', (): void => {
+    it('trackErrorsDefaultsToTrueAndIsConfigurable',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        expect(new RumConfigurationBuilder('app').build().trackErrors).assertTrue();
+        expect(new RumConfigurationBuilder('app').setTrackErrors(false).build().trackErrors).assertFalse();
+        // Crash-relevant toggles are independent of trackErrors.
+        const cfg = new RumConfigurationBuilder('app')
+          .setTrackErrors(false)
+          .setTrackNetworkRequests(true)
+          .build();
+        expect(cfg.trackNetworkRequests).assertTrue();
       });
   });
 }
