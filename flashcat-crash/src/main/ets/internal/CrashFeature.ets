@@ -54,6 +54,10 @@ export class CrashFeature implements Feature, FeatureEventReceiver {
   // Newest incident persisted with REPORT_AND_RECOVER this run, so a failed
   // restart can downgrade it before exit (crash.recovered must not lie).
   private lastRecoveryIncident: CrashIncidentRecord | null = null;
+  // Incidents whose replay delivery FAILED this launch (retained on disk).
+  // The in-process watcher must not report their crashes a second time — the
+  // retained incident is the canonical carrier and replays next launch.
+  private retainedThisLaunch: ConsumedCrashIncident[] = [];
 
   constructor(core: SdkCore, configuration: CrashConfiguration) {
     this.core = core;
@@ -416,6 +420,8 @@ export class CrashFeature implements Feature, FeatureEventReceiver {
       if (event['delivered'] !== true) {
         FlashcatLog.e(
           `crash.pending: delivery failed, retained incident=${incident.incidentId}`);
+        this.retainedThisLaunch.push(new ConsumedCrashIncident(
+          incident.incidentId, incident.fingerprint, incident.timestampMs, Date.now()));
         continue;
       }
       FlashcatLog.d(
@@ -578,10 +584,17 @@ export class CrashFeature implements Feature, FeatureEventReceiver {
             // With no usable fault timestamp the ±30 s window would compare
             // against "now" and fail open for any relaunch >30 s after the
             // crash — fall back to fingerprint-only matching.
-            const duplicate: boolean = paramTimestampMs > 0
+            const duplicate: boolean = (paramTimestampMs > 0
               ? CrashDeduplication.matchesConsumed(
                 fingerprint, paramTimestampMs, this.consumed, CROSS_LAUNCH_WINDOW_MS)
-              : CrashDeduplication.matchesConsumedFingerprint(fingerprint, this.consumed);
+              : CrashDeduplication.matchesConsumedFingerprint(fingerprint, this.consumed))
+              // A retained (failed-replay) incident of this crash exists: it is
+              // the canonical carrier and will replay next launch — reporting
+              // the watcher copy too would count the crash twice.
+              || (paramTimestampMs > 0
+                ? CrashDeduplication.matchesConsumed(
+                  fingerprint, paramTimestampMs, this.retainedThisLaunch, REPLAY_CONSUMED_MATCH_WINDOW_MS)
+                : CrashDeduplication.matchesConsumedFingerprint(fingerprint, this.retainedThisLaunch));
             if (duplicate) {
               FlashcatLog.d(
                 `crash: skipped duplicate APP_CRASH fingerprint=${fingerprint} timestamp=${paramTimestampMs}`);
