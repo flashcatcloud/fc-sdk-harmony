@@ -19,6 +19,7 @@ const ANONYMOUS_ID_KEY: string = 'anonymous_id';
  * subscription (best-effort; requires ohos.permission.GET_NETWORK_INFO).
  */
 export class ContextProvider {
+  private readonly appContext: common.Context;
   private readonly configuration: Configuration;
   private readonly device: DeviceInfo;
   private readonly anonymousId: string;
@@ -30,6 +31,7 @@ export class ContextProvider {
   private bundleId: string = '';
 
   constructor(context: common.Context, configuration: Configuration, persistIdentity: boolean = true) {
+    this.appContext = context;
     this.configuration = configuration;
     this.device = ContextProvider.readDeviceInfo();
     // Sync (like app info below) so the very first events — written before any
@@ -38,6 +40,42 @@ export class ContextProvider {
     this.prepareAppInfo();
     this.readInitialNetwork();
     this.subscribeNetwork();
+  }
+
+  /**
+   * NOT_GRANTED -> GRANTED transition: durably persist the current in-memory
+   * anonymous id (generated without persistence at construction) so the device
+   * keeps a single identity across launches instead of splitting on the grant.
+   */
+  persistIdentityNow(): void {
+    try {
+      const prefs: preferences.Preferences =
+        preferences.getPreferencesSync(this.appContext, { name: PREFERENCES_NAME });
+      const existing: preferences.ValueType = prefs.getSync(ANONYMOUS_ID_KEY, '');
+      if (typeof existing === 'string' && existing.length > 0) {
+        return; // already persisted (normal GRANTED-at-init path)
+      }
+      prefs.putSync(ANONYMOUS_ID_KEY, this.anonymousId);
+      prefs.flush((_err) => {
+        // Best-effort durability, same as loadOrCreateAnonymousId.
+      });
+    } catch (_e) {
+      // Preferences unavailable — the per-process id stands.
+    }
+  }
+
+  /** Tears down system subscriptions so a stopped core can be collected. */
+  stop(): void {
+    if (this.netConnection !== null) {
+      try {
+        this.netConnection.unregister((_err) => {
+          // Best-effort; the subscription dies with the process otherwise.
+        });
+      } catch (_e) {
+        // Already unregistered or unavailable.
+      }
+      this.netConnection = null;
+    }
   }
 
   /**

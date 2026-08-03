@@ -28,6 +28,13 @@ export interface SdkCore {
   /** Current tracking consent — features (e.g. Trace) must honor it. */
   getTrackingConsent(): TrackingConsent;
 
+  /**
+   * False once the instance has been stopped. Long-lived captures of a core
+   * (e.g. an rcp interceptor built before a stop/re-initialize cycle) must
+   * check this and stop injecting/reporting instead of acting on dead state.
+   */
+  isActive(): boolean;
+
   /** Set / clear the identified user. */
   setUserInfo(user: UserInfo): void;
   /** Clear the identified user (equivalent to setUserInfo({})). */

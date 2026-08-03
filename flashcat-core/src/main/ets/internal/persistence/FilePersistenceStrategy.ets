@@ -17,6 +17,11 @@ const BATCH_PREFIX: string = 'batch-';
 const BATCH_SUFFIX: string = '.ndjson';
 const UPLOADING_SUFFIX: string = '.uploading';
 const UPLOADING_RECOVERY_AGE_MS: number = 10 * 60 * 1000;
+// A batch created by ANOTHER process may still be that process's active file
+// (appended without any cross-process lock). Owners never append to a file older
+// than MAX_BATCH_AGE_MS (shouldRoll opens a new one), so a foreign batch becomes
+// safe to claim once it is past the roll age plus slack for an in-flight append.
+const FOREIGN_CLAIM_SLACK_MS: number = 2000;
 const PENDING_DIR: string = 'pending';
 const PENDING_FILE: string = 'pending.ndjson';
 // The pre-consent buffer is a single append-only file; without a cap an app that
@@ -49,6 +54,9 @@ export class FilePersistenceStrategy implements UploadPersistence {
   private activeName: string | null = null;   // basename of the active main batch file
   private activeCreatedMs: number = 0;
   private activeBytes: number = 0;
+  // Batch files THIS instance created: always safe to claim regardless of age
+  // (their roll state is known locally). Bounded by the file-count quota.
+  private readonly ownNames: Set<string> = new Set<string>();
   private pendingBytes: number = -1;          // -1 = not yet read from disk
   private seq: number = 0;
 
@@ -141,6 +149,7 @@ export class FilePersistenceStrategy implements UploadPersistence {
     this.activeName = `${BATCH_PREFIX}${now}-${this.seq}-${rand}${BATCH_SUFFIX}`;
     this.activeCreatedMs = now;
     this.activeBytes = 0;
+    this.ownNames.add(this.activeName);
   }
 
   // ---- pending (pre-consent) buffer ----
@@ -246,6 +255,13 @@ export class FilePersistenceStrategy implements UploadPersistence {
         this.deleteBatch(originalName);
         continue;
       }
+      // Never claim what may be the OTHER process's active file — its owner
+      // appends with no cross-process lock, and claiming it silently loses
+      // acknowledged writes (or clobbers them on a later restore).
+      if (!this.ownNames.has(originalName)
+        && createdMs > 0 && (now - createdMs) <= MAX_BATCH_AGE_MS + FOREIGN_CLAIM_SLACK_MS) {
+        continue;
+      }
       // The claim carries its own timestamp so stale-claim recovery is keyed on
       // when the upload STARTED, not when the batch was created — otherwise a
       // live upload of an old batch gets stolen by the other process.
@@ -299,6 +315,7 @@ export class FilePersistenceStrategy implements UploadPersistence {
   }
 
   deleteBatch(batchId: string): void {
+    this.ownNames.delete(FilePersistenceStrategy.originalName(batchId));
     try {
       fs.unlinkSync(`${this.rootDir}/${batchId}`);
     } catch (_e) {
@@ -312,10 +329,30 @@ export class FilePersistenceStrategy implements UploadPersistence {
       return;
     }
     try {
-      fs.renameSync(`${this.rootDir}/${batch.batchId}`, `${this.rootDir}/${originalName}`);
+      fs.renameSync(`${this.rootDir}/${batch.batchId}`, `${this.rootDir}/${this.restoreTargetName(originalName)}`);
     } catch (_e) {
       // Already gone or restored.
     }
+  }
+
+  /**
+   * Restore destination that never clobbers an existing file: if the original
+   * path was recreated in the meantime (defensive — the foreign-claim age gate
+   * should prevent it), restore under a fresh unique name instead of renaming
+   * over live data.
+   */
+  private restoreTargetName(originalName: string): string {
+    let exists: boolean = false;
+    try {
+      exists = fs.accessSync(`${this.rootDir}/${originalName}`);
+    } catch (_e) {
+      exists = false;
+    }
+    if (!exists) {
+      return originalName;
+    }
+    const stem: string = originalName.slice(0, originalName.length - BATCH_SUFFIX.length);
+    return `${stem}-r${Date.now()}${BATCH_SUFFIX}`;
   }
 
   // ---- helpers ----
@@ -342,7 +379,7 @@ export class FilePersistenceStrategy implements UploadPersistence {
         }
         const originalName: string = FilePersistenceStrategy.originalName(name);
         try {
-          fs.renameSync(`${this.rootDir}/${name}`, `${this.rootDir}/${originalName}`);
+          fs.renameSync(`${this.rootDir}/${name}`, `${this.rootDir}/${this.restoreTargetName(originalName)}`);
         } catch (_e) {
           // best-effort recovery
         }

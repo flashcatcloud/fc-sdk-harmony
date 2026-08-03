@@ -1,4 +1,4 @@
-import { common, bundleManager } from '@kit.AbilityKit';
+import { common, bundleManager, ApplicationStateChangeCallback } from '@kit.AbilityKit';
 import { preferences } from '@kit.ArkData';
 import { Configuration } from '../config/Configuration';
 import { TrackingConsent } from '../privacy/TrackingConsent';
@@ -32,19 +32,24 @@ export class FlashcatCore implements SdkCore {
   private readonly crashPendingStore: CrashPendingStore;
   private readonly features: Map<string, RegisteredFeature> = new Map<string, RegisteredFeature>();
   private readonly deferredUploadRegistrar: DeferredUploadWorkRegistrar = new DeferredUploadWorkRegistrar();
+  private appStateCallback: ApplicationStateChangeCallback | null = null;
+  private active: boolean = true;
 
   constructor(name: string, context: common.Context, configuration: Configuration, consent: TrackingConsent) {
     this.name = name;
     this.context = context;
     this.configuration = configuration;
-    // A persisted NOT_GRANTED from an earlier launch overrides the constructor
-    // literal: consent lives only in app memory otherwise, and a second process
-    // (the deferred-upload WorkScheduler extension) re-initializing with a
-    // hardcoded GRANTED would upload data the user already refused.
+    // The effective consent is the MORE RESTRICTIVE of the constructor literal
+    // and the persisted value from an earlier launch. Consent lives only in app
+    // memory otherwise, and a second process (the deferred-upload WorkScheduler
+    // extension) re-initializing with a hardcoded GRANTED would migrate and
+    // upload data the user has refused — or has not yet decided about (PENDING).
+    // Loosening consent (PENDING/NOT_GRANTED -> GRANTED) is only ever done via
+    // an explicit setTrackingConsent call, never by a constructor literal.
     const persisted: TrackingConsent | null = FlashcatCore.readPersistedConsent(context);
-    if (persisted === TrackingConsent.NOT_GRANTED && consent !== TrackingConsent.NOT_GRANTED) {
-      FlashcatLog.d(`consent: persisted NOT_GRANTED overrides initial ${consent}`);
-      this.consent = TrackingConsent.NOT_GRANTED;
+    if (persisted !== null && FlashcatCore.restrictiveness(persisted) > FlashcatCore.restrictiveness(consent)) {
+      FlashcatLog.d(`consent: persisted ${persisted} overrides initial ${consent}`);
+      this.consent = persisted;
     } else {
       this.consent = consent;
     }
@@ -60,17 +65,25 @@ export class FlashcatCore implements SdkCore {
     FlashcatCore.persistConsent(this.context, this.consent);
     this.bus.setReceiver(CRASH_STORAGE_TARGET, this.crashPendingStore);
     FlashcatLog.d(`initialize: instance="${this.name}" site=${this.configuration.site} consent=${this.consent}`);
-    this.registerDeferredUploadWork();
+    // Arm background delivery only under GRANTED: under PENDING/NOT_GRANTED there
+    // is nothing uploadable, and the persisted job would keep waking the extension
+    // process (across reboots) for a user who has not consented. The GRANTED
+    // transition in setTrackingConsent re-arms it.
+    if (this.consent === TrackingConsent.GRANTED) {
+      this.registerDeferredUploadWork();
+    } else {
+      this.deferredUploadRegistrar.deregister();
+    }
     try {
-      // Inline literal so its target type is the kit's ApplicationStateChangeCallback.
-      this.context.getApplicationContext().on('applicationStateChange', {
+      this.appStateCallback = {
         onApplicationForeground: () => {},
         onApplicationBackground: () => {
           this.flushAll();
         }
-      });
-      // NOTE: observer lives for the app/SDK lifetime; not removed on stop (rare).
+      };
+      this.context.getApplicationContext().on('applicationStateChange', this.appStateCallback);
     } catch (_e) {
+      this.appStateCallback = null;
       // Lifecycle hook unavailable — uploads still drain on the normal cadence.
     }
   }
@@ -133,6 +146,10 @@ export class FlashcatCore implements SdkCore {
     return this.consent;
   }
 
+  isActive(): boolean {
+    return this.active;
+  }
+
   setUserInfo(user: UserInfo): void {
     this.contextProvider.setUser(user);
   }
@@ -149,6 +166,10 @@ export class FlashcatCore implements SdkCore {
     }
     FlashcatCore.persistConsent(this.context, consent);
     if (consent === TrackingConsent.GRANTED) {
+      // Durable writes are now allowed: persist the in-memory anonymous id so the
+      // device keeps one identity across launches instead of splitting on the
+      // NOT_GRANTED -> GRANTED transition.
+      this.contextProvider.persistIdentityNow();
       // Flush the pre-consent buffer into the upload dir, then start uploading.
       this.features.forEach((r: RegisteredFeature) => {
         r.persistence.migratePending();
@@ -166,11 +187,15 @@ export class FlashcatCore implements SdkCore {
       this.deferredUploadRegistrar.deregister();
     } else {
       // → PENDING: stop uploading; new events buffer separately until a decision.
+      // The persisted background job is cancelled too — an extension wake-up has
+      // nothing uploadable until the user decides.
       this.features.forEach((r: RegisteredFeature) => r.scheduler.stop());
+      this.deferredUploadRegistrar.deregister();
     }
   }
 
   stop(): void {
+    this.active = false;
     // Final view refresh before shutdown — without it the last view keeps the
     // time_spent of its last incidental write (0 for a quiet session). Skipped
     // under NOT_GRANTED where every write is dropped anyway.
@@ -185,6 +210,17 @@ export class FlashcatCore implements SdkCore {
     this.features.clear();
     this.bus.removeReceiver(CRASH_STORAGE_TARGET);
     this.deferredUploadRegistrar.deregister(); // persisted job must not outlive the SDK
+    // Tear down system subscriptions — a stop/re-initialize cycle must not
+    // accumulate NetConnection registrations or keep flushing a dead core.
+    this.contextProvider.stop();
+    if (this.appStateCallback !== null) {
+      try {
+        this.context.getApplicationContext().off('applicationStateChange', this.appStateCallback);
+      } catch (_e) {
+        // Already gone.
+      }
+      this.appStateCallback = null;
+    }
   }
 
   flush(): void {
@@ -244,6 +280,14 @@ export class FlashcatCore implements SdkCore {
       requiresCharging: this.configuration.deferredUploadRequiresCharging
     };
     this.deferredUploadRegistrar.register(options);
+  }
+
+  /** Restrictiveness ordering for the effective-consent rule: GRANTED < PENDING < NOT_GRANTED. */
+  private static restrictiveness(consent: TrackingConsent): number {
+    if (consent === TrackingConsent.NOT_GRANTED) {
+      return 2;
+    }
+    return consent === TrackingConsent.PENDING ? 1 : 0;
   }
 
   private static readPersistedConsent(context: common.Context): TrackingConsent | null {
