@@ -13,6 +13,11 @@ export interface RumMonitor {
   startAction(type: RumActionType, name: string, attributes?: Record<string, Object>): void;
   stopAction(type: RumActionType, name: string, attributes?: Record<string, Object>): void;
 
+  /**
+   * `key` MUST be unique per request (e.g. a UUID) — reusing a key while an
+   * earlier request with the same key is still in flight cross-attributes the
+   * two completions (wrong durations and view attribution for both).
+   */
   startResource(key: string, method: RumResourceMethod, url: string, attributes?: Record<string, Object>): void;
   stopResource(key: string, statusCode: number, size: number, kind: RumResourceKind,
     attributes?: Record<string, Object>): void;

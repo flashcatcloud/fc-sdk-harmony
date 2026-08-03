@@ -18,6 +18,12 @@ export class RumApplicationScope implements RumScope {
   private lastExpiredViewKey: string | null = null;
   private lastExpiredViewName: string = '';
   private lastExpiredViewAttributes: Record<string, Object> = {};
+  // The most recently ended session that still owns in-flight resources: late
+  // completions are settled into it (correct session/view attribution) instead
+  // of being dropped. Session teardown (stopSession, inactivity expiry, 4-h
+  // renewal) used to discard every in-flight scope — a request 2 s old that
+  // merely spanned the renewal boundary was lost.
+  private drainingSession: RumSessionScope | null = null;
 
   constructor(featureScope: FeatureScope, core: SdkCore, applicationId: string, sampleRate: number) {
     this.featureScope = featureScope;
@@ -27,6 +33,17 @@ export class RumApplicationScope implements RumScope {
   }
 
   handleEvent(event: RumRawEvent): RumScope | null {
+    // Late completions owned by an already-ended session settle into it.
+    if ((event.kind === 'stopResource' || event.kind === 'stopResourceWithError')
+      && this.drainingSession !== null
+      && (this.session === null || !this.session.ownsResource(event.key ?? ''))
+      && this.drainingSession.ownsResource(event.key ?? '')) {
+      this.drainingSession.settleResource(event);
+      if (!this.drainingSession.hasUnsettledResources()) {
+        this.drainingSession = null; // fully drained — release the scope
+      }
+      return this;
+    }
     if (this.session === null) {
       // Only events that carry NEW user intent may mint a session:
       // - keepAlive carries none.
@@ -40,19 +57,29 @@ export class RumApplicationScope implements RumScope {
       if (!RumApplicationScope.startsUserActivity(event)) {
         return this;
       }
-      this.session = this.startNewSession(event.timestampMs);
-      this.maybeRestartExpiredView(this.session, event);
+      // Clamp the mint time to now: a BACKDATED event (a timed action stamped
+      // at its start) must not create a session in the past — the restarted
+      // view's doc would date the session 20 min ago and the very next event
+      // would instantly re-expire it, materializing a phantom ~0-duration
+      // session row on the backend.
+      const mintAtMs: number = Math.max(event.timestampMs, Date.now());
+      this.session = this.startNewSession(mintAtMs);
+      this.maybeRestartExpiredView(this.session, event, mintAtMs);
     }
     const result: RumScope | null = this.session.handleEvent(event);
     if (result === null) {
       this.rememberExpiredView(this.session);
+      if (this.session.hasUnsettledResources()) {
+        this.drainingSession = this.session;
+      }
       // Session expired. Same rule as above for the replacement session.
       if (!RumApplicationScope.startsUserActivity(event)) {
         this.session = null;
         return this;
       }
-      this.session = this.startNewSession(event.timestampMs);
-      this.maybeRestartExpiredView(this.session, event);
+      const replacementMintAtMs: number = Math.max(event.timestampMs, Date.now());
+      this.session = this.startNewSession(replacementMintAtMs);
+      this.maybeRestartExpiredView(this.session, event, replacementMintAtMs);
       this.session.handleEvent(event);
     }
     return this;
@@ -85,7 +112,7 @@ export class RumApplicationScope implements RumScope {
    * out something from the dead session — restarting for those would let the
    * act of leaving manufacture a phantom zero-duration session.
    */
-  private maybeRestartExpiredView(session: RumSessionScope, event: RumRawEvent): void {
+  private maybeRestartExpiredView(session: RumSessionScope, event: RumRawEvent, restartAtMs: number): void {
     if (event.kind !== 'addAction' && event.kind !== 'addError'
       && event.kind !== 'startResource') {
       // NOT consumed: a non-qualifying event must not burn the remembered view,
@@ -109,7 +136,7 @@ export class RumApplicationScope implements RumScope {
       key: key,
       name: name,
       attributes: attributes,
-      timestampMs: event.timestampMs
+      timestampMs: restartAtMs
     };
     session.handleEvent(restart);
   }
@@ -125,6 +152,9 @@ export class RumApplicationScope implements RumScope {
     }
     this.rememberExpiredView(this.session);
     this.session.end(nowMs);
+    if (this.session.hasUnsettledResources()) {
+      this.drainingSession = this.session;
+    }
     this.session = null;
   }
 

@@ -138,7 +138,7 @@ export class RumViewScope implements RumScope {
         // derive session_crash_count → crash-free rate. Freezes/app-hangs currently
         // arrive as is_crash too (distinguished by error.category); counting them
         // here keeps crash-free rate consistent with 崩溃次数 (= is_crash errors).
-        if (event.isCrash === true) {
+        if (event.isCrash === true && event.countInView !== false) {
           this.crashCount += 1;
         }
         this.writeError(event);

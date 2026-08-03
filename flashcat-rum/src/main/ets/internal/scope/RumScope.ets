@@ -26,6 +26,11 @@ export interface RumRawEvent {
   errorStack?: string;
   errorHandling?: string;       // 'handled' | 'unhandled'
   isCrash?: boolean;
+  // false ONLY for replayed crashes from a previous run: the error event keeps
+  // is_crash for the error list, but the crash must not bump the CURRENT
+  // view's crash count (it was already counted in the crashed run's view doc,
+  // and it did not happen in this session).
+  countInView?: boolean;
 
   // resource specifics (kind === 'startResource' | 'stopResource')
   url?: string;

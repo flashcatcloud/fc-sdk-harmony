@@ -422,6 +422,11 @@ export class CrashIncidentRecord {
   readonly viewId: string;
   readonly viewName: string;
   readonly viewUrl: string;
+  /** False when the crashed run's session was sampled OUT. Sampling must apply
+   * uniformly: replaying an unsampled-origin crash into whatever session exists
+   * at replay time inflated that session's crash count and skewed crash-free
+   * rate by ~1/sampleRate. Legacy records without the field parse as true. */
+  readonly originSampled: boolean;
 
   constructor(
     incidentId: string,
@@ -435,7 +440,8 @@ export class CrashIncidentRecord {
     sessionId: string,
     viewId: string,
     viewName: string,
-    viewUrl: string = ''
+    viewUrl: string = '',
+    originSampled: boolean = true
   ) {
     this.incidentId = incidentId;
     this.timestampMs = timestampMs;
@@ -449,6 +455,7 @@ export class CrashIncidentRecord {
     this.viewId = viewId;
     this.viewName = viewName;
     this.viewUrl = viewUrl;
+    this.originSampled = originSampled;
   }
 
   serialize(): string {
@@ -464,7 +471,8 @@ export class CrashIncidentRecord {
       'session_id': this.sessionId,
       'view_id': this.viewId,
       'view_name': this.viewName,
-      'view_url': this.viewUrl
+      'view_url': this.viewUrl,
+      'origin_sampled': this.originSampled
     };
     return JSON.stringify(record);
   }
@@ -499,7 +507,8 @@ export class CrashIncidentRecord {
         CrashIncidentRecord.stringValue(record['session_id']),
         CrashIncidentRecord.stringValue(record['view_id']),
         CrashIncidentRecord.stringValue(record['view_name']),
-        CrashIncidentRecord.stringValue(record['view_url']));
+        CrashIncidentRecord.stringValue(record['view_url']),
+        record['origin_sampled'] !== false);
     } catch (_error) {
       return null;
     }

@@ -79,7 +79,7 @@ export class FlashcatCore implements SdkCore {
     this.contextProvider = new ContextProvider(
       context, configuration,
       this.consent !== TrackingConsent.NOT_GRANTED && !backgroundProcess);
-    this.crashPendingStore = new CrashPendingStore(context);
+    this.crashPendingStore = new CrashPendingStore(context, !backgroundProcess);
   }
 
   /** Called by Flashcat.initialize. Flush buffered events when the app backgrounds. */

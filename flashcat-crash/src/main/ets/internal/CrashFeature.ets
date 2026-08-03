@@ -63,7 +63,9 @@ export class CrashFeature implements Feature, FeatureEventReceiver {
       this.loadConsumed(), Date.now(), CONSUMED_RETENTION_MS);
     // Rewrite on every crash-feature start so expired or corrupt sidecar entries
     // do not accumulate when no new pending incident is replayed.
-    this.persistConsumed();
+    if (this.isDurableWriteAllowed()) {
+      this.persistConsumed();
+    }
     this.publishPolicy();
     this.replayPendingIncidents();
     this.registerWatcher();
@@ -125,6 +127,11 @@ export class CrashFeature implements Feature, FeatureEventReceiver {
     event['policy'] = this.activePolicy as string;
     event['recover'] = false;
     if (this.activePolicy === JsCrashPolicy.OBSERVE_ONLY) {
+      // Deliberate semantics: OBSERVE_ONLY reports the fault as a NON-crash
+      // error (is_crash=false, via the async live path) — the app claims its
+      // own recovery handling, so the process may survive and counting it as a
+      // crash would poison crash-free rate for handled faults. The suppressed
+      // watcher copy is the only is_crash variant; losing it is intentional.
       event['report_async'] = true;
       event['should_exit'] = false;
       // The process survives, so hiAppEvent will deliver the SAME crash to the
@@ -142,17 +149,28 @@ export class CrashFeature implements Feature, FeatureEventReceiver {
       return;
     }
 
-    // NOT_GRANTED: no durable crash data may be written (the core enforces the
-    // same rule for every event write). Nothing would be reported anyway — the
-    // replay's write is dropped and the incident deleted — so persisting the
-    // stack/ids just parks refused data on disk for a launch cycle. Recovery is
-    // also degraded to exit: without a durable loop history the crash-loop
-    // guard is memoryless and a boot-crash would restart-loop unbounded.
+    // NOT_GRANTED: no durable crash DATA may be written (the core enforces the
+    // same rule for every event write) — nothing would be reported anyway, so
+    // persisting the stack/ids would just park refused data on disk. Declining
+    // telemetry must NOT change app runtime behavior though: REPORT_AND_RECOVER
+    // still restarts, guarded by the loop history, which holds only crash
+    // timestamps (no user data) and is therefore legitimate to persist.
     if (!this.isDurableWriteAllowed()) {
       event['pending_written'] = false;
       event['report_async'] = false;
       event['should_exit'] = true;
-      FlashcatLog.d('crash.js: consent NOT_GRANTED — crash not persisted, exiting per policy');
+      if (this.activePolicy === JsCrashPolicy.REPORT_AND_RECOVER) {
+        const decision: CrashLoopDecision = CrashLoopGuard.decide(
+          nowMs,
+          this.loadLoopHistory(),
+          this.configuration.crashLoopThreshold,
+          this.configuration.crashLoopWindowMs,
+          this.configuration.crashLoopCooldownMs);
+        if (decision.allowRestart && this.persistLoopHistory(decision.updatedTimestamps)) {
+          event['recover'] = true;
+        }
+      }
+      FlashcatLog.d('crash.js: consent NOT_GRANTED — crash not persisted; recovery per policy');
       return;
     }
 
@@ -187,7 +205,8 @@ export class CrashFeature implements Feature, FeatureEventReceiver {
       originSessionId,
       originViewId,
       originViewName,
-      originViewUrl);
+      originViewUrl,
+      sessionSampled);
 
     let written: boolean = this.persistPendingIncident(incident);
     if (this.activePolicy === JsCrashPolicy.REPORT_AND_RECOVER) {
@@ -218,7 +237,8 @@ export class CrashFeature implements Feature, FeatureEventReceiver {
           originSessionId,
           originViewId,
           originViewName,
-          originViewUrl);
+          originViewUrl,
+          sessionSampled);
         // A failed rewrite must not flip `written` back to false: the atomic
         // tmp+rename write leaves the earlier conservative incident intact on
         // disk, and reporting "not written" would make RUM emit the async live
@@ -237,8 +257,14 @@ export class CrashFeature implements Feature, FeatureEventReceiver {
     event['pending_written'] = written;
     // Termination is policy-driven, not write-driven: a rare pending-write
     // failure must not silently revert to keep-alive semantics. The report
-    // still survives via the flushed async event and the next-launch
-    // hiAppEvent APP_CRASH replay (unmatched, since no consumed record).
+    // survives via the flushed async live event; a consumed entry (best-effort
+    // durable) suppresses the next-launch watcher copy so the same crash is
+    // not reported a second time.
+    if (!written) {
+      this.consumed.push(new ConsumedCrashIncident(incidentId, fingerprint, nowMs, nowMs));
+      this.consumed = CrashDeduplication.retainRecent(this.consumed, nowMs, CONSUMED_RETENTION_MS);
+      this.persistConsumed();
+    }
     event['report_async'] = !written;
     event['should_exit'] = true;
     if (written) {
@@ -352,9 +378,28 @@ export class CrashFeature implements Feature, FeatureEventReceiver {
       }
       // A previous launch may have replayed this incident but died before the
       // delete — the consumed sidecar is written first precisely so this check
-      // can suppress the duplicate.
-      if (CrashDeduplication.containsIncident(incident.incidentId, this.consumed)) {
+      // can suppress the duplicate. The fingerprint+window match additionally
+      // covers a crash the WATCHER already reported (e.g. a replay whose RUM
+      // delivery failed while the watcher copy succeeded in the same launch).
+      if (CrashDeduplication.containsIncident(incident.incidentId, this.consumed)
+        || CrashDeduplication.matchesConsumed(
+          incident.fingerprint, incident.timestampMs, this.consumed, CROSS_LAUNCH_WINDOW_MS)) {
         FlashcatLog.d(`crash.pending: already consumed incident=${incident.incidentId}`);
+        this.deletePending(fileName);
+        continue;
+      }
+      // Sampling applies uniformly: an unsampled-origin crash must not be
+      // replayed into whatever session exists at replay time (that inflated the
+      // NEXT launch's crash count and skewed crash-free rate ~1/sampleRate).
+      if (!incident.originSampled) {
+        FlashcatLog.d(`crash.pending: dropping unsampled-origin incident=${incident.incidentId}`);
+        this.consumed.push(new ConsumedCrashIncident(
+          incident.incidentId, incident.fingerprint, incident.timestampMs, Date.now()));
+        this.consumed = CrashDeduplication.retainRecent(
+          this.consumed, Date.now(), CONSUMED_RETENTION_MS);
+        if (this.isDurableWriteAllowed()) {
+          this.persistConsumed();
+        }
         this.deletePending(fileName);
         continue;
       }
@@ -374,7 +419,9 @@ export class CrashFeature implements Feature, FeatureEventReceiver {
         incident.incidentId, incident.fingerprint, incident.timestampMs, Date.now()));
       this.consumed = CrashDeduplication.retainRecent(
         this.consumed, Date.now(), CONSUMED_RETENTION_MS);
-      this.persistConsumed();
+      if (this.isDurableWriteAllowed()) {
+        this.persistConsumed();
+      }
       this.deletePending(fileName);
     }
   }
@@ -534,6 +581,18 @@ export class CrashFeature implements Feature, FeatureEventReceiver {
               FlashcatLog.d(
                 `crash: skipped duplicate APP_CRASH fingerprint=${fingerprint} timestamp=${paramTimestampMs}`);
               continue;
+            }
+            // Record the watcher report as consumed so a RETAINED incident of
+            // the same crash (its replay delivery failed earlier this launch)
+            // is not replayed again next launch — the two at-least-once
+            // mechanisms must dedup against each other, not just live paths.
+            this.consumed.push(new ConsumedCrashIncident(
+              util.generateRandomUUID(true), fingerprint,
+              paramTimestampMs > 0 ? paramTimestampMs : Date.now(), Date.now()));
+            this.consumed = CrashDeduplication.retainRecent(
+              this.consumed, Date.now(), CONSUMED_RETENTION_MS);
+            if (this.isDurableWriteAllowed()) {
+              this.persistConsumed();
             }
           }
           FlashcatLog.d(`crash: send to RUM kind=${event['crash_kind']} message=${event['message']}`);

@@ -79,6 +79,7 @@ export class RumSessionScope implements RumScope {
           this.activeView.countCrash();
         }
         this.activeView.forceStop(closeAtMs);
+        this.retireView(this.activeView); // keep in-flight resources drainable
         this.activeView = null;
       } else if (event.kind === 'markCrash' && this.lastStoppedView !== null) {
         // Crash in a view gap AND past expiry (backgrounded crash after a
@@ -210,11 +211,43 @@ export class RumSessionScope implements RumScope {
   end(nowMs: number): void {
     if (this.activeView !== null) {
       this.activeView.forceStop(nowMs);
+      this.retireView(this.activeView); // keep in-flight resources drainable
       this.activeView = null;
     }
     const cleared: Record<string, Object> = {};
     cleared['session.id'] = '';
     this.core.updateFeatureContext('rum', cleared);
+  }
+
+  /** True when a view of this (possibly ended) session still owns `key`. */
+  ownsResource(key: string): boolean {
+    if (this.activeView !== null && this.activeView.hasPendingResource(key)) {
+      return true;
+    }
+    for (const view of this.drainingViews) {
+      if (view.hasPendingResource(key)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /** Settle a late resource completion WITHOUT activity/expiry side effects —
+   * used by the parent to drain an already-ended session's in-flight requests. */
+  settleResource(event: RumRawEvent): void {
+    const key: string = event.key ?? '';
+    if (this.activeView !== null && this.activeView.hasPendingResource(key)) {
+      this.activeView.handleEvent(event);
+      return;
+    }
+    this.dispatchToDrainingViews(event, key);
+  }
+
+  hasUnsettledResources(): boolean {
+    if (this.activeView !== null && this.activeView.hasPendingResources()) {
+      return true;
+    }
+    return this.drainingViews.length > 0;
   }
 
   getSessionId(): string {

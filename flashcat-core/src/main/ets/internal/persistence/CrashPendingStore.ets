@@ -24,9 +24,14 @@ const MAX_PENDING_INCIDENTS: number = 32;
 export class CrashPendingStore implements FeatureEventReceiver {
   private readonly rootDir: string;
 
-  constructor(context: common.Context) {
+  constructor(context: common.Context, sweepOrphans: boolean = true) {
     this.rootDir = `${context.filesDir}/flashcat/crash-pending`;
-    this.sweepTmpOrphans();
+    // Only the MAIN process sweeps: the extension process shares this dir, and
+    // its sweep could unlink a tmp file the main process is writing at crash
+    // time (the "no write in flight" invariant is process-local).
+    if (sweepOrphans) {
+      this.sweepTmpOrphans();
+    }
   }
 
   /**

@@ -247,13 +247,22 @@ export class RumFeature implements Feature, FeatureEventReceiver {
     if (crashedAtMs !== undefined) {
       attributes['crash.crashed_at_ms'] = crashedAtMs;
     }
+    // countInView=false: the crash was already counted in the crashed run's
+    // view document by markCrash; bumping the CURRENT view's crash count would
+    // make one crash count twice in crash-free rate.
     m.reportError(
       RumFeature.asString(event['message']),
       RumErrorSource.SOURCE,
       RumFeature.asString(event['stack']),
       true,
       'unhandled',
-      attributes);
+      attributes,
+      undefined,
+      false);
+    // Known limitation: this path cannot observe the write result (the scope
+    // tree has no return channel), so delivered=true is optimistic; and the
+    // freshly minted session re-flips the sampling coin, which can drop the
+    // replayed error at sampleRate<100 (sampling applies to replayed orphans).
     event['delivered'] = true;
   }
 
