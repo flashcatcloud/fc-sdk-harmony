@@ -6,7 +6,8 @@ import {
   FlashcatContext,
   CRASH_FEATURE_NAME,
   RUM_FEATURE_NAME,
-  FlashcatLog
+  FlashcatLog,
+  TrackingConsent
 } from '@flashcatcloud/core';
 import { util } from '@kit.ArkTS';
 import { hiAppEvent } from '@kit.PerformanceAnalysisKit';
@@ -135,7 +136,23 @@ export class CrashFeature implements Feature, FeatureEventReceiver {
         util.generateRandomUUID(true), fingerprint, nowMs));
       this.consumed = CrashDeduplication.retainRecent(
         this.consumed, nowMs, CONSUMED_RETENTION_MS);
-      this.persistConsumed();
+      if (this.isDurableWriteAllowed()) {
+        this.persistConsumed();
+      }
+      return;
+    }
+
+    // NOT_GRANTED: no durable crash data may be written (the core enforces the
+    // same rule for every event write). Nothing would be reported anyway — the
+    // replay's write is dropped and the incident deleted — so persisting the
+    // stack/ids just parks refused data on disk for a launch cycle. Recovery is
+    // also degraded to exit: without a durable loop history the crash-loop
+    // guard is memoryless and a boot-crash would restart-loop unbounded.
+    if (!this.isDurableWriteAllowed()) {
+      event['pending_written'] = false;
+      event['report_async'] = false;
+      event['should_exit'] = true;
+      FlashcatLog.d('crash.js: consent NOT_GRANTED — crash not persisted, exiting per policy');
       return;
     }
 
@@ -202,8 +219,14 @@ export class CrashFeature implements Feature, FeatureEventReceiver {
           originViewId,
           originViewName,
           originViewUrl);
-        written = this.persistPendingIncident(recoveryIncident);
-        if (written) {
+        // A failed rewrite must not flip `written` back to false: the atomic
+        // tmp+rename write leaves the earlier conservative incident intact on
+        // disk, and reporting "not written" would make RUM emit the async live
+        // error NOW while next launch also replays the surviving incident —
+        // the same crash reported twice.
+        const rewriteOk: boolean = this.persistPendingIncident(recoveryIncident);
+        written = written || rewriteOk;
+        if (rewriteOk) {
           event['recover'] = true;
           this.lastRecoveryIncident = recoveryIncident;
         } else {
@@ -348,7 +371,7 @@ export class CrashFeature implements Feature, FeatureEventReceiver {
       FlashcatLog.d(
         `crash.pending: reported incident=${incident.incidentId} fingerprint=${incident.fingerprint}`);
       this.consumed.push(new ConsumedCrashIncident(
-        incident.incidentId, incident.fingerprint, incident.timestampMs));
+        incident.incidentId, incident.fingerprint, incident.timestampMs, Date.now()));
       this.consumed = CrashDeduplication.retainRecent(
         this.consumed, Date.now(), CONSUMED_RETENTION_MS);
       this.persistConsumed();
@@ -371,6 +394,11 @@ export class CrashFeature implements Feature, FeatureEventReceiver {
       FlashcatLog.e('crash.pending: corrupted consumed sidecar ignored');
     }
     return parsed;
+  }
+
+  /** NOT_GRANTED forbids durable crash data (stack, session/view ids) on disk. */
+  private isDurableWriteAllowed(): boolean {
+    return this.core.getTrackingConsent() !== TrackingConsent.NOT_GRANTED;
   }
 
   private persistConsumed(): void {
@@ -484,8 +512,17 @@ export class CrashFeature implements Feature, FeatureEventReceiver {
             event['timestamp_ms'] = paramTimestampMs;
           }
           if (!isFreeze && CrashFeature.stringValue(params['crash_type']) === 'JsError') {
-            const fingerprint: string = CrashFingerprint.fromText(
-              `${CrashFeature.stringValue(event['message'])}\n${CrashFeature.stringValue(event['stack'])}`);
+            // Fingerprint from the fault's SEPARATED name/message fields — the
+            // same inputs the live path hashes. Re-parsing the display message
+            // ("Name: reason", possibly truncated) through the header heuristic
+            // diverged for custom exception names, empty messages, and long
+            // messages, defeating cross-launch dedup for those crashes.
+            const faultException: Record<string, Object> = CrashFeature.recordValue(params['exception']);
+            const faultName: string = CrashFeature.stringValue(faultException['name']);
+            const fingerprint: string = CrashFingerprint.fromParts(
+              faultName.length > 0 ? faultName : 'Error',
+              CrashFeature.stringValue(faultException['message']),
+              CrashFeature.stringValue(event['stack']));
             // With no usable fault timestamp the ±30 s window would compare
             // against "now" and fail open for any relaunch >30 s after the
             // crash — fall back to fingerprint-only matching.

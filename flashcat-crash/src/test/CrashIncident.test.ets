@@ -120,6 +120,22 @@ export default function crashIncidentTests(): void {
         expect(recent[0].incidentId).assertEqual('recent');
       });
 
+    it('retentionIsKeyedOnConsumptionTimeNotFaultTime',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        // A crash from long ago replayed (consumed) just now must survive
+        // pruning — otherwise the watcher copy of the same crash, delivered
+        // later in the launch, double-reports it.
+        const consumed: ConsumedCrashIncident[] = [
+          new ConsumedCrashIncident('old-crash-fresh-consume', 'fp-3', 1000, 9500)
+        ];
+
+        const recent: ConsumedCrashIncident[] =
+          CrashDeduplication.retainRecent(consumed, 10000, 2000);
+
+        expect(recent.length).assertEqual(1);
+        expect(recent[0].timestampMs).assertEqual(1000);
+      });
+
     it('serializesAndParsesPendingRecord', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
       const original: CrashIncidentRecord = new CrashIncidentRecord(
         'incident-1',

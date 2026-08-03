@@ -279,19 +279,26 @@ export class CrashLoopGuard {
 export class ConsumedCrashIncident {
   readonly incidentId: string;
   readonly fingerprint: string;
+  /** The CRASH (fault) time — what watcher-event timestamps are matched against. */
   readonly timestampMs: number;
+  /** When the incident was consumed (reported). Retention is keyed on THIS —
+   * keying it on the fault time deleted the entry the instant it was created
+   * for any relaunch >24 h after the crash, guaranteeing a watcher double-report. */
+  readonly consumedAtMs: number;
 
-  constructor(incidentId: string, fingerprint: string, timestampMs: number) {
+  constructor(incidentId: string, fingerprint: string, timestampMs: number, consumedAtMs: number = 0) {
     this.incidentId = incidentId;
     this.fingerprint = fingerprint;
     this.timestampMs = timestampMs;
+    this.consumedAtMs = consumedAtMs > 0 ? consumedAtMs : timestampMs;
   }
 
   toRecord(): Record<string, Object> {
     return {
       'incident_id': this.incidentId,
       'fingerprint': this.fingerprint,
-      'timestamp_ms': this.timestampMs
+      'timestamp_ms': this.timestampMs,
+      'consumed_at_ms': this.consumedAtMs
     };
   }
 }
@@ -323,8 +330,11 @@ export class CrashDeduplication {
         const incidentId: string = CrashDeduplication.stringValue(record['incident_id']);
         const fingerprint: string = CrashDeduplication.stringValue(record['fingerprint']);
         const timestampMs: number = CrashDeduplication.numberValue(record['timestamp_ms']);
+        // Legacy records have no consumed_at_ms — the constructor falls back to
+        // the fault time, preserving the old (conservative) retention for them.
+        const consumedAtMs: number = CrashDeduplication.numberValue(record['consumed_at_ms']);
         if (incidentId.length > 0 && fingerprint.length > 0 && timestampMs > 0) {
-          consumed.push(new ConsumedCrashIncident(incidentId, fingerprint, timestampMs));
+          consumed.push(new ConsumedCrashIncident(incidentId, fingerprint, timestampMs, consumedAtMs));
         }
       }
     } catch (_error) {
@@ -379,7 +389,10 @@ export class CrashDeduplication {
     const recent: ConsumedCrashIncident[] = [];
     for (let i: number = 0; i < consumed.length; i++) {
       const incident: ConsumedCrashIncident = consumed[i];
-      if (nowMs - incident.timestampMs <= retentionMs) {
+      // Keyed on when the incident was CONSUMED, not when the crash happened:
+      // the watcher copy of an old crash arrives after the relaunch, so the
+      // entry must survive relative to now, not relative to the fault time.
+      if (nowMs - incident.consumedAtMs <= retentionMs) {
         recent.push(incident);
       }
     }
