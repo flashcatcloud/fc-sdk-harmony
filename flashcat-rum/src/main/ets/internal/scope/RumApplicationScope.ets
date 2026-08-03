@@ -1,4 +1,4 @@
-import { FeatureScope, SdkCore } from '@flashcatcloud/core';
+import { FeatureScope, SdkCore, FlashcatLog } from '@flashcatcloud/core';
 import { RumScope, RumRawEvent } from './RumScope';
 import { RumSessionScope } from './RumSessionScope';
 
@@ -70,10 +70,27 @@ export class RumApplicationScope implements RumScope {
     if (result === null) {
       this.rememberExpiredView(this.session);
       if (this.session.hasUnsettledResources()) {
+        // Single slot: an older still-draining session is evicted (bounded by
+        // design — its remaining completions are dropped, logged for triage).
+        if (this.drainingSession !== null && this.drainingSession.hasUnsettledResources()) {
+          FlashcatLog.d('rum.app: evicting still-draining session (single draining slot)');
+        }
         this.drainingSession = this.session;
       }
       // Session expired. Same rule as above for the replacement session.
       if (!RumApplicationScope.startsUserActivity(event)) {
+        // The completion that ITSELF detected the expiry must still settle —
+        // the top-of-function draining gate ran before this session became the
+        // draining one, so without this the event is silently lost (a request
+        // spanning the inactivity gap, completing on resume).
+        if ((event.kind === 'stopResource' || event.kind === 'stopResourceWithError')
+          && this.drainingSession !== null
+          && this.drainingSession.ownsResource(event.key ?? '')) {
+          this.drainingSession.settleResource(event);
+          if (!this.drainingSession.hasUnsettledResources()) {
+            this.drainingSession = null;
+          }
+        }
         this.session = null;
         return this;
       }

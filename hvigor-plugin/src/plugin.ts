@@ -74,7 +74,7 @@ export function flashcatSymbolUploadPlugin(options: FlashcatPluginOptions): Hvig
             apiKey: options.apiKey,
             service: options.service,
             version: options.version,
-            pluginVersion: options.pluginVersion ?? '0.1.0'
+            pluginVersion: options.pluginVersion ?? '0.1.1' // keep in sync with package.json version
           };
           const buildDir = `${node.getNodePath()}/${options.buildDir ?? 'build/default'}`;
           // eslint-disable-next-line no-console

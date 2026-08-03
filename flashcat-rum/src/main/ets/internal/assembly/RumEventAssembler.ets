@@ -318,6 +318,14 @@ export class RumEventAssembler {
     event['connectivity'] = connectivity;
 
     const usr: Record<string, Object> = {};
+    if (context.user.extraInfo !== undefined) {
+      const extra: Record<string, Object> = context.user.extraInfo;
+      for (const k of Object.keys(extra)) {
+        usr[k] = extra[k];
+      }
+    }
+    // Reserved identity keys are written AFTER extraInfo so a colliding extra
+    // key can never replace the backend identity columns.
     if (context.user.id !== undefined) {
       usr['id'] = context.user.id;
     }
@@ -326,12 +334,6 @@ export class RumEventAssembler {
     }
     if (context.user.email !== undefined) {
       usr['email'] = context.user.email;
-    }
-    if (context.user.extraInfo !== undefined) {
-      const extra: Record<string, Object> = context.user.extraInfo;
-      for (const k of Object.keys(extra)) {
-        usr[k] = extra[k];
-      }
     }
     // Always attach the persisted anonymous device id so a session has an
     // identity even before (or without) setUserInfo — the backend's session

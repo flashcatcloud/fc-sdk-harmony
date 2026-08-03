@@ -247,9 +247,13 @@ export class RumFeature implements Feature, FeatureEventReceiver {
     if (crashedAtMs !== undefined) {
       attributes['crash.crashed_at_ms'] = crashedAtMs;
     }
-    // countInView=false: the crash was already counted in the crashed run's
-    // view document by markCrash; bumping the CURRENT view's crash count would
-    // make one crash count twice in crash-free rate.
+    // countInView: an incident that HAD an original session reached this
+    // fallback only because it is >23 h old — markCrash already counted it in
+    // the crashed run's view document, so counting again would double it.
+    // Everything else on this path (freezes, native crashes, watcher-only
+    // JsErrors, crash-before-first-session replays) was never counted anywhere
+    // — it MUST count here or crash-free rate reads those sessions as clean.
+    const alreadyCounted: boolean = originalSessionId.length > 0;
     m.reportError(
       RumFeature.asString(event['message']),
       RumErrorSource.SOURCE,
@@ -258,7 +262,7 @@ export class RumFeature implements Feature, FeatureEventReceiver {
       'unhandled',
       attributes,
       undefined,
-      false);
+      !alreadyCounted);
     // Known limitation: this path cannot observe the write result (the scope
     // tree has no return channel), so delivered=true is optimistic; and the
     // freshly minted session re-flips the sampling coin, which can drop the

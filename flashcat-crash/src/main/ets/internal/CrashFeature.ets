@@ -31,6 +31,11 @@ const CRASH_STORAGE_TARGET: string = '__flashcat_crash_storage';
 const LIVE_DEDUP_WINDOW_MS: number = 2000;
 const CROSS_LAUNCH_WINDOW_MS: number = 30000;
 const CONSUMED_RETENTION_MS: number = 24 * 60 * 60 * 1000;
+// Replay-vs-consumed fingerprint matching: the "same crash reported via another
+// channel" case has near-identical fault timestamps, while DISTINCT occurrences
+// of the same crash type in a restart loop are seconds apart. A wide window
+// deleted every other report in a crash burst.
+const REPLAY_CONSUMED_MATCH_WINDOW_MS: number = 5000;
 
 /**
  * Crash feature. Owns JS crash policy, durable incident replay, and hiAppEvent
@@ -383,7 +388,7 @@ export class CrashFeature implements Feature, FeatureEventReceiver {
       // delivery failed while the watcher copy succeeded in the same launch).
       if (CrashDeduplication.containsIncident(incident.incidentId, this.consumed)
         || CrashDeduplication.matchesConsumed(
-          incident.fingerprint, incident.timestampMs, this.consumed, CROSS_LAUNCH_WINDOW_MS)) {
+          incident.fingerprint, incident.timestampMs, this.consumed, REPLAY_CONSUMED_MATCH_WINDOW_MS)) {
         FlashcatLog.d(`crash.pending: already consumed incident=${incident.incidentId}`);
         this.deletePending(fileName);
         continue;
@@ -582,12 +587,19 @@ export class CrashFeature implements Feature, FeatureEventReceiver {
                 `crash: skipped duplicate APP_CRASH fingerprint=${fingerprint} timestamp=${paramTimestampMs}`);
               continue;
             }
-            // Record the watcher report as consumed so a RETAINED incident of
-            // the same crash (its replay delivery failed earlier this launch)
-            // is not replayed again next launch — the two at-least-once
-            // mechanisms must dedup against each other, not just live paths.
+            event['dedup_fingerprint'] = fingerprint;
+          }
+          FlashcatLog.d(`crash: send to RUM kind=${event['crash_kind']} message=${event['message']}`);
+          rum.sendEvent(event);
+          // Record the watcher report as consumed so a RETAINED incident of the
+          // same crash (its replay delivery failed earlier this launch) is not
+          // replayed again next launch. Only AFTER confirmed delivery — a
+          // consumed entry for an undelivered report would suppress the
+          // retained incident and lose the crash everywhere.
+          const dedupFingerprint: string = CrashFeature.stringValue(event['dedup_fingerprint']);
+          if (dedupFingerprint.length > 0 && event['delivered'] === true) {
             this.consumed.push(new ConsumedCrashIncident(
-              util.generateRandomUUID(true), fingerprint,
+              util.generateRandomUUID(true), dedupFingerprint,
               paramTimestampMs > 0 ? paramTimestampMs : Date.now(), Date.now()));
             this.consumed = CrashDeduplication.retainRecent(
               this.consumed, Date.now(), CONSUMED_RETENTION_MS);
@@ -595,8 +607,6 @@ export class CrashFeature implements Feature, FeatureEventReceiver {
               this.persistConsumed();
             }
           }
-          FlashcatLog.d(`crash: send to RUM kind=${event['crash_kind']} message=${event['message']}`);
-          rum.sendEvent(event);
         }
       }
     } catch (error) {

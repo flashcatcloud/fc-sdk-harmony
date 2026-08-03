@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+- Exactly-once-oriented delivery: incidents deleted only after RUM acks a
+  durable write; replay/watcher deduplicate against each other by fingerprint
+  and consumption-time-keyed retention; live/watcher fingerprint parity.
+- Original-session attribution snapshot includes view.url and origin sampling.
+- Crash-loop guard hardening (atomic sidecars, future-timestamp discard);
+  `crash.recovered` downgraded on failed restart; NOT_GRANTED persists no crash
+  data while preserving recovery restarts.
+
 ## 0.2.0
 
 - Default JS crash behavior is now `REPORT_THEN_EXIT`: the SDK no longer silently keeps the app alive after an uncaught exception (behavior fix); set `JsCrashPolicy.OBSERVE_ONLY` to restore the previous behavior.
