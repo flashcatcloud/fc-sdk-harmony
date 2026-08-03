@@ -18,6 +18,9 @@ export class UploadScheduler {
   private running: boolean = false;
   private draining: boolean = false;      // a drainOnce (incl. its await) is in flight
   private retrigger: boolean = false;     // triggerNow arrived while draining
+  // Set by stop(), cleared by start(). flushForWork gates on THIS rather than
+  // `running` because extension/tests legitimately flush without start().
+  private stopRequested: boolean = false;
 
   constructor(persistence: UploadPersistence, uploader: BatchUploader, baseDelayMs: number) {
     this.persistence = persistence;
@@ -31,6 +34,10 @@ export class UploadScheduler {
       return;
     }
     this.running = true;
+    this.stopRequested = false;
+    // A previous stop (consent PENDING) must not carry its backed-off delay
+    // into the new run — restart the exponential ladder from base.
+    this.currentDelayMs = this.baseDelayMs;
     this.scheduleNext(this.baseDelayMs);
   }
 
@@ -55,6 +62,7 @@ export class UploadScheduler {
 
   stop(): void {
     this.running = false;
+    this.stopRequested = true;
     if (this.timerId !== -1) {
       clearTimeout(this.timerId);
       this.timerId = -1;
@@ -103,7 +111,15 @@ export class UploadScheduler {
       this.draining = false;
       if (this.retrigger) {
         this.retrigger = false;
-        this.triggerNow(); // coalesced force-flush that arrived mid-drain
+        // Coalesced force-flush that arrived mid-drain. Honor the backoff the
+        // drain just chose: draining at delay 0 after a RETRY would let every
+        // force-flushed error reset the exponential backoff, hammering a
+        // failing intake at the app's error rate.
+        if (this.timerId !== -1) {
+          clearTimeout(this.timerId);
+          this.timerId = -1;
+        }
+        this.scheduleNext(this.currentDelayMs > this.baseDelayMs ? this.currentDelayMs : 0);
       }
     }
   }
@@ -114,6 +130,13 @@ export class UploadScheduler {
       return;
     }
     for (let i: number = 0; i < maxBatches; i += 1) {
+      // Re-checked per iteration: a stop()/consent revocation that lands during
+      // one batch's 30 s upload window must end the drain — not let the captured
+      // loop keep claiming and shipping up to 19 more batches afterwards.
+      if (this.stopRequested) {
+        FlashcatLog.d('work.drain: scheduler stopped mid-flush, ending drain');
+        return;
+      }
       const drained: boolean = await this.flushOneForWork();
       if (!drained) {
         return;

@@ -122,6 +122,7 @@ export class FilePersistenceStrategy implements UploadPersistence {
     if (ok) {
       this.activeBytes += lineBytes;
     } else {
+      this.ownNames.delete(name); // the file may not exist — don't track it
       this.activeName = null;
       this.activeBytes = 0;
     }
@@ -206,10 +207,31 @@ export class FilePersistenceStrategy implements UploadPersistence {
           this.writeMigratedBatch(chunk);
         }
       }
-      fs.unlinkSync(path);
+      FilePersistenceStrategy.removeOrTruncate(path);
       this.pendingBytes = 0;
     } catch (_e) {
       // best-effort
+    }
+  }
+
+  /**
+   * The migrated batches are already written when this runs, so the pending
+   * file MUST not survive with content: a failed unlink would re-migrate every
+   * event on the next GRANTED settle (unbounded duplication). Fall back to
+   * truncating in place when the unlink itself fails.
+   */
+  private static removeOrTruncate(path: string): void {
+    try {
+      fs.unlinkSync(path);
+      return;
+    } catch (_unlinkErr) {
+      // fall through to truncate
+    }
+    try {
+      const file = fs.openSync(path, fs.OpenMode.READ_WRITE | fs.OpenMode.TRUNC);
+      fs.closeSync(file);
+    } catch (_truncErr) {
+      FlashcatLog.e('persist.migrate: pending file could not be removed or truncated');
     }
   }
 
@@ -504,8 +526,13 @@ export class FilePersistenceStrategy implements UploadPersistence {
       } else if (code < 0x800) {
         bytes += 2;
       } else if (code >= 0xD800 && code <= 0xDBFF) {
-        bytes += 4; // surrogate pair → one 4-byte code point
-        i += 1;
+        const next: number = i + 1 < s.length ? s.charCodeAt(i + 1) : 0;
+        if (next >= 0xDC00 && next <= 0xDFFF) {
+          bytes += 4; // valid surrogate pair → one 4-byte code point
+          i += 1;
+        } else {
+          bytes += 3; // lone high surrogate → encoder emits a 3-byte replacement
+        }
       } else {
         bytes += 3;
       }

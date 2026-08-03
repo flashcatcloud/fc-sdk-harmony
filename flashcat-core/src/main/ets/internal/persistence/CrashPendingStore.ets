@@ -9,6 +9,12 @@ const INCIDENT_PREFIX: string = 'incident-';
 const INCIDENT_SUFFIX: string = '.json';
 const CONSUMED_FILE: string = 'consumed.json';
 const LOOP_FILE: string = 'loop.json';
+const TMP_SUFFIX: string = '.tmp';
+// Cap on pending incident files. Unreplayed incidents accumulate when the RUM
+// feature is never enabled (or delivery keeps failing) — without a cap the dir
+// grows by one file per crash forever. Oldest are evicted first (name sort =
+// UUID order, but eviction only triggers in pathological no-replay setups).
+const MAX_PENDING_INCIDENTS: number = 32;
 
 /**
  * Core-owned synchronous crash storage. Feature modules intentionally do not
@@ -20,6 +26,30 @@ export class CrashPendingStore implements FeatureEventReceiver {
 
   constructor(context: common.Context) {
     this.rootDir = `${context.filesDir}/flashcat/crash-pending`;
+    this.sweepTmpOrphans();
+  }
+
+  /**
+   * Delete `*.tmp` files left by a kill between the atomic write's tmp-write
+   * and rename — the crash path runs writes precisely while the process is
+   * being torn down, incident tmp names carry a UUID, and every reader filters
+   * on `.json`, so without this sweep each such kill leaks a file forever.
+   * At construction time no write of ours is in flight, so any tmp is orphaned.
+   */
+  private sweepTmpOrphans(): void {
+    try {
+      const names: string[] = fs.listFileSync(this.rootDir)
+        .filter((name: string): boolean => name.endsWith(TMP_SUFFIX));
+      for (const name of names) {
+        try {
+          fs.unlinkSync(`${this.rootDir}/${name}`);
+        } catch (_e) {
+          // best-effort
+        }
+      }
+    } catch (_e) {
+      // directory may not exist yet
+    }
   }
 
   onReceive(event: Record<string, Object>): void {
@@ -53,9 +83,29 @@ export class CrashPendingStore implements FeatureEventReceiver {
       return false;
     }
     this.ensureDir();
+    this.enforceIncidentQuota();
     return this.writeFile(
       `${this.rootDir}/${INCIDENT_PREFIX}${incidentId}${INCIDENT_SUFFIX}`,
       serialized);
+  }
+
+  /** Evict oldest incident files so the dir stays bounded when replay never runs. */
+  private enforceIncidentQuota(): void {
+    try {
+      const names: string[] = fs.listFileSync(this.rootDir)
+        .filter((name: string): boolean =>
+          name.startsWith(INCIDENT_PREFIX) && name.endsWith(INCIDENT_SUFFIX))
+        .sort();
+      for (let i: number = 0; i <= names.length - MAX_PENDING_INCIDENTS; i++) {
+        try {
+          fs.unlinkSync(`${this.rootDir}/${names[i]}`);
+        } catch (_e) {
+          // best-effort
+        }
+      }
+    } catch (_e) {
+      // best-effort
+    }
   }
 
   private readIncidents(): Array<Record<string, Object>> {

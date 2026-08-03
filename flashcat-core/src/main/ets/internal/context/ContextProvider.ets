@@ -100,9 +100,9 @@ export class ContextProvider {
   private subscribeNetwork(): void {
     try {
       const conn: connection.NetConnection = connection.createNetConnection();
-      conn.register((_err) => {
-        // registration result is best-effort; callbacks simply won't fire on error
-      });
+      // Subscribe BEFORE register: registering first can miss the initial
+      // sticky capability delivery (the snapshot covers it, but only until
+      // the first change this handler would have caught).
       conn.on('netCapabilitiesChange', (info: connection.NetCapabilityInfo) => {
         this.network = {
           status: 'connected',
@@ -114,6 +114,9 @@ export class ContextProvider {
       });
       conn.on('netUnavailable', () => {
         this.network = { status: 'not_connected', interfaces: [] };
+      });
+      conn.register((_err) => {
+        // registration result is best-effort; callbacks simply won't fire on error
       });
       this.netConnection = conn;
     } catch (_e) {

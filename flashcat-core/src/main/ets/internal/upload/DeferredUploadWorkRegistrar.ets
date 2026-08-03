@@ -14,13 +14,26 @@ export interface DeferredUploadWorkSchedulerClient {
   stopWork(work: workScheduler.WorkInfo): boolean;
 }
 
+// startWork throws 9700005 when the same persisted workId already exists (it
+// does not upsert). For our purposes that IS a successful registration.
+const WORK_ALREADY_EXISTS_MESSAGE: string = '9700005';
+// Recurring delivery cadence. The system enforces a >= 2 h minimum for
+// repeating deferred work; without isRepeat the persisted job fires exactly
+// once per registration and background delivery silently degrades to
+// once-per-app-launch.
+const REPEAT_CYCLE_MS: number = 2 * 60 * 60 * 1000;
+
 class SystemWorkSchedulerClient implements DeferredUploadWorkSchedulerClient {
   startWork(work: workScheduler.WorkInfo): boolean {
     try {
       workScheduler.startWork(work);
       return true;
     } catch (e) {
-      FlashcatLog.e(`work.register failed: ${e instanceof Error ? e.message : `${e}`}`);
+      const message: string = e instanceof Error ? e.message : `${e}`;
+      if (message.includes(WORK_ALREADY_EXISTS_MESSAGE)) {
+        return true; // already registered by an earlier launch — same outcome
+      }
+      FlashcatLog.e(`work.register failed: ${message}`);
       return false;
     }
   }
@@ -39,7 +52,6 @@ class SystemWorkSchedulerClient implements DeferredUploadWorkSchedulerClient {
 export class DeferredUploadWorkRegistrar {
   private readonly client: DeferredUploadWorkSchedulerClient;
   private registered: boolean = false;
-  private lastOptions: DeferredUploadWorkOptions | null = null;
 
   constructor(client?: DeferredUploadWorkSchedulerClient) {
     this.client = client ?? new SystemWorkSchedulerClient();
@@ -54,7 +66,6 @@ export class DeferredUploadWorkRegistrar {
         return;
       }
       this.registered = true;
-      this.lastOptions = options;
       FlashcatLog.d(`work.register: id=${options.workId} ability=${options.abilityName}`);
     } catch (e) {
       FlashcatLog.e(`work.register failed: ${e instanceof Error ? e.message : `${e}`}`);
@@ -66,10 +77,15 @@ export class DeferredUploadWorkRegistrar {
    * upgrades (`isPersisted: true`), so SDK stop and consent revocation MUST
    * remove it — otherwise the system keeps waking the extension to upload
    * after the user said no.
+   *
+   * Deliberately UNCONDITIONAL: the job may have been persisted by an EARLIER
+   * launch (this process never called register), or register may have thrown
+   * while the previous launch's job is still armed — an in-process
+   * `registered` guard would make cross-launch cancellation a silent no-op.
+   * stopWork on a non-existent job just logs and is harmless.
    */
-  deregister(): void {
-    const options: DeferredUploadWorkOptions | null = this.lastOptions;
-    if (!this.registered || options === null) {
+  deregister(options: DeferredUploadWorkOptions): void {
+    if (options.abilityName.length === 0 || options.bundleName.length === 0) {
       return;
     }
     try {
@@ -86,6 +102,8 @@ export class DeferredUploadWorkRegistrar {
       bundleName: options.bundleName,
       abilityName: options.abilityName,
       isPersisted: true,
+      isRepeat: true,
+      repeatCycleTime: REPEAT_CYCLE_MS,
       networkType: options.uploadOnWifiOnly
         ? workScheduler.NetworkType.NETWORK_TYPE_WIFI
         : workScheduler.NetworkType.NETWORK_TYPE_ANY,
