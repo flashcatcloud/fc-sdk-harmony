@@ -9,9 +9,10 @@ import { RumRawEvent } from '../scope/RumScope';
 const MS_TO_NS: number = 1e6;
 // Periodically re-emit the active view so its time_spent (and the session
 // duration the backend derives from it) stays current even without user
-// interaction. Android uses 5 min; we use a finer cadence for tighter mobile
-// session-duration accuracy. See RumViewScope keep-alive handling.
-const KEEP_ALIVE_MS: number = 30 * 1000;
+// interaction. 5 min matches Android's keep-alive; end-of-session accuracy
+// does not depend on this cadence because expiry close, stop() and flush()
+// all emit a final keep-alive at the precise last-activity timestamp.
+const KEEP_ALIVE_MS: number = 5 * 60 * 1000;
 // Timed actions: cap duration and prune abandoned entries. A startAction whose
 // stopAction never comes (user navigated away mid-gesture) must not leak, and a
 // later same-key stopAction must not report an hours-long loading_time.
