@@ -50,6 +50,37 @@ export class Flashcat {
     return core;
   }
 
+  /**
+   * Initialize the SDK inside the deferred-upload WorkSchedulerExtensionAbility
+   * process. Unlike `initialize`, this takes NO consent literal: the extension
+   * acts only on the main process's last persisted consent decision (missing or
+   * NOT_GRANTED → nothing is read, migrated, or uploaded) and never writes
+   * consent, identity, or background-job registrations back — HarmonyOS
+   * Preferences are per-process caches, so a write from this process could
+   * clobber a concurrent main-process revocation.
+   *
+   * ```ets
+   * // in MyUploadExtensionAbility.onWorkStart(workInfo)
+   * Flashcat.initializeForDeferredUpload(this.context, buildConfig());
+   * await Flashcat.flushAndWait();
+   * ```
+   */
+  static initializeForDeferredUpload(
+    context: common.Context,
+    configuration: Configuration,
+    instanceName?: string
+  ): SdkCore | null {
+    const name: string = instanceName ?? SdkCoreRegistry.DEFAULT_INSTANCE_NAME;
+    if (Flashcat.registry.has(name)) {
+      return Flashcat.registry.get(name);
+    }
+    const core: FlashcatCore =
+      new FlashcatCore(name, context, configuration, TrackingConsent.NOT_GRANTED, true);
+    core.initialize();
+    Flashcat.registry.register(name, core);
+    return core;
+  }
+
   /** Retrieve a previously initialized instance. Throws if not initialized. */
   static getInstance(instanceName?: string): SdkCore {
     const name: string = instanceName ?? SdkCoreRegistry.DEFAULT_INSTANCE_NAME;

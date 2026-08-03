@@ -38,7 +38,7 @@ export class DemoSdk {
    * @param recover true → opt into REPORT_AND_RECOVER for crash testing.
    */
   static init(context: common.Context, prod: boolean, customEndpoint: string,
-    recover: boolean = false): void {
+    recover: boolean = false, trackErrors: boolean = true): void {
     if (DemoSdk.initialized) {
       return;
     }
@@ -63,6 +63,7 @@ export class DemoSdk {
       .setTrackUserInteractions(true) // phase 2: auto TAP actions (A3)
       .setTrackNavigation(true)       // phase 2: auto View events on router push/pop (A1)
       .setTrackNetworkRequests(true)  // phase 2: auto Resource via FlashcatHttp wrapper (A2)
+      .setTrackErrors(trackErrors)    // false → crash-only reporting (auto errors suppressed)
       .setEventMapper(DemoSdk.demoEventMapper) // phase 2 R3: PII scrubbing / drop
       .build());
     FlashcatTrace.enable(new TraceConfigurationBuilder().setSampleRate(100).build());

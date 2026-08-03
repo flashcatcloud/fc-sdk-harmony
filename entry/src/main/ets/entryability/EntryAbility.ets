@@ -27,9 +27,11 @@ const SPIKE_PAGE_MARKER: string = 'pages/Index';
 export default class EntryAbility extends UIAbility {
   private spikeMode: SpikeMode = SpikeMode.OFF;
   private recoveryStarted: boolean = false;
+  private spikeObserverId: number = -1;
 
   onCreate(want: Want, launchParam: AbilityConstant.LaunchParam): void {
     hilog.info(DOMAIN, TAG, 'EntryAbility onCreate');
+    this.captureE2eParams(want, 'onCreate');
     AppStorage.setOrCreate<string>(SPIKE_RECOVERY_STORAGE_KEY, '');
 
     try {
@@ -78,6 +80,29 @@ export default class EntryAbility extends UIAbility {
   onNewWant(want: Want, launchParam: AbilityConstant.LaunchParam): void {
     hilog.info(DOMAIN, SPIKE_TAG, 'onNewWant reason=%{public}d', launchParam.launchReason);
     this.captureRecoveryPayload(want, launchParam, 'onNewWant');
+    this.captureE2eParams(want, 'onNewWant');
+  }
+
+  /**
+   * E2E hook: `aa start --ps e2e_endpoint <url> --ps e2e_scenario <name>` lets
+   * the smoke script auto-initialize against a mock intake and run a scripted
+   * scenario without UI interaction. Handled in BOTH onCreate and onNewWant so
+   * a relaunch onto a live singleton ability still updates the scenario.
+   */
+  private captureE2eParams(want: Want, from: string): void {
+    const params: Record<string, Object> = (want.parameters ?? {}) as Record<string, Object>;
+    const e2eEndpoint: Object | undefined = params['e2e_endpoint'];
+    if (typeof e2eEndpoint === 'string' && e2eEndpoint.length > 0) {
+      const e2eScenario: Object | undefined = params['e2e_scenario'];
+      const scenario: string = typeof e2eScenario === 'string' ? e2eScenario : '';
+      AppStorage.setOrCreate('e2eEndpoint', e2eEndpoint);
+      AppStorage.setOrCreate('e2eScenario', scenario);
+      AppStorage.setOrCreate('e2eRunSeq', (AppStorage.get<number>('e2eRunSeq') ?? 0) + 1);
+      hilog.info(DOMAIN, TAG, 'e2e params from %{public}s: endpoint=%{public}s scenario=%{public}s',
+        from, e2eEndpoint, scenario);
+    } else {
+      hilog.info(DOMAIN, TAG, 'e2e params absent in %{public}s', from);
+    }
   }
 
   onSaveState(reason: AbilityConstant.StateType,
@@ -101,6 +126,20 @@ export default class EntryAbility extends UIAbility {
     });
   }
 
+  onDestroy(): void {
+    // Unregister per-ability state: re-created ability instances would stack
+    // one observer per create/destroy cycle within the process otherwise.
+    if (this.spikeObserverId !== -1) {
+      try {
+        errorManager.off('error', this.spikeObserverId, (_err) => {
+        });
+      } catch (_e) {
+        // already removed
+      }
+      this.spikeObserverId = -1;
+    }
+  }
+
   private registerSpikeObserver(): void {
     const observer: errorManager.ErrorObserver = {
       onUnhandledException: (errMsg: string): void => {
@@ -113,6 +152,7 @@ export default class EntryAbility extends UIAbility {
     };
     try {
       const observerId: number = errorManager.on('error', observer);
+      this.spikeObserverId = observerId;
       hilog.info(DOMAIN, SPIKE_TAG, 'observer registered id=%{public}d mode=%{public}s',
         observerId, this.spikeMode);
     } catch (error) {

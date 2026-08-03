@@ -4,6 +4,9 @@ import {
   Feature,
   FeatureScope,
   FeatureEventReceiver,
+  FlashcatContext,
+  EventWriter,
+  TrackingConsent,
   RUM_FEATURE_NAME,
   CRASH_FEATURE_NAME,
   FlashcatLog
@@ -16,8 +19,15 @@ import { RumErrorSource, RumResourceKind, RumResourceMethod } from '../RumTypes'
 import { GlobalRumMonitor } from '../RumMonitor';
 import { DefaultRumMonitor } from './monitor/DefaultRumMonitor';
 import { RumAutoInstrumentation } from './RumAutoInstrumentation';
+import { RumEventAssembler } from './assembly/RumEventAssembler';
 import { RumNavigationTracker } from './RumNavigationTracker';
 import { RumEventMapperHolder } from './RumEventMapperHolder';
+
+// OpenHarmony runtime banner substituted for the translated stack when the
+// module's sourcemap cannot be loaded. Never a meaningful error message.
+const SOURCEMAP_BANNER: string = 'Cannot get SourceMap info';
+// Cap for a JSON-serialized rejection reason used as message/stack text.
+const MAX_REJECTION_REASON_CHARS: number = 500;
 
 /**
  * The RUM feature. Installs the unhandled-exception hook (auto Error capture) and
@@ -43,6 +53,22 @@ export class RumFeature implements Feature, FeatureEventReceiver {
   attachMonitor(monitor: DefaultRumMonitor): void {
     this.monitor = monitor;
     FlashcatLog.d('rum: monitor attached');
+    // If the crash feature was enabled BEFORE RUM, its startup replay found no
+    // RUM receiver and retained the pending incidents — ask it to replay now.
+    // Without this, a crash-before-RUM enable order strands every pending
+    // incident forever (replay otherwise runs only once, at crash onInitialize).
+    try {
+      const crash: FeatureScope | null = this.core.getFeature(CRASH_FEATURE_NAME);
+      if (crash !== null) {
+        const request: Record<string, Object> = {
+          'type': 'crash_replay_request',
+          'target': CRASH_FEATURE_NAME
+        };
+        crash.sendEvent(request);
+      }
+    } catch (e) {
+      FlashcatLog.e(`rum.crash: replay request failed: ${RumFeature.errorText(e)}`);
+    }
   }
 
   onInitialize(): void {
@@ -79,12 +105,19 @@ export class RumFeature implements Feature, FeatureEventReceiver {
       this.errorObserverId = errorManager.on('error', {
         onUnhandledException: (errMsg: string) => {
           FlashcatLog.d(`rum.error: onUnhandledException len=${errMsg.length}`);
-          this.reportObservedError(errMsg, 'unhandled');
+          this.reportObservedError(errMsg, 'unhandled', RumFeature.errorMessageFromText(errMsg));
         },
         onException: (errObject: Error) => {
-          const text: string = RumFeature.unhandledErrorText(errObject);
+          // Use the labeled three-part text (same shape onUnhandledException
+          // receives from the OS) rather than the bare frames-only stack: the
+          // crash module fingerprints this text, and mismatched shapes between
+          // the two callbacks made the live dedup guard never match — one throw
+          // reported twice. The Error object's name/message also survive even
+          // when the runtime replaced the stack with the "Cannot get SourceMap
+          // info" banner.
+          const text: string = RumFeature.labeledErrorText(errObject);
           FlashcatLog.d(`rum.error: onException len=${text.length}`);
-          this.reportObservedError(text, 'exception');
+          this.reportObservedError(text, 'exception', RumFeature.messageFromError(errObject));
         }
       });
       FlashcatLog.d(`rum.error: observer registered id=${this.errorObserverId}`);
@@ -95,6 +128,13 @@ export class RumFeature implements Feature, FeatureEventReceiver {
 
     // Promise rejections are ordinary RUM errors. They are not terminating
     // ArkTS crashes, so they never enter the pending store or policy path.
+    // trackErrors=false suppresses this AUTO capture entirely.
+    if (this.configuration.trackErrors) {
+      this.registerRejectionObserver();
+    }
+  }
+
+  private registerRejectionObserver(): void {
     try {
       const observer: errorManager.UnhandledRejectionObserver = (reason: Object): void => {
         this.reportUnhandledRejection(reason);
@@ -106,7 +146,6 @@ export class RumFeature implements Feature, FeatureEventReceiver {
       this.rejectionObserver = null;
       FlashcatLog.e(`rum.error: unhandled-rejection registration failed: ${RumFeature.errorText(e)}`);
     }
-
     // Network auto-instrumentation arrives via the bus (Trace interceptor →
     // onReceive). TODO phase 2: navigation auto-tracking, compile-time AOP.
   }
@@ -115,7 +154,12 @@ export class RumFeature implements Feature, FeatureEventReceiver {
     this.core.removeEventReceiver(RUM_FEATURE_NAME);
     if (this.errorObserverId !== -1) {
       try {
-        errorManager.off('error', this.errorObserverId);
+        // Callback overload: the promise overload's rejection (invalid id) is
+        // not catchable by this try and would surface as an unhandled
+        // rejection during teardown.
+        errorManager.off('error', this.errorObserverId, (_err) => {
+          // best-effort removal
+        });
       } catch (_e) {
         // already removed
       }
@@ -146,12 +190,20 @@ export class RumFeature implements Feature, FeatureEventReceiver {
    * events from the Crash feature (hiAppEvent → CrashEventMapper). */
   onReceive(event: Record<string, Object>): void {
     const type: Object | undefined = event['type'];
-    if (type === 'network_request_started') {
-      this.onNetworkRequestStarted(event);
-    } else if (type === 'network_request_completed') {
-      this.onNetworkRequestCompleted(event);
-    } else if (type === 'network_request_failed') {
-      this.onNetworkRequestFailed(event);
+    if (type === 'network_request_started' || type === 'network_request_completed'
+      || type === 'network_request_failed') {
+      // setTrackNetworkRequests(false) must actually disable resource capture —
+      // the option was previously accepted and ignored, violating its contract.
+      if (!this.configuration.trackNetworkRequests) {
+        return;
+      }
+      if (type === 'network_request_started') {
+        this.onNetworkRequestStarted(event);
+      } else if (type === 'network_request_completed') {
+        this.onNetworkRequestCompleted(event);
+      } else {
+        this.onNetworkRequestFailed(event);
+      }
     } else if (type === 'crash_report') {
       this.onCrashReport(event);
     } else if (type === 'js_crash_policy') {
@@ -174,20 +226,110 @@ export class RumFeature implements Feature, FeatureEventReceiver {
    * attributes that RumEventAssembler lifts into backend-consumed error fields.
    */
   private onCrashReport(event: Record<string, Object>): void {
+    // A replayed pending incident carries the crashed run's session/view ids.
+    // Write the crash directly into THAT session instead of routing it through
+    // the live scope tree: the live tree would mint a fresh session at the old
+    // crash timestamp — a session that (a) is not the one the user crashed in,
+    // (b) usually expires on the very next real event (>15 min since the crash),
+    // and (c) never emits a view event, so the backend never materializes a
+    // session row for it and the crash becomes unfindable from the session list.
+    const originalSessionId: string = RumFeature.asString(event['original_session_id']);
+    if (originalSessionId.length > 0 && !RumFeature.isReplayTooOld(event)) {
+      event['delivered'] = this.writeCrashToOriginalSession(event, originalSessionId);
+      return;
+    }
     const m: DefaultRumMonitor | null = this.monitor;
     if (m === null) {
       FlashcatLog.d('rum.crash: dropped because monitor is null');
-      return;
+      return; // delivered stays unset — a durable incident is retained for retry
     }
     FlashcatLog.d(`rum.crash: reporting crash kind=${RumFeature.asString(event['crash_kind'])}`);
+    // No original session to attach to (crash before the first session, or an
+    // unsampled one) — report into the current session at the current time. A
+    // backdated timestamp would start the session in the past and expire it
+    // instantly, so the original crash time is preserved as an attribute only.
+    const attributes: Record<string, Object> = RumFeature.crashAttributes(event);
+    const crashedAtMs: number | undefined = RumFeature.optionalPositiveNumber(event['timestamp_ms']);
+    if (crashedAtMs !== undefined) {
+      attributes['crash.crashed_at_ms'] = crashedAtMs;
+    }
+    // countInView: an incident that HAD an original session reached this
+    // fallback only because it is >23 h old — markCrash already counted it in
+    // the crashed run's view document, so counting again would double it.
+    // Everything else on this path (freezes, native crashes, watcher-only
+    // JsErrors, crash-before-first-session replays) was never counted anywhere
+    // — it MUST count here or crash-free rate reads those sessions as clean.
+    const alreadyCounted: boolean = originalSessionId.length > 0;
     m.reportError(
       RumFeature.asString(event['message']),
       RumErrorSource.SOURCE,
       RumFeature.asString(event['stack']),
       true,
       'unhandled',
-      RumFeature.crashAttributes(event),
-      RumFeature.optionalPositiveNumber(event['timestamp_ms']));
+      attributes,
+      undefined,
+      !alreadyCounted);
+    // Known limitation: this path cannot observe the write result (the scope
+    // tree has no return channel), so delivered=true is optimistic; and the
+    // freshly minted session re-flips the sampling coin, which can drop the
+    // replayed error at sampleRate<100 (sampling applies to replayed orphans).
+    event['delivered'] = true;
+  }
+
+  /**
+   * The intake silently discards events older than 24 h (while returning 2xx),
+   * so a replayed crash backdated past that window would be marked delivered,
+   * deleted, and lost. Crash Friday night, reopen Monday — the archetypal
+   * crash-then-abandon pattern. Such incidents fall back to the current-time
+   * monitor path, which preserves the real crash time as an attribute.
+   * 23 h keeps the same safety margin as the batch retention cap.
+   */
+  private static isReplayTooOld(event: Record<string, Object>): boolean {
+    const crashedAtMs: number | undefined = RumFeature.optionalPositiveNumber(event['timestamp_ms']);
+    return crashedAtMs !== undefined && (Date.now() - crashedAtMs) > 23 * 60 * 60 * 1000;
+  }
+
+  /** Assemble + persist a replayed crash error stamped with the crashed run's
+   * session/view, bypassing the live scope tree. Returns whether the event was
+   * durably written (or intentionally dropped — mapper / consent), so the crash
+   * feature only deletes the pending incident on real delivery. */
+  private writeCrashToOriginalSession(event: Record<string, Object>, sessionId: string): boolean {
+    const scope: FeatureScope | null = this.core.getFeature(RUM_FEATURE_NAME);
+    if (scope === null) {
+      FlashcatLog.d('rum.crash: dropped because rum feature scope is null');
+      return false;
+    }
+    const viewId: string = RumFeature.asString(event['original_view_id']);
+    const viewName: string = RumFeature.asString(event['original_view_name']);
+    const dateMs: number = RumFeature.optionalPositiveNumber(event['timestamp_ms']) ?? Date.now();
+    const attributes: Record<string, Object> = RumFeature.crashAttributes(event);
+    const applicationId: string = this.configuration.applicationId;
+    let delivered: boolean = false;
+    scope.withWriteContext((context: FlashcatContext, writer: EventWriter) => {
+      const errorEvent: Record<string, Object> = RumEventAssembler.error(
+        context, applicationId, sessionId,
+        viewId.length > 0 ? viewId : undefined,
+        viewId.length > 0 ? viewName : undefined,
+        RumFeature.asString(event['message']),
+        RumErrorSource.SOURCE as string,
+        RumFeature.asString(event['stack']),
+        true, 'unhandled', dateMs, attributes);
+      const mapped: Record<string, Object> | null = RumEventMapperHolder.apply(errorEvent);
+      if (mapped === null) {
+        delivered = true; // the app's mapper dropped it on purpose — handled
+        return;
+      }
+      delivered = writer.write(mapped, true);
+    });
+    // NOT_GRANTED writes return false by design — that is a deliberate drop,
+    // not an infra failure; retaining the incident would retry it every launch.
+    if (!delivered && this.core.getTrackingConsent() === TrackingConsent.NOT_GRANTED) {
+      delivered = true;
+    }
+    FlashcatLog.d(
+      `rum.crash: replayed crash into original session=${sessionId} ` +
+      `view=${viewId.length > 0 ? viewId : '(none)'} delivered=${delivered}`);
+    return delivered;
   }
 
   /** Pure: extract native-symbolication metadata from a crash_report bus event. */
@@ -214,6 +356,9 @@ export class RumFeature implements Feature, FeatureEventReceiver {
     RumFeature.copyNonEmptyString(event, attributes, 'original_session_id', 'crash.original_session_id');
     RumFeature.copyNonEmptyString(event, attributes, 'original_view_id', 'crash.original_view_id');
     RumFeature.copyNonEmptyString(event, attributes, 'original_view_name', 'crash.original_view_name');
+    // Internal attribute: RumEventAssembler lifts it into view.url so the
+    // replayed error's view.url matches the crashed view's own view events.
+    RumFeature.copyNonEmptyString(event, attributes, 'original_view_url', 'view.url');
     if (event['crash.recovered'] === true) {
       attributes['crash.recovered'] = true;
     }
@@ -268,7 +413,7 @@ export class RumFeature implements Feature, FeatureEventReceiver {
       RumFeature.asString(event['message']));
   }
 
-  private reportObservedError(stackText: string, callback: string): void {
+  private reportObservedError(stackText: string, callback: string, message: string): void {
     if (this.handlingError) {
       FlashcatLog.d('rum.error: skipped re-entrant unhandled error');
       return;
@@ -296,10 +441,24 @@ export class RumFeature implements Feature, FeatureEventReceiver {
           if (control['duplicate'] === true) {
             return;
           }
+          // The incident was durably persisted: the error event arrives via
+          // next-launch replay (bypassing the scope tree), so count the crash on
+          // the active view here — this is the only process that can.
+          if (control['pending_written'] === true) {
+            try {
+              const monitor: DefaultRumMonitor | null = this.monitor;
+              if (monitor !== null) {
+                monitor.markCrash();
+              }
+            } catch (countError) {
+              // Counting must never interfere with policy-driven termination.
+              FlashcatLog.e(`rum.error: crash count failed: ${RumFeature.errorText(countError)}`);
+            }
+          }
           if (control['report_async'] === true) {
             asyncReportAttempted = true;
             try {
-              this.reportUnhandledToMonitor(stackText);
+              this.reportUnhandledToMonitor(stackText, message);
             } catch (reportError) {
               // Reporting failure must never bypass policy-driven termination.
               FlashcatLog.e(
@@ -314,12 +473,12 @@ export class RumFeature implements Feature, FeatureEventReceiver {
       }
 
       asyncReportAttempted = true;
-      this.reportUnhandledToMonitor(stackText);
+      this.reportUnhandledToMonitor(stackText, message);
     } catch (e) {
       FlashcatLog.e(`rum.error: policy path failed: ${RumFeature.errorText(e)}`);
       if (!asyncReportAttempted) {
         try {
-          this.reportUnhandledToMonitor(stackText);
+          this.reportUnhandledToMonitor(stackText, message);
         } catch (fallbackError) {
           FlashcatLog.e(`rum.error: fallback report failed: ${RumFeature.errorText(fallbackError)}`);
         }
@@ -329,11 +488,19 @@ export class RumFeature implements Feature, FeatureEventReceiver {
     }
   }
 
-  private reportUnhandledToMonitor(stackText: string): void {
+  private reportUnhandledToMonitor(stackText: string, message: string): void {
+    if (!this.configuration.trackErrors) {
+      // trackErrors=false: suppress the non-crash live copy. The crash-flagged
+      // path (markCrash + durable replay) does not come through here.
+      FlashcatLog.d('rum.error: non-crash report suppressed (trackErrors=false)');
+      return;
+    }
     const m: DefaultRumMonitor | null = this.monitor;
     if (m !== null) {
-      FlashcatLog.d(`rum.error: report unhandled firstLine="${RumFeature.firstLine(stackText)}"`);
-      m.reportError(RumFeature.firstLine(stackText), RumErrorSource.SOURCE, stackText, false, 'unhandled');
+      FlashcatLog.d(`rum.error: report unhandled message="${message}"`);
+      // Frames only: the labeled callback text is for fingerprinting; sending
+      // it as error.stack made the backend title issues "Error name".
+      m.reportError(message, RumErrorSource.SOURCE, RumFeature.stackFramesOnly(stackText), false, 'unhandled');
     } else {
       FlashcatLog.d('rum.error: dropped because monitor is null');
     }
@@ -347,10 +514,12 @@ export class RumFeature implements Feature, FeatureEventReceiver {
     this.handlingError = true;
     try {
       const text: string = RumFeature.rejectionErrorText(reason);
+      const message: string = reason instanceof Error ?
+        RumFeature.messageFromError(reason) : RumFeature.firstLine(text);
       const m: DefaultRumMonitor | null = this.monitor;
       if (m !== null) {
         m.reportError(
-          RumFeature.firstLine(text),
+          message,
           RumErrorSource.SOURCE,
           text,
           false,
@@ -388,6 +557,20 @@ export class RumFeature implements Feature, FeatureEventReceiver {
         return;
       } catch (e) {
         FlashcatLog.e(`rum.error: recovery restartApp failed: ${RumFeature.errorText(e)}; exiting`);
+        // Tell the crash feature the restart did not happen so the pending
+        // incident's policy is downgraded — crash.recovered must not lie.
+        try {
+          const crash: FeatureScope | null = this.core.getFeature(CRASH_FEATURE_NAME);
+          if (crash !== null) {
+            const notice: Record<string, Object> = {
+              'type': 'js_crash_recovery_failed',
+              'target': CRASH_FEATURE_NAME
+            };
+            crash.sendEvent(notice);
+          }
+        } catch (_notify) {
+          // best-effort
+        }
       }
     }
     // ProcessManager.exit restores the host's terminating crash semantics without
@@ -463,8 +646,54 @@ export class RumFeature implements Feature, FeatureEventReceiver {
     return `${name}: ${errObject.message}`;
   }
 
+  /**
+   * Renders an Error object in the labeled three-part shape the OS uses for
+   * onUnhandledException text, so both live callbacks produce the same
+   * name/message and the crash module's fingerprints (live dedup guard,
+   * cross-launch consumed matching) agree across channels.
+   */
+  static labeledErrorText(errObject: Error): string {
+    const name: string = errObject.name.length > 0 ? errObject.name : 'Error';
+    const stack: string = errObject.stack ?? '';
+    return `Error name:${name}\nError message:${errObject.message}\nStacktrace:\n${stack}`;
+  }
+
+  /**
+   * Text form of a promise-rejection reason. HarmonyOS Kit APIs routinely reject
+   * with a BusinessError-shaped plain object ({ code, message }) rather than an
+   * Error instance; interpolating that yields "[object Object]", so unwrap the
+   * message/code fields (JSON as a last resort) before falling back.
+   */
   static rejectionErrorText(reason: Object): string {
-    return reason instanceof Error ? RumFeature.unhandledErrorText(reason) : `${reason}`;
+    if (reason instanceof Error) {
+      return RumFeature.unhandledErrorText(reason);
+    }
+    if (typeof reason === 'string') {
+      return reason;
+    }
+    if (reason !== null && reason !== undefined && typeof reason === 'object' && !Array.isArray(reason)) {
+      const record: Record<string, Object> = reason as Record<string, Object>;
+      const message: Object | undefined = record['message'];
+      const code: Object | undefined = record['code'];
+      if (typeof message === 'string' && message.length > 0) {
+        return typeof code === 'number' || typeof code === 'string' ? `${message} (code ${code})` : message;
+      }
+    }
+    if (reason !== null && reason !== undefined && typeof reason === 'object') {
+      try {
+        const json: string = JSON.stringify(reason);
+        if (json.length > 0 && json !== '{}') {
+          return json.length > MAX_REJECTION_REASON_CHARS ?
+            json.substring(0, MAX_REJECTION_REASON_CHARS) : json;
+        }
+      } catch (_e) {
+        // cyclic or non-serializable — fall through
+      }
+      // Empty ({}) or unserializable object: NEVER interpolate — `${reason}`
+      // is exactly the "[object Object]" report this function exists to kill.
+      return 'Unhandled promise rejection (unserializable object)';
+    }
+    return `${reason}`; // null/undefined/number/boolean — readable primitives
   }
 
   static rejectionAttributes(): Record<string, Object> {
@@ -477,6 +706,61 @@ export class RumFeature implements Feature, FeatureEventReceiver {
   private static firstLine(text: string): string {
     const idx: number = text.indexOf('\n');
     return idx >= 0 ? text.substring(0, idx) : text;
+  }
+
+  /** Strips label lines and the sourcemap banner, leaving stack frames. */
+  static stackFramesOnly(text: string): string {
+    const kept: string[] = [];
+    for (const line of text.split('\n')) {
+      const trimmed: string = line.trim();
+      if (trimmed.startsWith('Error name:') || trimmed.startsWith('Error message:')
+        || trimmed === 'Stacktrace:' || trimmed.startsWith(SOURCEMAP_BANNER)) {
+        continue;
+      }
+      kept.push(line);
+    }
+    while (kept.length > 0 && kept[0].trim().length === 0) {
+      kept.shift();
+    }
+    return kept.join('\n');
+  }
+
+  /** "Name: message" from an Error object, independent of its stack text.
+   *  Name alone when the message is empty — no dangling "Error: ". */
+  static messageFromError(errObject: Error): string {
+    const name: string = errObject.name.length > 0 ? errObject.name : 'Error';
+    return errObject.message.length > 0 ? `${name}: ${errObject.message}` : name;
+  }
+
+  /**
+   * Derives error.message from unhandled-exception callback text. ArkTS stacks
+   * carry no "Name: message" header line, so a blind first-line pick yields a
+   * frame — or the runtime's "Cannot get SourceMap info, dump raw stack:" banner
+   * when sourcemap translation failed. Prefer the labeled three-part format
+   * ("Error name:<n>\nError message:<m>\n..."), then the first line that is
+   * neither the banner nor a stack frame.
+   */
+  static errorMessageFromText(text: string): string {
+    const lines: string[] = text.split('\n');
+    if (lines.length >= 2 && lines[0].startsWith('Error name:') && lines[1].startsWith('Error message:')) {
+      const name: string = lines[0].substring('Error name:'.length).trim();
+      const message: string = lines[1].substring('Error message:'.length).trim();
+      const safeName: string = name.length > 0 ? name : 'Error';
+      // Name alone when the message is empty (throw of a message-less value) —
+      // "Error: " with a dangling colon reads as a broken report in the console.
+      return message.length > 0 ? `${safeName}: ${message}` : safeName;
+    }
+    for (let i: number = 0; i < lines.length; i++) {
+      const line: string = lines[i].trim();
+      if (line.length === 0 || line.startsWith(SOURCEMAP_BANNER)) {
+        continue;
+      }
+      if (line.startsWith('at ') || line.startsWith('#')) {
+        break; // reached stack frames without seeing a header
+      }
+      return line;
+    }
+    return 'Uncaught exception';
   }
 
   private static errorText(value: Object): string {

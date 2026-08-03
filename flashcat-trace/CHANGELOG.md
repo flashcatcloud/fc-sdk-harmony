@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- `_dd.span_id` emitted as unsigned decimal (RUM↔APM correlation fixed).
+- Trace ids attached to RUM resources only for SAMPLED traces; rcp interceptor
+  honors `firstPartyHosts`; `getHeaders(url?)` applies the first-party gate;
+  IPv6 literals parsed correctly; dead-core guard after stop().
+
 ## 0.2.0
 
 - Version bump to keep the SDK packages in lockstep.

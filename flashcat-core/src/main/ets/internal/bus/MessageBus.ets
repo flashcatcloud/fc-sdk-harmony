@@ -22,7 +22,14 @@ export class MessageBus {
     const receiver: FeatureEventReceiver | undefined = this.receivers.get(targetFeatureName);
     if (receiver !== undefined) {
       FlashcatLog.d(`bus: send target=${targetFeatureName} type=${MessageBus.eventType(event)}`);
-      receiver.onReceive(event);
+      try {
+        receiver.onReceive(event);
+      } catch (e) {
+        // The bus is invoked from OS lifecycle callbacks (applicationStateChange
+        // -> flush -> keep_alive) — a receiver throw must never surface into the
+        // host app. Senders read missing reply fields defensively.
+        FlashcatLog.e(`bus: receiver ${targetFeatureName} threw: ${e instanceof Error ? e.message : 'error'}`);
+      }
     } else {
       FlashcatLog.d(`bus: drop target=${targetFeatureName} type=${MessageBus.eventType(event)} no receiver`);
     }

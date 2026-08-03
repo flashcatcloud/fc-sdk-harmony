@@ -3,7 +3,7 @@ import { util } from '@kit.ArkTS';
 import { SdkCore } from '@flashcatcloud/core';
 import { TraceContext } from './internal/TraceContext';
 import {
-  isInjectionAllowed, publishTraceId,
+  isInjectionAllowed, publishTraceId, hostOfUrl,
   publishResourceStarted, publishResourceCompleted, publishResourceFailed, contentTypeOf,
   shouldInjectTraceHeaders, headerStringValue, setHeaderValue
 } from './internal/TraceInterceptor';
@@ -51,9 +51,12 @@ export class FlashcatHttp {
       setHeaderValue(header, 'traceparent', tc.traceparent());
       setHeaderValue(header, 'tracestate', tc.tracestate(headerStringValue(header, 'tracestate')));
       opts.header = header;
-      publishTraceId(core, tc.traceId);
-      traceId = tc.traceId;
-      spanId = tc.spanId;
+      // An unsampled trace is dropped by the APM backend — correlate only when sampled.
+      if (tc.sampled) {
+        publishTraceId(core, tc.traceId);
+        traceId = tc.traceId;
+        spanId = tc.spanId;
+      }
     }
 
     publishResourceStarted(core, key, reqUrl, method, traceId, spanId);
@@ -99,28 +102,6 @@ export class FlashcatHttp {
 
   /** Pure: extract the host from a URL (no @ohos.url dependency). */
   static hostOf(rawUrl: string): string {
-    let s: string = rawUrl;
-    const scheme: number = s.indexOf('://');
-    if (scheme >= 0) {
-      s = s.substring(scheme + 3);
-    }
-    let end: number = s.length;
-    const seps: string[] = ['/', '?', '#'];
-    for (const sep of seps) {
-      const i: number = s.indexOf(sep);
-      if (i >= 0 && i < end) {
-        end = i;
-      }
-    }
-    s = s.substring(0, end);
-    const at: number = s.indexOf('@');
-    if (at >= 0) {
-      s = s.substring(at + 1);
-    }
-    const colon: number = s.indexOf(':');
-    if (colon >= 0) {
-      s = s.substring(0, colon);
-    }
-    return s;
+    return hostOfUrl(rawUrl);
   }
 }

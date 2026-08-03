@@ -72,5 +72,85 @@ export default function crashReportTests(): void {
         expect(attrs['error.category']).assertEqual('Unhandled Promise Rejection');
         expect(attrs['error.source_type']).assertEqual('promise');
       });
+
+    it('unwrapsBusinessErrorShapedRejectionReasons',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        const reason: Record<string, Object> = { 'code': 201, 'message': 'Permission denied' };
+
+        expect(RumFeature.rejectionErrorText(reason)).assertEqual('Permission denied (code 201)');
+      });
+
+    it('serializesMessagelessObjectRejectionReasons',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        const reason: Record<string, Object> = { 'status': 500 };
+
+        expect(RumFeature.rejectionErrorText(reason)).assertEqual('{"status":500}');
+      });
+
+    it('keepsStringRejectionReasonsVerbatim',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        expect(RumFeature.rejectionErrorText('plain refusal')).assertEqual('plain refusal');
+      });
+
+    it('buildsMessageFromErrorNameAndMessage',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        const err: Error = new TypeError('boom');
+        // Frames-only stack (ArkTS has no "Name: message" header line).
+        err.stack = '    at Demo.throwArkTsError (Index.ets:68:13)';
+
+        expect(RumFeature.messageFromError(err)).assertEqual('TypeError: boom');
+      });
+
+    it('parsesLabeledUnhandledExceptionText',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        const text: string = 'Error name:RangeError\nError message:out of bounds\nStacktrace:\nat f (a.ets:1:1)';
+
+        expect(RumFeature.errorMessageFromText(text)).assertEqual('RangeError: out of bounds');
+      });
+
+    it('rendersLabeledTextMatchingOsCallbackShape',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        // Both errorManager callbacks must feed the crash module the same
+        // labeled shape, or live dedup fingerprints never match across them.
+        const err: Error = new RangeError('index out of bounds');
+        err.stack = '    at pick (Index.ets:12:5)';
+
+        const text: string = RumFeature.labeledErrorText(err);
+
+        expect(text.indexOf('Error name:RangeError')).assertEqual(0);
+        expect(text.indexOf('\nError message:index out of bounds\n')).assertLarger(-1);
+        expect(text.indexOf('Stacktrace:\n    at pick (Index.ets:12:5)')).assertLarger(-1);
+      });
+
+    it('skipsSourceMapBannerWhenDerivingMessage',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        const bannerOnly: string = 'Cannot get SourceMap info, dump raw stack:';
+        const bannerWithFrames: string = 'Cannot get SourceMap info, dump raw stack:\nat f (a.ets:1:1)';
+
+        expect(RumFeature.errorMessageFromText(bannerOnly)).assertEqual('Uncaught exception');
+        expect(RumFeature.errorMessageFromText(bannerWithFrames)).assertEqual('Uncaught exception');
+      });
+
+    it('emptyMessagesProduceNameAloneNotDanglingColon',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        // Production symptom: events titled "Error name:Error" with no stack —
+        // a message-less non-Error throw. The derived message must be the name
+        // alone, never the raw label line and never "Error: ".
+        const labeledEmpty: string = 'Error name:Error\nError message:\nStacktrace:';
+        expect(RumFeature.errorMessageFromText(labeledEmpty)).assertEqual('Error');
+
+        const err: Error = new Error();
+        err.stack = '';
+        expect(RumFeature.messageFromError(err)).assertEqual('Error');
+      });
+
+    it('emptyObjectRejectionNeverReportsObjectObject',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        // `Promise.reject({})` JSON-serializes to '{}' which is skipped — the
+        // fallback must not interpolate the object into "[object Object]".
+        const text: string = RumFeature.rejectionErrorText({} as Object);
+        expect(text.indexOf('[object')).assertEqual(-1);
+        expect(text.length > 0).assertTrue();
+      });
   });
 }

@@ -1,4 +1,6 @@
 import { http } from '@kit.NetworkKit';
+import { zlib } from '@kit.BasicServicesKit';
+import { util } from '@kit.ArkTS';
 import { Configuration } from '../../config/Configuration';
 import { intakeEndpoint } from '../../FlashcatSite';
 import { Batch } from '../persistence/FilePersistenceStrategy';
@@ -25,6 +27,10 @@ export interface UploadContext {
 export type UploadContextProvider = () => UploadContext;
 
 const DEFAULT_SOURCE: string = 'harmony';
+
+// Bodies below this size are sent uncompressed: the zlib header/dictionary
+// overhead outweighs the savings and the extra native call costs more than it saves.
+const COMPRESSION_MIN_CHARS: number = 512;
 
 /**
  * Sends a single NDJSON batch to the FlashCat intake.
@@ -99,21 +105,55 @@ export class DataUploader implements BatchUploader {
         'DD-API-KEY': this.configuration.clientToken,
         'User-Agent': `flashcat-sdk-harmony/${SDK_VERSION}`
       };
+      let payload: string | ArrayBuffer = batch.data;
+      let sentBytes: number = batch.data.length;
+      if (batch.data.length >= COMPRESSION_MIN_CHARS) {
+        const compressed: ArrayBuffer | null = await DataUploader.deflate(batch.data);
+        if (compressed !== null) {
+          payload = compressed;
+          sentBytes = compressed.byteLength;
+          header['Content-Encoding'] = 'deflate';
+        }
+      }
       const response = await request.request(this.endpoint(), {
         method: http.RequestMethod.POST,
         header,
-        extraData: batch.data,
+        extraData: payload,
         expectDataType: http.HttpDataType.STRING,
         connectTimeout: 30000,
         readTimeout: 30000
       });
-      FlashcatLog.d(`upload: POST ${this.trackPath} -> ${response.responseCode} (${batch.data.length} bytes)`);
+      FlashcatLog.d(`upload: POST ${this.trackPath} -> ${response.responseCode} (${sentBytes}/${batch.data.length} bytes)`);
       return DataUploader.statusFor(response.responseCode);
     } catch (e) {
       FlashcatLog.e(`upload: POST ${this.trackPath} failed: ${e instanceof Error ? e.message : 'network error'}`);
       return UploadStatus.RETRY; // network error
     } finally {
       request.destroy();
+    }
+  }
+
+  /**
+   * zlib-compresses (RFC 1950, the intake's "deflate" encoding) the UTF-8 bytes
+   * of the NDJSON body. Returns null on any failure so the caller falls back to
+   * the uncompressed request — compression is an optimization, never a gate.
+   */
+  private static async deflate(data: string): Promise<ArrayBuffer | null> {
+    try {
+      const encoded: Uint8Array = new util.TextEncoder().encodeInto(data);
+      const sourceLen: number = encoded.byteLength;
+      const source: ArrayBuffer = encoded.buffer.slice(encoded.byteOffset, encoded.byteOffset + sourceLen);
+      // Upper bound on zlib output: input + 0.1% + header/trailer slack.
+      const dest: ArrayBuffer = new ArrayBuffer(sourceLen + (sourceLen >> 10) + 64);
+      const info: zlib.ZipOutputInfo = await zlib.createZipSync().compress(dest, source, sourceLen);
+      if (info.status !== zlib.ReturnStatus.OK || info.destLen <= 0 || info.destLen > dest.byteLength) {
+        FlashcatLog.d(`upload: compression failed (status ${info.status}), sending uncompressed`);
+        return null;
+      }
+      return dest.slice(0, info.destLen);
+    } catch (e) {
+      FlashcatLog.d(`upload: compression failed (${e instanceof Error ? e.message : 'error'}), sending uncompressed`);
+      return null;
     }
   }
 

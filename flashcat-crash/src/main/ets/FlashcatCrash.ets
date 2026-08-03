@@ -1,4 +1,4 @@
-import { Flashcat, SdkCore } from '@flashcatcloud/core';
+import { Flashcat, SdkCore, CRASH_FEATURE_NAME, FlashcatLog } from '@flashcatcloud/core';
 import { CrashConfiguration } from './CrashConfiguration';
 import { CrashFeature } from './internal/CrashFeature';
 
@@ -17,6 +17,10 @@ import { CrashFeature } from './internal/CrashFeature';
 export class FlashcatCrash {
   static enable(configuration: CrashConfiguration, sdkCore?: SdkCore): void {
     const core: SdkCore = sdkCore ?? Flashcat.getInstance();
+    if (core.getFeature(CRASH_FEATURE_NAME) !== null) {
+      FlashcatLog.e('FlashcatCrash.enable ignored: crash reporting is already enabled for this instance');
+      return;
+    }
     core.registerFeature(new CrashFeature(core, configuration));
   }
 }

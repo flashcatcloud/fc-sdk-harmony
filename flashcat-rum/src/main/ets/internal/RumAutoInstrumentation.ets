@@ -9,7 +9,7 @@ import { RumActionType } from '../RumTypes';
  * points the app (or a wrapper) calls so events are recorded without manual
  * `GlobalRumMonitor` calls.
  *
- * Design contract (see docs/PHASE-2-PLAN.md "Shared design for P0"):
+ * Design contract:
  * - configured on `FlashcatRum.enable`, reset on SDK stop (idempotent);
  * - every toggle is opt-in — a tracker is inert unless its config flag is on, so
  *   the surface never over-promises;

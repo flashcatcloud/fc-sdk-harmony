@@ -16,9 +16,16 @@ export interface UserInfo {
   extraInfo?: Record<string, Object>;
 }
 
-/** Current connectivity. */
+/**
+ * Current connectivity, in the RUM schema's vocabulary:
+ * `status` ∈ connected / not_connected / maybe (unknown), and the active
+ * `interfaces` (wifi / cellular / ethernet / other). The previous shape put an
+ * interface-style word into `status`, which is outside the backend's enum and
+ * made the connectivity facet unusable.
+ */
 export interface NetworkInfo {
-  connectivity: string;  // wifi / cellular / ethernet / none
+  status: string;         // connected / not_connected / maybe
+  interfaces: string[];   // wifi / cellular / ethernet / other (empty when unknown)
   carrierName?: string;
 }
 
@@ -38,6 +45,11 @@ export interface FlashcatContext {
   sdkVersion: string;
   device: DeviceInfo;
   user: UserInfo;
+  // Stable pseudonymous device identity (usr.anonymous_id). Generated once,
+  // persisted in Preferences, and attached to every event so sessions can be
+  // attributed to a returning device even before setUserInfo is called.
+  // Optional so existing FlashcatContext literals keep compiling.
+  anonymousId?: string;
   network: NetworkInfo;
   // Per-feature mutable baggage (e.g. RUM publishes the active view/session here
   // so Logs and Trace can correlate). Keyed by feature name.

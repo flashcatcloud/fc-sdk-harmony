@@ -1,4 +1,4 @@
-import { Flashcat, SdkCore, FeatureScope, RUM_FEATURE_NAME } from '@flashcatcloud/core';
+import { Flashcat, SdkCore, FeatureScope, RUM_FEATURE_NAME, FlashcatLog } from '@flashcatcloud/core';
 import { RumConfiguration } from './RumConfiguration';
 import { GlobalRumMonitor } from './RumMonitor';
 import { RumFeature } from './internal/RumFeature';
@@ -22,6 +22,16 @@ export class FlashcatRum {
   static enable(configuration: RumConfiguration, sdkCore?: SdkCore): void {
     const core: SdkCore = sdkCore ?? Flashcat.getInstance();
 
+    // Idempotency guard (Android parity: "RUM feature is already enabled").
+    // registerFeature silently ignores a duplicate, but proceeding here would
+    // build a SECOND application scope + keep-alive timer attached to an orphan
+    // feature: events split across two sessions, and the orphan's timer is
+    // never stopped by onStop — it would keep writing after SDK stop, forever.
+    if (core.getFeature(RUM_FEATURE_NAME) !== null) {
+      FlashcatLog.e('FlashcatRum.enable ignored: RUM is already enabled for this instance');
+      return;
+    }
+
     const feature: RumFeature = new RumFeature(core, configuration);
     core.registerFeature(feature);
 
@@ -29,6 +39,10 @@ export class FlashcatRum {
     if (scope === null) {
       return; // registration failed
     }
+    // Install the event mapper (PII scrubbing / drop) BEFORE attaching the
+    // monitor: attachMonitor synchronously triggers the pending-crash replay,
+    // and a replayed crash error must pass through the mapper like any event.
+    RumEventMapperHolder.configure(configuration.eventMapper);
     const monitor: DefaultRumMonitor = new DefaultRumMonitor(core, scope, configuration);
     feature.attachMonitor(monitor);
     GlobalRumMonitor.register(monitor);
@@ -36,8 +50,6 @@ export class FlashcatRum {
     // Phase 2: make the auto-instrumentation toggles consultable by the tap /
     // navigation trackers. Inert unless the corresponding flag is enabled.
     RumAutoInstrumentation.configure(configuration);
-    // Phase 2 R3: install the event mapper (PII scrubbing / drop), if any.
-    RumEventMapperHolder.configure(configuration.eventMapper);
   }
 
   /**
@@ -55,13 +67,28 @@ export class FlashcatRum {
    * (a UIAbilityContext or a UIContext from UI land). Each page show/hide then
    * emits start/stopView automatically. No-op unless RUM is enabled with
    * `setTrackNavigation(true)`. Idempotent.
+   *
+   * IMPORTANT: pair with `stopViewTracking(context)` in the ability's
+   * onDestroy — the registry holds a strong reference per context, so
+   * create/destroy churn without the stop call pins each dead context for the
+   * lifetime of the RUM enablement.
+   *
+   * Covers `router`-based navigation only; `Navigation`/`NavDestination`-based
+   * apps should call startView/stopView manually for now.
    */
   static startViewTracking(context: NavContext): void {
     RumNavigationTracker.attach(context);
   }
 
-  /** Stop automatic View tracking (detach the navigation observer). */
-  static stopViewTracking(): void {
-    RumNavigationTracker.detach();
+  /**
+   * Stop automatic View tracking. With `context`, detaches only that context's
+   * observer (call before an ability is destroyed); without, detaches all.
+   */
+  static stopViewTracking(context?: NavContext): void {
+    if (context !== undefined) {
+      RumNavigationTracker.detachContext(context);
+    } else {
+      RumNavigationTracker.detach();
+    }
   }
 }

@@ -1,4 +1,5 @@
 import { FlashcatContext } from '@flashcatcloud/core';
+import { util } from '@kit.ArkTS';
 
 const VIEW_URL_ATTRIBUTE: string = 'view.url';
 const BUILD_ID_ATTRIBUTE: string = 'build_id';
@@ -97,6 +98,10 @@ export class RumEventAssembler {
     }
 
     const error: Record<string, Object> = {};
+    // Client-side id so the intake's dedup key is stable across redeliveries —
+    // without it the backend mints a new UUID per processing attempt and a
+    // Kafka retry inserts the same error twice.
+    error['id'] = util.generateRandomUUID(true);
     error['message'] = message;
     error['source'] = source;
     if (stack !== undefined) {
@@ -283,39 +288,63 @@ export class RumEventAssembler {
     event['service'] = context.service;
     event['version'] = context.version;
 
+    // The backend overwrites its UA-derived os/device values with whatever the
+    // event carries — so missing fields here blank real columns (version_major,
+    // device name) rather than falling back. Send them all.
     const os: Record<string, Object> = {};
     os['name'] = context.device.osName;
     os['version'] = context.device.osVersion;
+    const versionMajor: string = RumEventAssembler.majorVersion(context.device.osVersion);
+    if (versionMajor.length > 0) {
+      os['version_major'] = versionMajor;
+    }
     event['os'] = os;
 
     const device: Record<string, Object> = {};
-    device['type'] = context.device.deviceType;
+    // Backend vocabulary: mobile / desktop / tablet / tv / gaming_console / bot
+    // / other. HarmonyOS deviceType words (phone, 2in1, wearable…) fell outside
+    // it, so cross-platform filters (device_type = mobile) never matched.
+    device['type'] = RumEventAssembler.deviceTypeFor(context.device.deviceType);
     device['brand'] = context.device.brand;
     device['model'] = context.device.model;
+    device['name'] = context.device.model;
     event['device'] = device;
 
     const connectivity: Record<string, Object> = {};
-    connectivity['status'] = context.network.connectivity;
+    connectivity['status'] = context.network.status;
+    if (context.network.interfaces.length > 0) {
+      connectivity['interfaces'] = context.network.interfaces;
+    }
     event['connectivity'] = connectivity;
 
-    if (context.user.id !== undefined || context.user.name !== undefined
-      || context.user.email !== undefined || context.user.extraInfo !== undefined) {
-      const usr: Record<string, Object> = {};
-      if (context.user.id !== undefined) {
-        usr['id'] = context.user.id;
+    const usr: Record<string, Object> = {};
+    if (context.user.extraInfo !== undefined) {
+      const extra: Record<string, Object> = context.user.extraInfo;
+      for (const k of Object.keys(extra)) {
+        usr[k] = extra[k];
       }
-      if (context.user.name !== undefined) {
-        usr['name'] = context.user.name;
-      }
-      if (context.user.email !== undefined) {
-        usr['email'] = context.user.email;
-      }
-      if (context.user.extraInfo !== undefined) {
-        const extra: Record<string, Object> = context.user.extraInfo;
-        for (const k of Object.keys(extra)) {
-          usr[k] = extra[k];
-        }
-      }
+    }
+    // Reserved identity keys are written AFTER extraInfo so a colliding extra
+    // key can never replace the backend identity columns.
+    if (context.user.id !== undefined) {
+      usr['id'] = context.user.id;
+    }
+    if (context.user.name !== undefined) {
+      usr['name'] = context.user.name;
+    }
+    if (context.user.email !== undefined) {
+      usr['email'] = context.user.email;
+    }
+    // Always attach the persisted anonymous device id so a session has an
+    // identity even before (or without) setUserInfo — the backend's session
+    // record is derived from the session's earliest view event, which is
+    // written at launch, before any login. Written last so an extraInfo key
+    // cannot overwrite the device identity.
+    const anonymousId: string = context.anonymousId ?? '';
+    if (anonymousId.length > 0) {
+      usr['anonymous_id'] = anonymousId;
+    }
+    if (Object.keys(usr).length > 0) {
       event['usr'] = usr;
     }
 
@@ -340,5 +369,35 @@ export class RumEventAssembler {
 
   private static asString(value: Object | undefined): string {
     return typeof value === 'string' ? value : '';
+  }
+
+  /** "5.0.0.102" → "5"; '' when the version has no leading number. */
+  static majorVersion(version: string): string {
+    let end: number = 0;
+    while (end < version.length) {
+      const code: number = version.charCodeAt(end);
+      if (code < 48 || code > 57) {
+        break;
+      }
+      end += 1;
+    }
+    return version.substring(0, end);
+  }
+
+  /** Maps HarmonyOS deviceInfo.deviceType to the RUM schema's device.type enum. */
+  static deviceTypeFor(harmonyDeviceType: string): string {
+    switch (harmonyDeviceType) {
+      case 'phone':
+      case 'default': // deviceInfo reports 'default' for phones on some builds
+        return 'mobile';
+      case 'tablet':
+        return 'tablet';
+      case 'tv':
+        return 'tv';
+      case '2in1':
+        return 'desktop';
+      default: // wearable / car / unknown
+        return 'other';
+    }
   }
 }

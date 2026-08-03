@@ -31,8 +31,33 @@ export class CrashFingerprint {
     return CrashFingerprint.fnv1a(`${normalizedName}\n${normalizedMessage}\n${frame}`);
   }
 
+  /**
+   * Strips the errorManager label lines ("Error name:", "Error message:",
+   * "Stacktrace:") and the sourcemap banner from a callback text, leaving the
+   * frames. The labels are an OS callback FORMAT, not stack content — sending
+   * them as `error.stack` made the backend parse "Error name:Error" as the
+   * exception header, mis-titling issues and polluting the stack view.
+   */
+  static framesOnly(text: string): string {
+    const kept: string[] = [];
+    for (const line of text.split('\n')) {
+      const trimmed: string = line.trim();
+      if (trimmed.startsWith('Error name:') || trimmed.startsWith('Error message:')
+        || trimmed === 'Stacktrace:' || trimmed.startsWith('Cannot get SourceMap info')) {
+        continue;
+      }
+      kept.push(line);
+    }
+    // Drop leading blank lines left by the removals.
+    while (kept.length > 0 && kept[0].trim().length === 0) {
+      kept.shift();
+    }
+    return kept.join('\n');
+  }
+
   static partsFromText(text: string): CrashExceptionParts {
-    const stack: string = CrashFingerprint.truncate(text, MAX_STACK_CHARS);
+    const stack: string = CrashFingerprint.framesOnly(
+      CrashFingerprint.truncate(text, MAX_STACK_CHARS));
     const lines: string[] = text.split('\n');
     // errorManager.on('error') callback text uses a labeled three-part format
     // ("Error name:<n>\nError message:<m>\nStacktrace:\n..."). Parse it
@@ -41,12 +66,30 @@ export class CrashFingerprint {
     // header heuristic here made the two sides disagree ("Error name:Error"
     // became the message) and broke cross-launch deduplication.
     if (lines.length >= 2 && lines[0].startsWith('Error name:') && lines[1].startsWith('Error message:')) {
+      // Non-Error throws (throw 'x' / throw {}) come through with an empty name;
+      // default it like the generic branch does — an empty exception_name makes
+      // CrashIncidentRecord.parse reject the record at replay ("corrupted").
+      const labeledName: string = lines[0].substring('Error name:'.length).trim();
       return new CrashExceptionParts(
-        lines[0].substring('Error name:'.length).trim(),
+        labeledName.length > 0 ? labeledName : 'Error',
         lines[1].substring('Error message:'.length).trim(),
         stack);
     }
-    const header: string = lines.length > 0 ? lines[0].trim() : '';
+    // Header = first line that is neither the runtime's "Cannot get SourceMap
+    // info" banner (substituted when sourcemap translation fails — never a
+    // message) nor a stack frame.
+    let header: string = '';
+    for (let i: number = 0; i < lines.length; i++) {
+      const line: string = lines[i].trim();
+      if (line.length === 0 || line.startsWith('Cannot get SourceMap info')) {
+        continue;
+      }
+      if (line.startsWith('at ') || line.startsWith('#')) {
+        break;
+      }
+      header = line;
+      break;
+    }
     const separator: number = header.indexOf(':');
     if (separator > 0) {
       const candidate: string = header.substring(0, separator).trim();
@@ -184,9 +227,13 @@ export class CrashLoopGuard {
     const safeCooldownMs: number = cooldownMs < 1 ? 1 : cooldownMs;
     const valid: number[] = [];
     let newestTimestamp: number = 0;
+    // Discard timestamps from the future (clock set ahead, then corrected):
+    // a future newestTimestamp makes `nowMs - newestTimestamp` negative forever,
+    // so cooldown never fires and the guard stays tripped for the install's life.
+    const futureCutoffMs: number = nowMs + 60 * 1000;
     for (let i: number = 0; i < persistedTimestamps.length; i++) {
       const timestamp: number = persistedTimestamps[i];
-      if (timestamp > 0) {
+      if (timestamp > 0 && timestamp <= futureCutoffMs) {
         valid.push(timestamp);
         if (timestamp > newestTimestamp) {
           newestTimestamp = timestamp;
@@ -257,19 +304,26 @@ export class CrashLoopGuard {
 export class ConsumedCrashIncident {
   readonly incidentId: string;
   readonly fingerprint: string;
+  /** The CRASH (fault) time — what watcher-event timestamps are matched against. */
   readonly timestampMs: number;
+  /** When the incident was consumed (reported). Retention is keyed on THIS —
+   * keying it on the fault time deleted the entry the instant it was created
+   * for any relaunch >24 h after the crash, guaranteeing a watcher double-report. */
+  readonly consumedAtMs: number;
 
-  constructor(incidentId: string, fingerprint: string, timestampMs: number) {
+  constructor(incidentId: string, fingerprint: string, timestampMs: number, consumedAtMs: number = 0) {
     this.incidentId = incidentId;
     this.fingerprint = fingerprint;
     this.timestampMs = timestampMs;
+    this.consumedAtMs = consumedAtMs > 0 ? consumedAtMs : timestampMs;
   }
 
   toRecord(): Record<string, Object> {
     return {
       'incident_id': this.incidentId,
       'fingerprint': this.fingerprint,
-      'timestamp_ms': this.timestampMs
+      'timestamp_ms': this.timestampMs,
+      'consumed_at_ms': this.consumedAtMs
     };
   }
 }
@@ -301,8 +355,11 @@ export class CrashDeduplication {
         const incidentId: string = CrashDeduplication.stringValue(record['incident_id']);
         const fingerprint: string = CrashDeduplication.stringValue(record['fingerprint']);
         const timestampMs: number = CrashDeduplication.numberValue(record['timestamp_ms']);
+        // Legacy records have no consumed_at_ms — the constructor falls back to
+        // the fault time, preserving the old (conservative) retention for them.
+        const consumedAtMs: number = CrashDeduplication.numberValue(record['consumed_at_ms']);
         if (incidentId.length > 0 && fingerprint.length > 0 && timestampMs > 0) {
-          consumed.push(new ConsumedCrashIncident(incidentId, fingerprint, timestampMs));
+          consumed.push(new ConsumedCrashIncident(incidentId, fingerprint, timestampMs, consumedAtMs));
         }
       }
     } catch (_error) {
@@ -327,6 +384,28 @@ export class CrashDeduplication {
     return false;
   }
 
+  /** Fingerprint-only match — used when the fault payload carries no usable
+   * timestamp (unknown ROM param name), where the time-window check would fail
+   * open and double-report every crash relaunched >30 s later. */
+  static matchesConsumedFingerprint(fingerprint: string, consumed: ConsumedCrashIncident[]): boolean {
+    for (let i: number = 0; i < consumed.length; i++) {
+      if (consumed[i].fingerprint === fingerprint) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /** True when this exact incident id has already been replayed. */
+  static containsIncident(incidentId: string, consumed: ConsumedCrashIncident[]): boolean {
+    for (let i: number = 0; i < consumed.length; i++) {
+      if (consumed[i].incidentId === incidentId) {
+        return true;
+      }
+    }
+    return false;
+  }
+
   static retainRecent(
     consumed: ConsumedCrashIncident[],
     nowMs: number,
@@ -335,7 +414,10 @@ export class CrashDeduplication {
     const recent: ConsumedCrashIncident[] = [];
     for (let i: number = 0; i < consumed.length; i++) {
       const incident: ConsumedCrashIncident = consumed[i];
-      if (nowMs - incident.timestampMs <= retentionMs) {
+      // Keyed on when the incident was CONSUMED, not when the crash happened:
+      // the watcher copy of an old crash arrives after the relaunch, so the
+      // entry must survive relative to now, not relative to the fault time.
+      if (nowMs - incident.consumedAtMs <= retentionMs) {
         recent.push(incident);
       }
     }
@@ -364,6 +446,12 @@ export class CrashIncidentRecord {
   readonly sessionId: string;
   readonly viewId: string;
   readonly viewName: string;
+  readonly viewUrl: string;
+  /** False when the crashed run's session was sampled OUT. Sampling must apply
+   * uniformly: replaying an unsampled-origin crash into whatever session exists
+   * at replay time inflated that session's crash count and skewed crash-free
+   * rate by ~1/sampleRate. Legacy records without the field parse as true. */
+  readonly originSampled: boolean;
 
   constructor(
     incidentId: string,
@@ -376,7 +464,9 @@ export class CrashIncidentRecord {
     sdkVersion: string,
     sessionId: string,
     viewId: string,
-    viewName: string
+    viewName: string,
+    viewUrl: string = '',
+    originSampled: boolean = true
   ) {
     this.incidentId = incidentId;
     this.timestampMs = timestampMs;
@@ -389,6 +479,8 @@ export class CrashIncidentRecord {
     this.sessionId = sessionId;
     this.viewId = viewId;
     this.viewName = viewName;
+    this.viewUrl = viewUrl;
+    this.originSampled = originSampled;
   }
 
   serialize(): string {
@@ -403,7 +495,9 @@ export class CrashIncidentRecord {
       'sdk_version': this.sdkVersion,
       'session_id': this.sessionId,
       'view_id': this.viewId,
-      'view_name': this.viewName
+      'view_name': this.viewName,
+      'view_url': this.viewUrl,
+      'origin_sampled': this.originSampled
     };
     return JSON.stringify(record);
   }
@@ -437,7 +531,9 @@ export class CrashIncidentRecord {
         CrashIncidentRecord.stringValue(record['sdk_version']),
         CrashIncidentRecord.stringValue(record['session_id']),
         CrashIncidentRecord.stringValue(record['view_id']),
-        CrashIncidentRecord.stringValue(record['view_name']));
+        CrashIncidentRecord.stringValue(record['view_name']),
+        CrashIncidentRecord.stringValue(record['view_url']),
+        record['origin_sampled'] !== false);
     } catch (_error) {
       return null;
     }

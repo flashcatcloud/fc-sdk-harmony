@@ -2,3 +2,24 @@
 -keep-global-name
   FlashcatRum
   GlobalRumMonitor
+  RumConfigurationBuilder
+-keep-property-name
+  enable
+  startView
+  stopView
+  addAction
+  startAction
+  stopAction
+  startResource
+  stopResource
+  stopResourceWithError
+  addError
+  addAttribute
+  removeAttribute
+  getAttributes
+  clearAttributes
+  getCurrentSessionId
+  stopSession
+  startViewTracking
+  stopViewTracking
+  trackTap

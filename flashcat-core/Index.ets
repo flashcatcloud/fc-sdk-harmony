@@ -7,8 +7,9 @@ export { FlashcatSite } from './src/main/ets/FlashcatSite';
 export { TrackingConsent } from './src/main/ets/privacy/TrackingConsent';
 export { SdkCore } from './src/main/ets/api/SdkCore';
 
-// Feature SDK authoring surface — used by flashcat-rum / flashcat-logs / flashcat-trace,
-// not by app developers directly.
+// Feature SDK authoring surface — used by flashcat-rum / flashcat-trace /
+// flashcat-crash, not by app developers directly. (LOGS_FEATURE_NAME is
+// reserved plumbing; a logs feature module is not shipped yet.)
 export { Feature, FeatureScope, FeatureEventReceiver, EventWriter,
   RUM_FEATURE_NAME, LOGS_FEATURE_NAME, TRACE_FEATURE_NAME, CRASH_FEATURE_NAME } from './src/main/ets/api/feature/Feature';
 export { FlashcatContext, DeviceInfo, UserInfo, NetworkInfo } from './src/main/ets/api/context/FlashcatContext';

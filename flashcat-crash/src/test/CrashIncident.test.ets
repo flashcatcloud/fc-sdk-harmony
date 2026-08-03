@@ -42,6 +42,41 @@ export default function crashIncidentTests(): void {
       expect(live).assertEqual(watcher);
     });
 
+    it('roundTripsViewUrlThroughSerialization', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+      const record: CrashIncidentRecord = new CrashIncidentRecord(
+        'inc-1', 1000, 'Error', 'boom', 'Error: boom\n    at f (a.ets:1:1)', 'fp-1',
+        JsCrashPolicy.REPORT_THEN_EXIT, '0.2.0', 's-1', 'v-1', 'Home', 'pages/Home');
+
+      const parsed: CrashIncidentRecord | null = CrashIncidentRecord.parse(record.serialize());
+
+      expect(parsed !== null).assertTrue();
+      if (parsed !== null) {
+        expect(parsed.viewUrl).assertEqual('pages/Home');
+      }
+      // Records written by older SDK versions (no view_url key) still parse.
+      const legacy: CrashIncidentRecord | null = CrashIncidentRecord.parse(
+        '{"incident_id":"inc-2","timestamp_ms":1,"exception_name":"Error","message":"m",' +
+        '"stack":"s","fingerprint":"fp","policy":"REPORT_THEN_EXIT","sdk_version":"0.1.0",' +
+        '"session_id":"s","view_id":"v","view_name":"n"}');
+      expect(legacy !== null).assertTrue();
+      if (legacy !== null) {
+        expect(legacy.viewUrl).assertEqual('');
+      }
+    });
+
+    it('ignoresSourceMapBannerWhenParsingParts', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+      const bannerText: string =
+        'Cannot get SourceMap info, dump raw stack:\n    at anonymous (entry|entry|1.0.0|src/main/ets/pages/Index.ts:12:5)';
+      const parts = CrashFingerprint.partsFromText(bannerText);
+
+      expect(parts.name).assertEqual('Error');
+      expect(parts.message).assertEqual('');
+      // The banner is STRIPPED from the outgoing stack (it polluted the
+      // backend's parsed frames); the real frames survive.
+      expect(parts.stack.indexOf('Cannot get SourceMap info')).assertEqual(-1);
+      expect(parts.stack.indexOf('at anonymous') >= 0).assertTrue();
+    });
+
     it('changesWhenMessageChanges', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
       const first: string = CrashFingerprint.fromParts(
         'Error', 'first', 'Error: first\n    at run (/data/app/Index.ets:10:2)');
@@ -85,6 +120,37 @@ export default function crashIncidentTests(): void {
 
         expect(recent.length).assertEqual(1);
         expect(recent[0].incidentId).assertEqual('recent');
+      });
+
+    it('stackSentToBackendContainsFramesOnlyNoLabelLines',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        // The labeled callback text titled issues "Error name" on the backend
+        // (its parser reads the first stack line as "Type: message").
+        const labeled: string =
+          'Error name:Error\nError message:E2E crash marker\nStacktrace:\nat f (Index.ets:1:1)';
+        const parts: CrashExceptionParts = CrashFingerprint.partsFromText(labeled);
+        expect(parts.stack).assertEqual('at f (Index.ets:1:1)');
+        expect(parts.name).assertEqual('Error');
+        expect(parts.message).assertEqual('E2E crash marker');
+        // Banner lines are stripped too.
+        const banner: string = 'Cannot get SourceMap info, dump raw stack:\nat g (a.ets:2:2)';
+        expect(CrashFingerprint.framesOnly(banner)).assertEqual('at g (a.ets:2:2)');
+      });
+
+    it('retentionIsKeyedOnConsumptionTimeNotFaultTime',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        // A crash from long ago replayed (consumed) just now must survive
+        // pruning — otherwise the watcher copy of the same crash, delivered
+        // later in the launch, double-reports it.
+        const consumed: ConsumedCrashIncident[] = [
+          new ConsumedCrashIncident('old-crash-fresh-consume', 'fp-3', 1000, 9500)
+        ];
+
+        const recent: ConsumedCrashIncident[] =
+          CrashDeduplication.retainRecent(consumed, 10000, 2000);
+
+        expect(recent.length).assertEqual(1);
+        expect(recent[0].timestampMs).assertEqual(1000);
       });
 
     it('serializesAndParsesPendingRecord', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {

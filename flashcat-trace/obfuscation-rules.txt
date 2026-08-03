@@ -1,3 +1,10 @@
 # Keep Trace public entry points readable for integrators.
 -keep-global-name
   FlashcatTrace
+  FlashcatHttp
+  TraceConfigurationBuilder
+-keep-property-name
+  enable
+  interceptor
+  getHeaders
+  request

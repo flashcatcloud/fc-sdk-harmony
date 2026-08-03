@@ -1,0 +1,31 @@
+name: CI
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+
+jobs:
+  unit-tests:
+    # The headless runner needs only Node + the TypeScript compiler — no
+    # HarmonyOS toolchain — so it runs on any hosted runner.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Install TypeScript (compiler only)
+        run: npm init -y >/dev/null && npm install --no-save typescript@5.4
+      - name: Run unit tests
+        run: node scripts/unit-node/run.mjs
+
+  build-gate:
+    # Requires a self-hosted macOS runner with DevEco Studio installed
+    # (label: deveco). Skipped automatically when no such runner exists.
+    if: false  # flip to `github.repository_owner == 'flashcatcloud'` once a deveco runner is registered
+    runs-on: [self-hosted, deveco]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Full build + test compile
+        run: bash scripts/ci-check.sh

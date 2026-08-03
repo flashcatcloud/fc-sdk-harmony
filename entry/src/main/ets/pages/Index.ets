@@ -55,6 +55,79 @@ struct Index {
       this.appendSpikeError(`failed to read spike state: ${errorText(error)}`);
     }
     this.registerFaultWatcher();
+    this.maybeRunE2e();
+  }
+
+  /** E2E smoke hook: auto-init against the mock intake and run a scenario. */
+  private maybeRunE2e(): void {
+    const endpoint: string = AppStorage.get<string>('e2eEndpoint') ?? '';
+    hilog.info(0x0000, 'FlashcatDemo', 'e2e hook: endpoint=%{public}s initialized=%{public}s',
+      endpoint, `${DemoSdk.isInitialized()}`);
+    if (endpoint.length === 0) {
+      return;
+    }
+    const scenario: string = AppStorage.get<string>('e2eScenario') ?? '';
+    if (!DemoSdk.isInitialized()) {
+      // Sentinels: 'prod' / 'staging' mean "use the real site ingest for that
+      // environment" (no custom endpoint) — for verification in the live
+      // RUM console rather than the local mock.
+      if (endpoint === 'prod') {
+        this.customEndpoint = '';
+        this.useProd = true;
+      } else if (endpoint === 'staging') {
+        this.customEndpoint = '';
+        this.useProd = false;
+      } else {
+        this.customEndpoint = endpoint;
+        this.useProd = false;
+      }
+      // crash-only: auto error capture disabled, crash pipeline kept.
+      this.initSdkE2e(scenario !== 'crash-only');
+    }
+    this.append(`e2e: scenario "${scenario}" endpoint ${endpoint}`);
+    hilog.info(0x0000, 'FlashcatDemo', 'e2e scenario "%{public}s" scheduled', scenario);
+    setTimeout(() => {
+      this.runE2eScenario(scenario);
+    }, 1000);
+  }
+
+  private initSdkE2e(trackErrors: boolean): void {
+    try {
+      DemoSdk.init(this.context, this.useProd, this.customEndpoint, false, trackErrors);
+    } catch (e) {
+      this.append(e instanceof Error ? e.message : 'SDK initialization failed');
+      return;
+    }
+    this.initialized = DemoSdk.isInitialized();
+    this.statusText = `Initialized → ${DemoSdk.currentEnv()}`;
+    DemoSdk.monitor().startView('demo-home', 'DemoHome');
+    FlashcatRum.startViewTracking(this.getUIContext());
+    this.append(`init OK (${DemoSdk.currentEnv()}); trackErrors=${trackErrors}`);
+  }
+
+  private runE2eScenario(name: string): void {
+    if (name === 'crash-only') {
+      // Auto-captured signals that MUST be suppressed with trackErrors=false:
+      const bizReason: Record<string, Object> = { 'code': 424242, 'message': 'suppressed rejection' };
+      Promise.reject(bizReason as Object);
+      this.append('e2e: crash-only — rejection emitted (should be suppressed), crashing in 1200ms');
+      setTimeout(() => {
+        throw new Error('E2E crash-only marker');
+      }, 1200);
+    } else if (name === 'events') {
+      DemoSdk.monitor().addAction(RumActionType.TAP, 'e2e-tap');
+      DemoSdk.monitor().addError('e2e manual error', RumErrorSource.CUSTOM, 'at Index.e2e');
+      // BusinessError-shaped rejection: must surface as "message (code N)",
+      // never "[object Object]".
+      const bizReason: Record<string, Object> = { 'code': 1234567, 'message': 'e2e biz error' };
+      Promise.reject(bizReason as Object);
+      this.append('e2e: events scenario emitted');
+    } else if (name === 'crash') {
+      this.append('e2e: crashing in 800ms');
+      setTimeout(() => {
+        throw new Error('E2E crash marker');
+      }, 800);
+    }
   }
 
   aboutToDisappear(): void {
@@ -158,8 +231,10 @@ struct Index {
   }
 
   private async request(method: string, url: string): Promise<void> {
+    // rcp caps live sessions per process — close in finally so failed requests
+    // (this demo has a button that always fails) don't leak the session.
+    const session: rcp.Session = rcp.createSession({ interceptors: [FlashcatTrace.interceptor()] });
     try {
-      const session: rcp.Session = rcp.createSession({ interceptors: [FlashcatTrace.interceptor()] });
       let resp: rcp.Response;
       if (method === 'POST') {
         resp = await session.post(url, '{"demo":true}');
@@ -169,9 +244,10 @@ struct Index {
         resp = await session.get(url);
       }
       this.append(`net ${method} ${shortUrl(url)} → ${resp.statusCode}`);
-      session.close();
     } catch (e) {
       this.append(`net ${method} ${shortUrl(url)} FAILED: ${e instanceof Error ? e.message : 'error'}`);
+    } finally {
+      session.close();
     }
   }
 

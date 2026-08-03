@@ -32,6 +32,56 @@ export class TraceContext {
   }
 
   /**
+   * The span id as an unsigned decimal string — the Datadog `_dd.span_id`
+   * convention. The intake parses span ids base-10 (`strconv.ParseUint(…, 10, 64)`),
+   * so sending the raw 16-hex form made the parse fail and left span_id empty on
+   * essentially every resource, breaking RUM↔APM correlation. The hex form stays
+   * in `traceparent` (W3C requires it).
+   */
+  spanIdDecimal(): string {
+    return TraceContext.hexToUnsignedDecimalString(this.spanId);
+  }
+
+  /**
+   * Converts a hex string to its unsigned decimal representation without BigInt
+   * (64-bit values exceed Number's 53-bit integer precision). Returns '' for
+   * non-hex input.
+   */
+  static hexToUnsignedDecimalString(hex: string): string {
+    if (hex.length === 0) {
+      return '';
+    }
+    // Little-endian array of decimal digits; repeatedly ×16 + nibble.
+    const digits: number[] = [0];
+    for (let i: number = 0; i < hex.length; i++) {
+      const nibble: number = parseInt(hex.charAt(i), 16);
+      if (Number.isNaN(nibble)) {
+        return '';
+      }
+      let carry: number = nibble;
+      for (let j: number = 0; j < digits.length; j++) {
+        const value: number = digits[j] * 16 + carry;
+        digits[j] = value % 10;
+        carry = Math.floor(value / 10);
+      }
+      while (carry > 0) {
+        digits.push(carry % 10);
+        carry = Math.floor(carry / 10);
+      }
+    }
+    let out: string = '';
+    for (let i: number = digits.length - 1; i >= 0; i--) {
+      out += `${digits[i]}`;
+    }
+    // Strip leading zeros but keep a single zero.
+    let start: number = 0;
+    while (start < out.length - 1 && out.charAt(start) === '0') {
+      start += 1;
+    }
+    return out.substring(start);
+  }
+
+  /**
    * W3C `tracestate` value with the Datadog vendor entry: `dd=s:{0|1};o:rum`.
    * `s` = sampling priority (1 = keep, 0 = drop), `o` = origin (rum). When an
    * existing tracestate is present, preserve other vendors and replace only the
