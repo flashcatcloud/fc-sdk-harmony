@@ -55,6 +55,45 @@ struct Index {
       this.appendSpikeError(`failed to read spike state: ${errorText(error)}`);
     }
     this.registerFaultWatcher();
+    this.maybeRunE2e();
+  }
+
+  /** E2E smoke hook: auto-init against the mock intake and run a scenario. */
+  private maybeRunE2e(): void {
+    const endpoint: string = AppStorage.get<string>('e2eEndpoint') ?? '';
+    hilog.info(0x0000, 'FlashcatDemo', 'e2e hook: endpoint=%{public}s initialized=%{public}s',
+      endpoint, `${DemoSdk.isInitialized()}`);
+    if (endpoint.length === 0) {
+      return;
+    }
+    if (!DemoSdk.isInitialized()) {
+      this.customEndpoint = endpoint;
+      this.useProd = false;
+      this.initSdk(false);
+    }
+    const scenario: string = AppStorage.get<string>('e2eScenario') ?? '';
+    this.append(`e2e: scenario "${scenario}" endpoint ${endpoint}`);
+    hilog.info(0x0000, 'FlashcatDemo', 'e2e scenario "%{public}s" scheduled', scenario);
+    setTimeout(() => {
+      this.runE2eScenario(scenario);
+    }, 1000);
+  }
+
+  private runE2eScenario(name: string): void {
+    if (name === 'events') {
+      DemoSdk.monitor().addAction(RumActionType.TAP, 'e2e-tap');
+      DemoSdk.monitor().addError('e2e manual error', RumErrorSource.CUSTOM, 'at Index.e2e');
+      // BusinessError-shaped rejection: must surface as "message (code N)",
+      // never "[object Object]".
+      const bizReason: Record<string, Object> = { 'code': 1234567, 'message': 'e2e biz error' };
+      Promise.reject(bizReason as Object);
+      this.append('e2e: events scenario emitted');
+    } else if (name === 'crash') {
+      this.append('e2e: crashing in 800ms');
+      setTimeout(() => {
+        throw new Error('E2E crash marker');
+      }, 800);
+    }
   }
 
   aboutToDisappear(): void {
