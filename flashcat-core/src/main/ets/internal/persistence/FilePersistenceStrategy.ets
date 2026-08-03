@@ -256,6 +256,9 @@ export class FilePersistenceStrategy implements UploadPersistence {
     this.seq += 1;
     const rand: number = Math.floor(Math.random() * 1e6);
     const name: string = `${BATCH_PREFIX}${now}-${this.seq}-${rand}${BATCH_SUFFIX}`;
+    // Own batch: without this the foreign-claim age gate blocks the migrated
+    // batch from our own drain for the roll-age window.
+    this.ownNames.add(name);
     FilePersistenceStrategy.append(`${this.rootDir}/${name}`, lines.join('\n') + '\n');
   }
 
