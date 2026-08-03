@@ -39,6 +39,10 @@ export class FlashcatRum {
     if (scope === null) {
       return; // registration failed
     }
+    // Install the event mapper (PII scrubbing / drop) BEFORE attaching the
+    // monitor: attachMonitor synchronously triggers the pending-crash replay,
+    // and a replayed crash error must pass through the mapper like any event.
+    RumEventMapperHolder.configure(configuration.eventMapper);
     const monitor: DefaultRumMonitor = new DefaultRumMonitor(core, scope, configuration);
     feature.attachMonitor(monitor);
     GlobalRumMonitor.register(monitor);
@@ -46,8 +50,6 @@ export class FlashcatRum {
     // Phase 2: make the auto-instrumentation toggles consultable by the tap /
     // navigation trackers. Inert unless the corresponding flag is enabled.
     RumAutoInstrumentation.configure(configuration);
-    // Phase 2 R3: install the event mapper (PII scrubbing / drop), if any.
-    RumEventMapperHolder.configure(configuration.eventMapper);
   }
 
   /**

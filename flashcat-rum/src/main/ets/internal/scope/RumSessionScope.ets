@@ -33,6 +33,11 @@ export class RumSessionScope implements RumScope {
   // creates the session, so its duration reads as 0/missing.
   private lastViewKey: string | null = null;
   private lastViewName: string = '';
+  private lastViewAttributes: Record<string, Object> = {};
+  // Most recently closed view (regardless of pending resources): a crash landing
+  // in the gap between stopView and the next startView is counted on it, so the
+  // crash still reaches session_crash_count (derived from view docs only).
+  private lastStoppedView: RumViewScope | null = null;
   // Closed/superseded views still owning in-flight resources — late responses
   // are routed here so the slow and failing requests (exactly the ones that
   // outlive a navigation) are not systematically lost.
@@ -67,6 +72,12 @@ export class RumSessionScope implements RumScope {
       // (a 5-min visit reads as 4 h of time_spent).
       if (this.activeView !== null) {
         const closeAtMs: number = Math.max(this.lastActivityMs, this.lastKeepAliveMs);
+        // A crash that itself detects the expiry belongs to THIS session (the
+        // incident snapshot already carries this session/view id): count it in
+        // the final document, not in a phantom replacement session.
+        if (event.kind === 'markCrash') {
+          this.activeView.countCrash();
+        }
         this.activeView.forceStop(closeAtMs);
         this.activeView = null;
       }
@@ -88,7 +99,10 @@ export class RumSessionScope implements RumScope {
       return this;
     }
 
-    this.lastActivityMs = event.timestampMs;
+    // Monotonic: a backdated event (e.g. a timed action stamped at its START
+    // time) must never move last-activity backwards — that would make the very
+    // next event read as a >15-min gap and force-expire a healthy session.
+    this.lastActivityMs = Math.max(this.lastActivityMs, event.timestampMs);
 
     if (!this.sampled) {
       return this; // session dropped — track lifecycle but emit nothing
@@ -102,6 +116,7 @@ export class RumSessionScope implements RumScope {
       }
       this.lastViewKey = event.key ?? '';
       this.lastViewName = event.name ?? '';
+      this.lastViewAttributes = event.attributes;
       const viewId: string = util.generateRandomUUID(true);
       this.activeView = new RumViewScope(
         this.featureScope, this.core, this.applicationId, this.sessionId,
@@ -127,6 +142,16 @@ export class RumSessionScope implements RumScope {
         this.retireView(this.activeView);
         this.activeView = null;
       }
+    } else if (event.kind === 'markCrash') {
+      // Crash in the gap between stopView and the next startView: count it on
+      // the most recently closed view (an extra document version with frozen
+      // time_spent) — otherwise the crash reaches the error list but never
+      // session_crash_count, which the backend derives from view docs only.
+      if (this.lastStoppedView !== null) {
+        this.lastStoppedView.handleEvent(event);
+      } else {
+        FlashcatLog.d('rum.session: markCrash with no view — crash not counted in any view document');
+      }
     } else if (event.kind === 'addError') {
       this.writeViewlessError(event); // error before any view started
     } else if (event.kind === 'addAction' || event.kind === 'startResource') {
@@ -137,8 +162,10 @@ export class RumSessionScope implements RumScope {
     return this;
   }
 
-  /** Keep a closed view alive (bounded) while it still owns in-flight resources. */
+  /** Keep a closed view alive (bounded) while it still owns in-flight resources,
+   *  and remember it as the most recently closed view for crash counting. */
   private retireView(view: RumViewScope): void {
+    this.lastStoppedView = view;
     if (!view.hasPendingResources()) {
       return;
     }
@@ -172,6 +199,10 @@ export class RumSessionScope implements RumScope {
 
   getLastViewName(): string {
     return this.lastViewName;
+  }
+
+  getLastViewAttributes(): Record<string, Object> {
+    return this.lastViewAttributes;
   }
 
   isSampled(): boolean {

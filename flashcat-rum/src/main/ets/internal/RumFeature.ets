@@ -215,7 +215,7 @@ export class RumFeature implements Feature, FeatureEventReceiver {
     // and (c) never emits a view event, so the backend never materializes a
     // session row for it and the crash becomes unfindable from the session list.
     const originalSessionId: string = RumFeature.asString(event['original_session_id']);
-    if (originalSessionId.length > 0) {
+    if (originalSessionId.length > 0 && !RumFeature.isReplayTooOld(event)) {
       event['delivered'] = this.writeCrashToOriginalSession(event, originalSessionId);
       return;
     }
@@ -242,6 +242,19 @@ export class RumFeature implements Feature, FeatureEventReceiver {
       'unhandled',
       attributes);
     event['delivered'] = true;
+  }
+
+  /**
+   * The intake silently discards events older than 24 h (while returning 2xx),
+   * so a replayed crash backdated past that window would be marked delivered,
+   * deleted, and lost. Crash Friday night, reopen Monday — the archetypal
+   * crash-then-abandon pattern. Such incidents fall back to the current-time
+   * monitor path, which preserves the real crash time as an attribute.
+   * 23 h keeps the same safety margin as the batch retention cap.
+   */
+  private static isReplayTooOld(event: Record<string, Object>): boolean {
+    const crashedAtMs: number | undefined = RumFeature.optionalPositiveNumber(event['timestamp_ms']);
+    return crashedAtMs !== undefined && (Date.now() - crashedAtMs) > 23 * 60 * 60 * 1000;
   }
 
   /** Assemble + persist a replayed crash error stamped with the crashed run's

@@ -31,6 +31,11 @@ export class RumViewScope implements RumScope {
   private documentVersion: number = 0;
   private maxTimeSpentNs: number = 0;
   private active: boolean = true;
+  // Wall-clock time the view was closed. Late writes on a closed view (draining
+  // resource completions, crash marks) update counts but must NOT extend
+  // time_spent past the close — the backend keeps the newest document, so an
+  // extended write would credit post-navigation idle time as dwell time.
+  private closedAtMs: number = 0;
   private readonly pendingResources: Map<string, RumResourceScope> = new Map<string, RumResourceScope>();
 
   constructor(
@@ -53,13 +58,25 @@ export class RumViewScope implements RumScope {
     this.viewId = viewId;
     this.startedAtMs = startedAtMs;
     this.attributes = attributes;
-    // Publish the active view so Logs/Trace can correlate.
+    // Publish the active view so Logs/Trace/Crash can correlate. The URL is the
+    // RESOLVED one (caller-supplied view.url, e.g. the nav tracker's route path),
+    // not the opaque key — a crash incident snapshots this and must match the
+    // view's own events for URL-based grouping.
     const update: Record<string, Object> = {};
     update['view.id'] = viewId;
     update['view.name'] = viewName;
-    update['view.url'] = key;
+    update['view.url'] = this.resolvedViewUrl();
     this.core.updateFeatureContext('rum', update);
     this.writeViewEvent(startedAtMs);
+  }
+
+  /** Caller-supplied view.url (real route path) wins over the opaque key. */
+  private resolvedViewUrl(): string {
+    const fromAttributes: Object | undefined = this.attributes['view.url'];
+    if (typeof fromAttributes === 'string' && fromAttributes.length > 0) {
+      return fromAttributes;
+    }
+    return this.key;
   }
 
   private viewAttributes(extra?: Record<string, Object>): Record<string, Object> {
@@ -86,6 +103,7 @@ export class RumViewScope implements RumScope {
       case 'stopView':
         if (event.key === this.key) {
           this.active = false;
+          this.closedAtMs = event.timestampMs;
           // In-flight resources are NOT dropped: the session keeps this scope in
           // its draining set until they settle (Android parity). Clearing them
           // here systematically lost exactly the slow and failing requests.
@@ -131,7 +149,7 @@ export class RumViewScope implements RumScope {
         if (key !== '' && this.pendingResources.size < MAX_PENDING_RESOURCES) {
           this.pendingResources.set(key, new RumResourceScope(
             this.featureScope, this.applicationId, this.sessionId,
-            this.viewId, this.viewName, this.key, event));
+            this.viewId, this.viewName, this.resolvedViewUrl(), event));
         }
         return this;
       }
@@ -167,8 +185,19 @@ export class RumViewScope implements RumScope {
       return;
     }
     this.active = false;
+    this.closedAtMs = nowMs;
     this.writeViewEvent(nowMs);
     this.clearViewContext();
+  }
+
+  /**
+   * Count a crash on this view WITHOUT writing a document — used when the crash
+   * itself detects session expiry: the count must land in the final document the
+   * imminent forceStop writes, not in one that resurrects the view afterwards.
+   */
+  countCrash(): void {
+    this.errorCount += 1;
+    this.crashCount += 1;
   }
 
   hasPendingResources(): boolean {
@@ -210,11 +239,14 @@ export class RumViewScope implements RumScope {
 
   private writeViewEvent(nowMs: number): void {
     this.documentVersion += 1;
+    // Once closed, time freezes at the close timestamp: late count updates
+    // (draining resources, crash marks) must not extend dwell time.
+    const clockMs: number = this.active || this.closedAtMs <= 0 ? nowMs : Math.min(nowMs, this.closedAtMs);
     // Monotonic per view: a backwards wall-clock jump (NTP correction, manual
     // change) must never shrink time_spent — the backend keeps the newest
     // document, so a clamped-to-0 write would permanently erase real dwell time.
     const timeSpentNs: number =
-      Math.max(this.maxTimeSpentNs, Math.max(0, nowMs - this.startedAtMs) * MS_TO_NS);
+      Math.max(this.maxTimeSpentNs, Math.max(0, clockMs - this.startedAtMs) * MS_TO_NS);
     this.maxTimeSpentNs = timeSpentNs;
     const version: number = this.documentVersion;
     const actions: number = this.actionCount;
