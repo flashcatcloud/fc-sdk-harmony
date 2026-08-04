@@ -112,7 +112,18 @@ export class RumFeature implements Feature, FeatureEventReceiver {
     // silently attributing the crash to the run that survived it.
     this.previousRunView = LastViewSnapshot.read();
     if (this.previousRunView !== null) {
-      FlashcatLog.d('rum.lastview: loaded previous-run view snapshot for crash attribution');
+      // Consume it: the file describes the run that just ended, and it must not
+      // outlive this load. Otherwise a launch that crashes BEFORE writing a view
+      // of its own leaves the old file in place, and the launch after that
+      // attributes the newer crash to the same long-dead session and re-emits a
+      // near-identical crash.count / document_version. Same-launch multi-fault
+      // is handled from previousRunView in memory. Mirrors the Android SDK,
+      // which deletes lastViewEvent immediately after reading it.
+      this.sendStorageCommand({
+        'type': 'crash_storage_delete_last_view',
+        'target': CRASH_STORAGE_TARGET
+      });
+      FlashcatLog.d('rum.lastview: loaded and consumed previous-run view snapshot');
     }
 
     // Pull the JS crash policy in case the crash module was enabled first
@@ -448,14 +459,19 @@ export class RumFeature implements Feature, FeatureEventReceiver {
         delivered = true; // the app's mapper dropped it on purpose — handled
         return;
       }
-      delivered = writer.write(mapped, true);
+      if (!writer.write(mapped, true)) {
+        return;
+      }
+      // Counting happens HERE rather than at crash time: for these faults the
+      // process was already gone, so there was no live view scope to bump.
+      // Deliberately NOT via writeMapped: the snapshot is already post-mapper,
+      // and re-recording would make the crash-marked doc the next snapshot.
+      const crashedView: Record<string, Object> = RumFeature.viewEventWithCrash(snapshot);
+      // Both writes must land before the incident may be dropped. If only the
+      // error persisted, the crash is visible but the session still reads
+      // crash-free — retaining the incident lets the next launch retry.
+      delivered = writer.write(crashedView, true);
       if (delivered) {
-        // Counting happens HERE rather than at crash time: for these faults the
-        // process was already gone, so there was no live view scope to bump.
-        // Deliberately NOT via writeMapped: the snapshot is already post-mapper,
-        // and re-recording would make the crash-marked doc the next snapshot.
-        const crashedView: Record<string, Object> = RumFeature.viewEventWithCrash(snapshot);
-        writer.write(crashedView, true);
         // Advance the cached snapshot so a SECOND fault replayed in this same
         // launch counts 2 at the next document version, instead of re-emitting
         // count 1 at a version the backend has already settled.
@@ -472,9 +488,17 @@ export class RumFeature implements Feature, FeatureEventReceiver {
   }
 
   /**
-   * Pure: a copy of the snapshot view document marked as crashed — crash count
-   * incremented, no longer active, next document version. `date` stays the view
-   * start so the backend treats it as the same document, not a new one.
+   * Pure: a copy of the snapshot view document marked as crashed — no longer
+   * active, next document version. `date` stays the view start so the backend
+   * treats it as the same document, not a new one.
+   *
+   * BOTH error and crash are incremented, matching what the live path does in
+   * RumViewScope: a crash is written as an `is_crash` ERROR event, so it counts
+   * once as an error and again as a crash. Bumping only crash leaves the view's
+   * error.count one short of the errors the session actually holds, and since
+   * the intake derives the session total from this counter as a delta, the
+   * session under-reports its errors for good. (Note this diverges from the
+   * Android SDK's updateViewEvent, which bumps crash alone.)
    */
   static viewEventWithCrash(snapshot: Record<string, Object>): Record<string, Object> {
     const updated: Record<string, Object> = {};
@@ -491,6 +515,13 @@ export class RumFeature implements Feature, FeatureEventReceiver {
     const nextCrash: Record<string, Object> = {};
     nextCrash['count'] = crashCount + 1;
     view['crash'] = nextCrash;
+    // The crash is delivered as an is_crash ERROR event, so it counts as an
+    // error too — exactly what RumViewScope does on the live path.
+    const error: Record<string, Object> = RumFeature.recordValue(sourceView['error']);
+    const errorCount: number = RumFeature.optionalPositiveNumber(error['count']) ?? 0;
+    const nextError: Record<string, Object> = {};
+    nextError['count'] = errorCount + 1;
+    view['error'] = nextError;
     view['is_active'] = false;
     updated['view'] = view;
 

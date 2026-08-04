@@ -94,6 +94,22 @@ export class CrashPendingStore implements FeatureEventReceiver {
         CrashPendingStore.stringValue(event['serialized']));
     } else if (type === 'crash_storage_read_last_view') {
       event['serialized'] = this.readSidecar(LAST_VIEW_FILE);
+    } else if (type === 'crash_storage_delete_last_view') {
+      this.deleteLastView();
+    }
+  }
+
+  /**
+   * Drop the view snapshot. Called when consent is revoked: the snapshot is a
+   * whole ViewEvent, so it carries the user's id/name/email and any custom
+   * context. The NOT_GRANTED path wipes collected batches precisely so a
+   * refused user's data does not sit on disk — this file has to go with them.
+   */
+  private deleteLastView(): void {
+    try {
+      fs.unlinkSync(`${this.rootDir}/${LAST_VIEW_FILE}`);
+    } catch (_error) {
+      // Never written, or already gone.
     }
   }
 
