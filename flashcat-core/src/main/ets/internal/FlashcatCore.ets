@@ -63,15 +63,19 @@ export class FlashcatCore implements SdkCore {
       // process revocation). No persisted value means the main app never
       // initialized — do nothing.
       this.consent = persisted ?? TrackingConsent.NOT_GRANTED;
-    } else if (persisted === TrackingConsent.NOT_GRANTED && consent !== TrackingConsent.NOT_GRANTED) {
-      // Sticky revocation: a persisted NOT_GRANTED survives the constructor
-      // literal until the app explicitly re-grants via setTrackingConsent —
-      // an init literal alone must not resurrect refused tracking. All other
-      // combinations trust the literal (the app is the consent authority;
-      // Datadog-parity apps pass their own stored consent at init).
-      FlashcatLog.d(`consent: persisted NOT_GRANTED overrides initial ${consent}`);
-      this.consent = TrackingConsent.NOT_GRANTED;
     } else {
+      // Main process: the app is the consent authority, so the constructor
+      // literal always wins — same contract as the Android and iOS SDKs, where
+      // consent is in-memory only and the app replays its stored decision at
+      // init. The persisted value exists solely for the deferred-upload
+      // extension above, which has no app in front of it to ask.
+      //
+      // Deliberately NOT sticky: an earlier revision let a persisted
+      // NOT_GRANTED override the literal, which silently discarded a legitimate
+      // re-grant from an app that manages consent only at init (no
+      // setTrackingConsent call) — collection stayed off with nothing but a
+      // debug log to explain it. Apps that hardcode GRANTED must reflect
+      // revocation through setTrackingConsent, exactly as on Android/iOS.
       this.consent = consent;
     }
     // Under NOT_GRANTED no durable device identifier may be written; the

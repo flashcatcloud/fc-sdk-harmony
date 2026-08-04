@@ -33,30 +33,38 @@ function build(consent: TrackingConsent, background: boolean = false): FlashcatC
 
 export default function consentPolicyTests(): void {
   describe('ConsentPolicy', (): void => {
-    it('revocationIsStickyAcrossLaunches',
+    it('literalWinsOverPersistedRevocation',
       TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        // An app that manages consent only at init must be able to re-grant by
+        // passing GRANTED on the next launch. A persisted NOT_GRANTED used to
+        // override this and silently kept collection off — Android and iOS have
+        // no such override, and neither do we.
         const launch1: FlashcatCore = build(TrackingConsent.GRANTED);
         launch1.setTrackingConsent(TrackingConsent.NOT_GRANTED);
         launch1.stop();
 
-        // Launch 2 passes its usual GRANTED literal — revocation must hold.
         const launch2: FlashcatCore = build(TrackingConsent.GRANTED);
+        expect(launch2.getTrackingConsent() === TrackingConsent.GRANTED).assertTrue();
+        launch2.stop();
+      });
+
+    it('revocationPersistsWhenTheLiteralAgrees',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        // The app replaying its own stored decision is the supported pattern:
+        // pass NOT_GRANTED back and nothing is collected.
+        const launch1: FlashcatCore = build(TrackingConsent.GRANTED);
+        launch1.setTrackingConsent(TrackingConsent.NOT_GRANTED);
+        launch1.stop();
+
+        const launch2: FlashcatCore = build(TrackingConsent.NOT_GRANTED);
         expect(launch2.getTrackingConsent() === TrackingConsent.NOT_GRANTED).assertTrue();
         launch2.stop();
-
-        // Only an explicit re-grant lifts it.
-        const launch3: FlashcatCore = build(TrackingConsent.GRANTED);
-        launch3.setTrackingConsent(TrackingConsent.GRANTED);
-        launch3.stop();
-        const launch4: FlashcatCore = build(TrackingConsent.GRANTED);
-        expect(launch4.getTrackingConsent() === TrackingConsent.GRANTED).assertTrue();
-        launch4.stop();
       });
 
     it('literalIsTrustedWhenNotRevoked',
       TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
         // Persisted GRANTED must NOT override a deliberate PENDING literal
-        // (the app is the consent authority for anything but revocation).
+        // (the app is the consent authority).
         const launch1: FlashcatCore = build(TrackingConsent.GRANTED);
         launch1.stop();
         const launch2: FlashcatCore = build(TrackingConsent.PENDING);

@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.3.1
+
+- Version bump to keep the SDK packages in lockstep (see `@flashcatcloud/core`
+  0.3.1: the consent value passed at initialization is authoritative again).
+
 ## 0.3.0
 
 - **Breaking behavior**: `setTrackNetworkRequests(false)` (the default) now
