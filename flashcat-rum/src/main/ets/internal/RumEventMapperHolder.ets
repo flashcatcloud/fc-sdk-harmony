@@ -1,5 +1,6 @@
 import { EventWriter, FlashcatLog } from '@flashcatcloud/core';
 import { RumEventMapper } from '../RumTypes';
+import { LastViewSnapshot } from './LastViewSnapshot';
 
 /**
  * Phase-2 R3: holds the app-supplied {@link RumEventMapper} and applies it at the
@@ -56,6 +57,13 @@ export class RumEventMapperHolder {
 export function writeMapped(writer: EventWriter, event: Record<string, Object>, forceFlush: boolean): void {
   const mapped: Record<string, Object> | null = RumEventMapperHolder.apply(event);
   if (mapped !== null) {
-    writer.write(mapped, forceFlush);
+    const written: boolean = writer.write(mapped, forceFlush);
+    // Snapshot the view AFTER a successful write: the snapshot's job is to
+    // describe the last view the backend actually holds, so that a crash
+    // replayed against it lines up with an existing document rather than
+    // resurrecting one the intake never saw.
+    if (written && mapped['type'] === 'view') {
+      LastViewSnapshot.record(mapped);
+    }
   }
 }

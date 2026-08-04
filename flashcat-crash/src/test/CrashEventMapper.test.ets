@@ -1,5 +1,7 @@
 import { describe, expect, it, Level, Size, TestType } from '@ohos/hypium';
+import { JsCrashPolicy } from '../main/ets/CrashConfiguration';
 import { CrashEventMapper } from '../main/ets/internal/CrashEventMapper';
+import { CrashIncidentRecord } from '../main/ets/internal/CrashIncident';
 
 export default function crashEventMapperTests(): void {
   describe('CrashEventMapper', (): void => {
@@ -124,6 +126,51 @@ export default function crashEventMapperTests(): void {
       expect(ev['crash_kind']).assertEqual('freeze');
       expect(ev['is_crash']).assertEqual(true);
       expect((ev['message'] as string).indexOf('freeze')).assertLarger(-1);
+    });
+
+    it('mapsPendingIncidentAsCrash', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+      const incident: CrashIncidentRecord = new CrashIncidentRecord(
+        'incident-1',
+        123456,
+        'TypeError',
+        'boom',
+        'TypeError: boom\n    at run (Index.ets:1:2)',
+        'fp-1',
+        JsCrashPolicy.REPORT_THEN_EXIT,
+        '0.3.2',
+        'session-1',
+        'view-1',
+        'Home');
+
+      const ev: Record<string, Object> = CrashEventMapper.fromPendingIncident(incident);
+
+      expect(ev['type']).assertEqual('crash_report');
+      expect(ev['is_crash']).assertEqual(true);
+      expect(ev['incident_id']).assertEqual('incident-1');
+      expect(ev['fingerprint']).assertEqual('fp-1');
+      expect(ev['timestamp_ms']).assertEqual(123456);
+      expect(ev['original_session_id']).assertEqual('session-1');
+      expect(ev['original_view_id']).assertEqual('view-1');
+      expect(ev['crash.recovered']).assertUndefined();
+    });
+
+    it('marksRecoveredPendingIncident', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+      const incident: CrashIncidentRecord = new CrashIncidentRecord(
+        'incident-recovered',
+        123456,
+        'TypeError',
+        'boom',
+        'TypeError: boom\n    at run (Index.ets:1:2)',
+        'fp-recovered',
+        JsCrashPolicy.REPORT_AND_RECOVER,
+        '0.3.2',
+        'session-1',
+        'view-1',
+        'Home');
+
+      const ev: Record<string, Object> = CrashEventMapper.fromPendingIncident(incident);
+
+      expect(ev['crash.recovered']).assertEqual(true);
     });
 
     it('truncatesOversizedStackAndMessage', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {

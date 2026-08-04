@@ -13,6 +13,11 @@ export interface RumMonitor {
   startAction(type: RumActionType, name: string, attributes?: Record<string, Object>): void;
   stopAction(type: RumActionType, name: string, attributes?: Record<string, Object>): void;
 
+  /**
+   * `key` MUST be unique per request (e.g. a UUID) — reusing a key while an
+   * earlier request with the same key is still in flight cross-attributes the
+   * two completions (wrong durations and view attribution for both).
+   */
   startResource(key: string, method: RumResourceMethod, url: string, attributes?: Record<string, Object>): void;
   stopResource(key: string, statusCode: number, size: number, kind: RumResourceKind,
     attributes?: Record<string, Object>): void;
@@ -24,8 +29,19 @@ export interface RumMonitor {
 
   addAttribute(key: string, value: Object): void;
   removeAttribute(key: string): void;
+  /** Snapshot of the global attributes attached to every event. */
+  getAttributes(): Record<string, Object>;
+  /** Remove ALL global attributes. */
+  clearAttributes(): void;
 
   getCurrentSessionId(callback: (sessionId: string | undefined) => void): void;
+
+  /**
+   * End the current session immediately (e.g. on logout). The active view is
+   * closed with its final time_spent; the next tracked event starts a fresh
+   * session and restarts the last view in it.
+   */
+  stopSession(): void;
 }
 
 /** No-op fallback used before RUM is enabled. */
@@ -43,9 +59,14 @@ class NoOpRumMonitor implements RumMonitor {
   addError(message: string, source: RumErrorSource, stack?: string, attributes?: Record<string, Object>): void {}
   addAttribute(key: string, value: Object): void {}
   removeAttribute(key: string): void {}
+  getAttributes(): Record<string, Object> {
+    return {};
+  }
+  clearAttributes(): void {}
   getCurrentSessionId(callback: (sessionId: string | undefined) => void): void {
     callback(undefined);
   }
+  stopSession(): void {}
 }
 
 /**

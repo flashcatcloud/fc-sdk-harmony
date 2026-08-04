@@ -1,4 +1,5 @@
 import { describe, expect, it, Level, Size, TestType } from '@ohos/hypium';
+import { SDK_VERSION } from '../main/ets/internal/Version';
 import { ConfigurationBuilder } from '../main/ets/config/Configuration';
 import { DataUploader, UploadContext } from '../main/ets/internal/upload/DataUploader';
 
@@ -19,7 +20,7 @@ export default function dataUploaderTests(): void {
       const endpoint = DataUploader.endpointFor(config, '/api/v2/rum', () => context);
 
       expect(endpoint).assertEqual(
-        'https://intake.example/api/v2/rum?ddsource=harmony&ddtags=sdk_version%3A0.1.0%2Cenv%3Aprod%2Cservice%3Acheckout%2Cversion%3A1.2.3'
+        `https://intake.example/api/v2/rum?ddsource=harmony&ddtags=sdk_version%3A${SDK_VERSION}%2Cenv%3Aprod%2Cservice%3Acheckout%2Cversion%3A1.2.3`
       );
     });
 
@@ -37,7 +38,7 @@ export default function dataUploaderTests(): void {
       const endpoint = DataUploader.endpointFor(config, '/api/v2/rum', () => context);
 
       expect(endpoint).assertEqual(
-        'https://intake.example/api/v2/rum?ddsource=harmony&ddtags=sdk_version%3A0.1.0%2Cenv%3Aprod'
+        `https://intake.example/api/v2/rum?ddsource=harmony&ddtags=sdk_version%3A${SDK_VERSION}%2Cenv%3Aprod`
       );
     });
   });

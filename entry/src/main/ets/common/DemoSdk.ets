@@ -4,7 +4,7 @@ import {
 } from '@flashcatcloud/core';
 import { FlashcatRum, RumConfigurationBuilder, GlobalRumMonitor, RumMonitor } from '@flashcatcloud/rum';
 import { FlashcatTrace, TraceConfigurationBuilder } from '@flashcatcloud/trace';
-import { FlashcatCrash, CrashConfigurationBuilder } from '@flashcatcloud/crash';
+import { FlashcatCrash, CrashConfigurationBuilder, JsCrashPolicy } from '@flashcatcloud/crash';
 import { DemoConfig, DemoConfigLoader } from './DemoConfig';
 
 /**
@@ -35,8 +35,10 @@ export class DemoSdk {
    * @param prod true → production site; false → staging
    * @param customEndpoint optional intake override (e.g. http://10.0.2.2:8080) for
    *        local capture/proxy debugging. Empty → use the site host.
+   * @param recover true → opt into REPORT_AND_RECOVER for crash testing.
    */
-  static init(context: common.Context, prod: boolean, customEndpoint: string): void {
+  static init(context: common.Context, prod: boolean, customEndpoint: string,
+    recover: boolean = false, trackErrors: boolean = true): void {
     if (DemoSdk.initialized) {
       return;
     }
@@ -61,14 +63,20 @@ export class DemoSdk {
       .setTrackUserInteractions(true) // phase 2: auto TAP actions (A3)
       .setTrackNavigation(true)       // phase 2: auto View events on router push/pop (A1)
       .setTrackNetworkRequests(true)  // phase 2: auto Resource via FlashcatHttp wrapper (A2)
+      .setTrackErrors(trackErrors)    // false → crash-only reporting (auto errors suppressed)
       .setEventMapper(DemoSdk.demoEventMapper) // phase 2 R3: PII scrubbing / drop
       .build());
     FlashcatTrace.enable(new TraceConfigurationBuilder().setSampleRate(100).build());
-    FlashcatCrash.enable(new CrashConfigurationBuilder().build());
+    const crashBuilder: CrashConfigurationBuilder = new CrashConfigurationBuilder();
+    if (recover) {
+      crashBuilder.setJsCrashPolicy(JsCrashPolicy.REPORT_AND_RECOVER);
+    }
+    FlashcatCrash.enable(crashBuilder.build());
 
     DemoSdk.initialized = true;
     const host: string = customEndpoint.length > 0 ? customEndpoint : (prod ? 'browser.flashcat.cloud' : 'jira.flashcat.cloud');
-    DemoSdk.envLabel = `${prod ? 'prod' : 'staging'} · ${host}`;
+    DemoSdk.envLabel = `${prod ? 'prod' : 'staging'} · ${host}` +
+      (recover ? ' · crash recovery' : '');
   }
 
   static monitor(): RumMonitor {

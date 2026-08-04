@@ -9,9 +9,25 @@ import { RumRawEvent } from '../scope/RumScope';
 const MS_TO_NS: number = 1e6;
 // Periodically re-emit the active view so its time_spent (and the session
 // duration the backend derives from it) stays current even without user
-// interaction. Android uses 5 min; we use a finer cadence for tighter mobile
-// session-duration accuracy. See RumViewScope keep-alive handling.
-const KEEP_ALIVE_MS: number = 30 * 1000;
+// interaction. 5 min matches Android's keep-alive; end-of-session accuracy
+// does not depend on this cadence because expiry close, stop() and flush()
+// all emit a final keep-alive at the precise last-activity timestamp.
+const KEEP_ALIVE_MS: number = 5 * 60 * 1000;
+// Timed actions: cap duration and prune abandoned entries. A startAction whose
+// stopAction never comes (user navigated away mid-gesture) must not leak, and a
+// later same-key stopAction must not report an hours-long loading_time.
+const ACTION_MAX_DURATION_MS: number = 10 * 60 * 1000;
+const MAX_ACTIVE_ACTIONS: number = 128;
+
+class ActiveActionRecord {
+  readonly startMs: number;
+  readonly attributes?: Record<string, Object>;
+
+  constructor(startMs: number, attributes?: Record<string, Object>) {
+    this.startMs = startMs;
+    this.attributes = attributes;
+  }
+}
 
 /**
  * Default RumMonitor. Translates the public API into RumRawEvents fed to the
@@ -24,7 +40,7 @@ const KEEP_ALIVE_MS: number = 30 * 1000;
 export class DefaultRumMonitor implements RumMonitor {
   private readonly applicationScope: RumApplicationScope;
   private readonly globalAttributes: Map<string, Object> = new Map<string, Object>();
-  private readonly activeActions: Map<string, number> = new Map<string, number>(); // key → start ms
+  private readonly activeActions: Map<string, ActiveActionRecord> = new Map<string, ActiveActionRecord>();
   private keepAliveTimerId: number = -1;
 
   constructor(core: SdkCore, featureScope: FeatureScope, configuration: RumConfiguration) {
@@ -53,23 +69,61 @@ export class DefaultRumMonitor implements RumMonitor {
 
   /** Begin a timed action; stopAction emits the ActionEvent with the measured duration. */
   startAction(type: RumActionType, name: string, attributes?: Record<string, Object>): void {
-    this.activeActions.set(DefaultRumMonitor.actionKey(type, name), Date.now());
+    if (this.activeActions.size >= MAX_ACTIVE_ACTIONS) {
+      // Evict the oldest abandoned entry (Map preserves insertion order).
+      const oldest: IterableIterator<string> = this.activeActions.keys();
+      const first: IteratorResult<string> = oldest.next();
+      if (!first.done) {
+        this.activeActions.delete(first.value);
+      }
+    }
+    this.activeActions.set(
+      DefaultRumMonitor.actionKey(type, name), new ActiveActionRecord(Date.now(), attributes));
   }
 
   stopAction(type: RumActionType, name: string, attributes?: Record<string, Object>): void {
     const k: string = DefaultRumMonitor.actionKey(type, name);
-    const start: number | undefined = this.activeActions.get(k);
+    const record: ActiveActionRecord | undefined = this.activeActions.get(k);
     let durationNs: number = 0;
-    if (start !== undefined) {
-      durationNs = Math.max(0, Date.now() - start) * MS_TO_NS;
+    let dateMs: number | undefined = undefined;
+    let merged: Record<string, Object> | undefined = attributes;
+    if (record !== undefined) {
+      // Cap the measured duration: a stale entry from an abandoned gesture must
+      // not surface as an hours-long action.
+      const elapsedMs: number = Math.min(
+        Math.max(0, Date.now() - record.startMs), ACTION_MAX_DURATION_MS);
+      durationNs = elapsedMs * MS_TO_NS;
+      dateMs = record.startMs; // the action happened when it STARTED
+      merged = DefaultRumMonitor.mergeAttributes(record.attributes, attributes);
       this.activeActions.delete(k);
     }
-    this.emitAction(type, name, durationNs, attributes);
+    this.emitAction(type, name, durationNs, merged, dateMs);
+  }
+
+  private static mergeAttributes(
+    base?: Record<string, Object>, extra?: Record<string, Object>
+  ): Record<string, Object> | undefined {
+    if (base === undefined) {
+      return extra;
+    }
+    const merged: Record<string, Object> = {};
+    for (const k of Object.keys(base)) {
+      merged[k] = base[k];
+    }
+    if (extra !== undefined) {
+      for (const k of Object.keys(extra)) {
+        merged[k] = extra[k];
+      }
+    }
+    return merged;
   }
 
   private emitAction(type: RumActionType, name: string, durationNs: number,
-    attributes?: Record<string, Object>): void {
+    attributes?: Record<string, Object>, dateMs?: number): void {
     const e: RumRawEvent = this.raw('addAction', attributes);
+    if (dateMs !== undefined) {
+      e.timestampMs = dateMs;
+    }
     e.name = name;
     e.actionType = type as string;
     e.actionId = util.generateRandomUUID(true);
@@ -84,6 +138,16 @@ export class DefaultRumMonitor implements RumMonitor {
   /** Re-emit the active view (keep its time_spent / the session duration current). */
   keepAlive(): void {
     this.applicationScope.handleEvent({ kind: 'keepAlive', attributes: {}, timestampMs: Date.now() });
+  }
+
+  /**
+   * Internal: a terminating crash was persisted for next-launch replay. Bump the
+   * active view's error/crash counts now (only the crashing process can), so the
+   * final view document feeds session_crash_count → crash-free rate. The error
+   * event itself is written by the replay.
+   */
+  markCrash(): void {
+    this.applicationScope.handleEvent({ kind: 'markCrash', attributes: {}, timestampMs: Date.now() });
   }
 
   private startKeepAlive(): void {
@@ -133,12 +197,17 @@ export class DefaultRumMonitor implements RumMonitor {
 
   /** Internal: used by the unhandled-exception hook to flag errors as unhandled. */
   reportError(message: string, source: RumErrorSource, stack: string | undefined,
-    isCrash: boolean, handling: string, attributes?: Record<string, Object>): void {
+    isCrash: boolean, handling: string, attributes?: Record<string, Object>, timestampMs?: number,
+    countInView: boolean = true): void {
     const e: RumRawEvent = this.raw('addError', attributes);
+    if (timestampMs !== undefined) {
+      e.timestampMs = timestampMs;
+    }
     e.errorMessage = message;
     e.errorSource = source as string;
     e.errorStack = stack;
     e.isCrash = isCrash;
+    e.countInView = countInView;
     e.errorHandling = handling;
     this.applicationScope.handleEvent(e);
   }
@@ -151,8 +220,24 @@ export class DefaultRumMonitor implements RumMonitor {
     this.globalAttributes.delete(key);
   }
 
+  getAttributes(): Record<string, Object> {
+    const snapshot: Record<string, Object> = {};
+    this.globalAttributes.forEach((v: Object, k: string) => {
+      snapshot[k] = v;
+    });
+    return snapshot;
+  }
+
+  clearAttributes(): void {
+    this.globalAttributes.clear();
+  }
+
   getCurrentSessionId(callback: (sessionId: string | undefined) => void): void {
     callback(this.applicationScope.getCurrentSessionId());
+  }
+
+  stopSession(): void {
+    this.applicationScope.stopCurrentSession(Date.now());
   }
 
   private raw(kind: string, attributes?: Record<string, Object>): RumRawEvent {

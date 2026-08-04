@@ -1,4 +1,4 @@
-import { FeatureScope, FlashcatContext, EventWriter, SdkCore } from '@flashcatcloud/core';
+import { FeatureScope, FlashcatContext, EventWriter, SdkCore, FlashcatLog } from '@flashcatcloud/core';
 import { util } from '@kit.ArkTS';
 import { RumScope, RumRawEvent } from './RumScope';
 import { RumViewScope } from './RumViewScope';
@@ -7,6 +7,9 @@ import { writeMapped } from '../RumEventMapperHolder';
 
 const SESSION_INACTIVITY_MS: number = 15 * 60 * 1000;     // 15 min
 const SESSION_MAX_DURATION_MS: number = 4 * 60 * 60 * 1000; // 4 h
+// Closed views kept alive until their in-flight resources settle. Bounded so a
+// leak of never-settling requests can't pin unbounded view scopes.
+const MAX_DRAINING_VIEWS: number = 3;
 
 /**
  * One user session. Owns the current view scope, applies the sampling decision,
@@ -20,7 +23,25 @@ export class RumSessionScope implements RumScope {
   private readonly sampled: boolean;
   private readonly startedAtMs: number;
   private lastActivityMs: number;
+  private lastKeepAliveMs: number = 0;
   private activeView: RumViewScope | null = null;
+  // Last view this session started, so the parent can restart it in the
+  // replacement session after expiry (Android/iOS parity). Without this, a
+  // session renewed after the 15-min inactivity gap has no view at all: actions
+  // and resources are silently dropped, errors go out viewless, and the backend
+  // — which materializes session rows exclusively from view events — never
+  // creates the session, so its duration reads as 0/missing.
+  private lastViewKey: string | null = null;
+  private lastViewName: string = '';
+  private lastViewAttributes: Record<string, Object> = {};
+  // Most recently closed view (regardless of pending resources): a crash landing
+  // in the gap between stopView and the next startView is counted on it, so the
+  // crash still reaches session_crash_count (derived from view docs only).
+  private lastStoppedView: RumViewScope | null = null;
+  // Closed/superseded views still owning in-flight resources — late responses
+  // are routed here so the slow and failing requests (exactly the ones that
+  // outlive a navigation) are not systematically lost.
+  private readonly drainingViews: RumViewScope[] = [];
 
   constructor(
     featureScope: FeatureScope,
@@ -44,33 +65,67 @@ export class RumSessionScope implements RumScope {
 
   handleEvent(event: RumRawEvent): RumScope | null {
     if (this.isExpired(event.timestampMs)) {
-      // Close the open view before discarding the session, so its final state is sent.
+      // Close the open view before discarding the session, so its final state is
+      // sent. Close it at the last observed-alive time, NOT at the detecting
+      // event's time: after a background gap the detecting event can be hours
+      // later, and stamping it would credit the whole idle gap to the view
+      // (a 5-min visit reads as 4 h of time_spent).
       if (this.activeView !== null) {
-        this.activeView.forceStop(event.timestampMs);
+        const closeAtMs: number = Math.max(this.lastActivityMs, this.lastKeepAliveMs);
+        // A crash that itself detects the expiry belongs to THIS session (the
+        // incident snapshot already carries this session/view id): count it in
+        // the final document, not in a phantom replacement session.
+        if (event.kind === 'markCrash') {
+          this.activeView.countCrash();
+        }
+        this.activeView.forceStop(closeAtMs);
+        this.retireView(this.activeView); // keep in-flight resources drainable
         this.activeView = null;
+      } else if (event.kind === 'markCrash' && this.lastStoppedView !== null) {
+        // Crash in a view gap AND past expiry (backgrounded crash after a
+        // page-hide stopView is the common path): count it on the last closed
+        // view so it still reaches session_crash_count.
+        this.lastStoppedView.handleEvent(event);
       }
+      // Un-publish the session identity so a crash in the gap before the next
+      // session isn't attributed to this dead one (the context is merge-only).
+      const cleared: Record<string, Object> = {};
+      cleared['session.id'] = '';
+      this.core.updateFeatureContext('rum', cleared);
       return null; // parent starts a fresh session and replays the event
     }
 
     // Keep-alive only refreshes the active view's time_spent; it must NOT count as
     // activity (else inactivity expiry never fires) and must not start a view.
     if (event.kind === 'keepAlive') {
+      this.lastKeepAliveMs = event.timestampMs;
       if (this.sampled && this.activeView !== null) {
         this.activeView.handleEvent(event);
       }
       return this;
     }
 
-    this.lastActivityMs = event.timestampMs;
-
-    if (!this.sampled) {
-      return this; // session dropped — track lifecycle but emit nothing
-    }
+    // Monotonic: a backdated event (e.g. a timed action stamped at its START
+    // time) must never move last-activity backwards — that would make the very
+    // next event read as a >15-min gap and force-expire a healthy session.
+    this.lastActivityMs = Math.max(this.lastActivityMs, event.timestampMs);
 
     if (event.kind === 'startView') {
+      // View BOOKKEEPING runs regardless of sampling: an unsampled session must
+      // still remember its last view, or one unsampled session in the middle of
+      // a chain permanently breaks view restoration for every (sampled) session
+      // after it — errors go out viewless and the backend never materializes
+      // those sessions. The sampling gate applies to WRITES, not bookkeeping.
+      this.lastViewKey = event.key ?? '';
+      this.lastViewName = event.name ?? '';
+      this.lastViewAttributes = event.attributes;
+      if (!this.sampled) {
+        return this;
+      }
       // A new view supersedes the current one — stop the old view first.
       if (this.activeView !== null) {
         this.activeView.forceStop(event.timestampMs);
+        this.retireView(this.activeView);
       }
       const viewId: string = util.generateRandomUUID(true);
       this.activeView = new RumViewScope(
@@ -79,19 +134,136 @@ export class RumSessionScope implements RumScope {
       return this;
     }
 
+    if (!this.sampled) {
+      return this; // session dropped — track lifecycle but emit nothing
+    }
+
+    // Late resource completions may belong to an already-closed view held in
+    // the draining set — route by ownership, not blindly to the active view.
+    if (event.kind === 'stopResource' || event.kind === 'stopResourceWithError') {
+      const resourceKey: string = event.key ?? '';
+      if (this.activeView !== null && this.activeView.hasPendingResource(resourceKey)) {
+        this.activeView.handleEvent(event);
+      } else {
+        this.dispatchToDrainingViews(event, resourceKey);
+      }
+      return this;
+    }
+
     if (this.activeView !== null) {
       const result: RumScope | null = this.activeView.handleEvent(event);
       if (result === null) {
+        this.retireView(this.activeView);
         this.activeView = null;
+      }
+    } else if (event.kind === 'markCrash') {
+      // Crash in the gap between stopView and the next startView: count it on
+      // the most recently closed view (an extra document version with frozen
+      // time_spent) — otherwise the crash reaches the error list but never
+      // session_crash_count, which the backend derives from view docs only.
+      if (this.lastStoppedView !== null) {
+        this.lastStoppedView.handleEvent(event);
+      } else {
+        FlashcatLog.d('rum.session: markCrash with no view — crash not counted in any view document');
       }
     } else if (event.kind === 'addError') {
       this.writeViewlessError(event); // error before any view started
+    } else if (event.kind === 'addAction' || event.kind === 'startResource') {
+      // Surfaced so integrators can see why their data is missing — previously
+      // these were dropped with no trace at any log level.
+      FlashcatLog.d(`rum.session: dropped viewless ${event.kind} — no active view (missing startView?)`);
     }
     return this;
   }
 
+  /** Keep a closed view alive (bounded) while it still owns in-flight resources,
+   *  and remember it as the most recently closed view for crash counting. */
+  private retireView(view: RumViewScope): void {
+    this.lastStoppedView = view;
+    if (!view.hasPendingResources()) {
+      return;
+    }
+    this.drainingViews.push(view);
+    while (this.drainingViews.length > MAX_DRAINING_VIEWS) {
+      this.drainingViews.shift();
+    }
+  }
+
+  private dispatchToDrainingViews(event: RumRawEvent, resourceKey: string): void {
+    for (let i: number = 0; i < this.drainingViews.length; i++) {
+      const view: RumViewScope = this.drainingViews[i];
+      if (view.hasPendingResource(resourceKey)) {
+        view.handleEvent(event);
+        if (!view.hasPendingResources()) {
+          this.drainingViews.splice(i, 1); // fully drained — release the scope
+        }
+        return;
+      }
+    }
+    FlashcatLog.d('rum.session: dropped resource completion for unknown key');
+  }
+
+  /**
+   * Explicit end (RumMonitor.stopSession, e.g. logout): close the active view
+   * at the caller's timestamp (a real user action, unlike lazy expiry) and
+   * un-publish the session identity.
+   */
+  end(nowMs: number): void {
+    if (this.activeView !== null) {
+      this.activeView.forceStop(nowMs);
+      this.retireView(this.activeView); // keep in-flight resources drainable
+      this.activeView = null;
+    }
+    const cleared: Record<string, Object> = {};
+    cleared['session.id'] = '';
+    this.core.updateFeatureContext('rum', cleared);
+  }
+
+  /** True when a view of this (possibly ended) session still owns `key`. */
+  ownsResource(key: string): boolean {
+    if (this.activeView !== null && this.activeView.hasPendingResource(key)) {
+      return true;
+    }
+    for (const view of this.drainingViews) {
+      if (view.hasPendingResource(key)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /** Settle a late resource completion WITHOUT activity/expiry side effects —
+   * used by the parent to drain an already-ended session's in-flight requests. */
+  settleResource(event: RumRawEvent): void {
+    const key: string = event.key ?? '';
+    if (this.activeView !== null && this.activeView.hasPendingResource(key)) {
+      this.activeView.handleEvent(event);
+      return;
+    }
+    this.dispatchToDrainingViews(event, key);
+  }
+
+  hasUnsettledResources(): boolean {
+    if (this.activeView !== null && this.activeView.hasPendingResources()) {
+      return true;
+    }
+    return this.drainingViews.length > 0;
+  }
+
   getSessionId(): string {
     return this.sessionId;
+  }
+
+  getLastViewKey(): string | null {
+    return this.lastViewKey;
+  }
+
+  getLastViewName(): string {
+    return this.lastViewName;
+  }
+
+  getLastViewAttributes(): Record<string, Object> {
+    return this.lastViewAttributes;
   }
 
   isSampled(): boolean {

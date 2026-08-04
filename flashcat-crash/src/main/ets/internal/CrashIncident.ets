@@ -1,0 +1,562 @@
+import { JsCrashPolicy } from '../CrashConfiguration';
+
+const FNV_OFFSET_BASIS: number = 2166136261;
+const FNV_PRIME: number = 16777619;
+const MAX_STACK_CHARS: number = 16000;
+
+/** Parsed exception fields shared by live callbacks and hiAppEvent replay. */
+export class CrashExceptionParts {
+  readonly name: string;
+  readonly message: string;
+  readonly stack: string;
+
+  constructor(name: string, message: string, stack: string) {
+    this.name = name;
+    this.message = message;
+    this.stack = stack;
+  }
+}
+
+/** Pure normalized fingerprint logic; intentionally has no device dependencies. */
+export class CrashFingerprint {
+  static fromText(text: string): string {
+    const parts: CrashExceptionParts = CrashFingerprint.partsFromText(text);
+    return CrashFingerprint.fromParts(parts.name, parts.message, parts.stack);
+  }
+
+  static fromParts(name: string, message: string, stack: string): string {
+    const normalizedName: string = name.trim().toLowerCase();
+    const normalizedMessage: string = message.trim();
+    const frame: string = CrashFingerprint.normalizeFrame(CrashFingerprint.firstFrame(stack));
+    return CrashFingerprint.fnv1a(`${normalizedName}\n${normalizedMessage}\n${frame}`);
+  }
+
+  /**
+   * Strips the errorManager label lines ("Error name:", "Error message:",
+   * "Stacktrace:") and the sourcemap banner from a callback text, leaving the
+   * frames. The labels are an OS callback FORMAT, not stack content — sending
+   * them as `error.stack` made the backend parse "Error name:Error" as the
+   * exception header, mis-titling issues and polluting the stack view.
+   */
+  static framesOnly(text: string): string {
+    const kept: string[] = [];
+    for (const line of text.split('\n')) {
+      const trimmed: string = line.trim();
+      if (trimmed.startsWith('Error name:') || trimmed.startsWith('Error message:')
+        || trimmed === 'Stacktrace:' || trimmed.startsWith('Cannot get SourceMap info')) {
+        continue;
+      }
+      kept.push(line);
+    }
+    // Drop leading blank lines left by the removals.
+    while (kept.length > 0 && kept[0].trim().length === 0) {
+      kept.shift();
+    }
+    return kept.join('\n');
+  }
+
+  static partsFromText(text: string): CrashExceptionParts {
+    const stack: string = CrashFingerprint.framesOnly(
+      CrashFingerprint.truncate(text, MAX_STACK_CHARS));
+    const lines: string[] = text.split('\n');
+    // errorManager.on('error') callback text uses a labeled three-part format
+    // ("Error name:<n>\nError message:<m>\nStacktrace:\n..."). Parse it
+    // field-wise so the live fingerprint matches the hiAppEvent fault, whose
+    // exception name/message arrive already separated. Falling through to the
+    // header heuristic here made the two sides disagree ("Error name:Error"
+    // became the message) and broke cross-launch deduplication.
+    if (lines.length >= 2 && lines[0].startsWith('Error name:') && lines[1].startsWith('Error message:')) {
+      // Non-Error throws (throw 'x' / throw {}) come through with an empty name;
+      // default it like the generic branch does — an empty exception_name makes
+      // CrashIncidentRecord.parse reject the record at replay ("corrupted").
+      const labeledName: string = lines[0].substring('Error name:'.length).trim();
+      return new CrashExceptionParts(
+        labeledName.length > 0 ? labeledName : 'Error',
+        lines[1].substring('Error message:'.length).trim(),
+        stack);
+    }
+    // Header = first line that is neither the runtime's "Cannot get SourceMap
+    // info" banner (substituted when sourcemap translation fails — never a
+    // message) nor a stack frame.
+    let header: string = '';
+    for (let i: number = 0; i < lines.length; i++) {
+      const line: string = lines[i].trim();
+      if (line.length === 0 || line.startsWith('Cannot get SourceMap info')) {
+        continue;
+      }
+      if (line.startsWith('at ') || line.startsWith('#')) {
+        break;
+      }
+      header = line;
+      break;
+    }
+    const separator: number = header.indexOf(':');
+    if (separator > 0) {
+      const candidate: string = header.substring(0, separator).trim();
+      if (candidate.endsWith('Error') || candidate.endsWith('Exception')) {
+        return new CrashExceptionParts(
+          candidate,
+          header.substring(separator + 1).trim(),
+          stack);
+      }
+    }
+    return new CrashExceptionParts('Error', header, stack);
+  }
+
+  private static firstFrame(stack: string): string {
+    const lines: string[] = stack.split('\n');
+    for (let i: number = 0; i < lines.length; i++) {
+      const line: string = lines[i].trim();
+      if (line.startsWith('at ') || line.startsWith('#')) {
+        return line;
+      }
+    }
+    return lines.length > 1 ? lines[1].trim() : '';
+  }
+
+  private static normalizeFrame(frame: string): string {
+    const value: string = frame.trim();
+    const open: number = value.indexOf('(');
+    const close: number = value.lastIndexOf(')');
+    if (open >= 0 && close > open) {
+      const prefix: string = value.substring(0, open + 1);
+      const path: string = CrashFingerprint.normalizePath(value.substring(open + 1, close));
+      return `${prefix}${path})`;
+    }
+    const space: number = value.lastIndexOf(' ');
+    if (space >= 0) {
+      const token: string = value.substring(space + 1);
+      return `${value.substring(0, space + 1)}${CrashFingerprint.normalizePath(token)}`;
+    }
+    return CrashFingerprint.normalizePath(value);
+  }
+
+  private static normalizePath(value: string): string {
+    let path: string = CrashFingerprint.stripLocation(value);
+    if (path.startsWith('/')) {
+      const slash: number = path.lastIndexOf('/');
+      if (slash >= 0) {
+        path = path.substring(slash + 1);
+      }
+    }
+    return path;
+  }
+
+  private static stripLocation(value: string): string {
+    let result: string = value;
+    for (let i: number = 0; i < 2; i++) {
+      const colon: number = result.lastIndexOf(':');
+      if (colon < 0 || !CrashFingerprint.isDigits(result.substring(colon + 1))) {
+        break;
+      }
+      result = result.substring(0, colon);
+    }
+    return result;
+  }
+
+  private static isDigits(value: string): boolean {
+    if (value.length === 0) {
+      return false;
+    }
+    for (let i: number = 0; i < value.length; i++) {
+      const code: number = value.charCodeAt(i);
+      if (code < 48 || code > 57) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  private static fnv1a(value: string): string {
+    let hash: number = FNV_OFFSET_BASIS;
+    for (let i: number = 0; i < value.length; i++) {
+      hash = Math.imul(hash ^ value.charCodeAt(i), FNV_PRIME) >>> 0;
+    }
+    return hash.toString(16).padStart(8, '0');
+  }
+
+  private static truncate(value: string, max: number): string {
+    return value.length <= max ? value : value.substring(0, max);
+  }
+}
+
+/** The most recent live JS incident, used to collapse the two platform callbacks. */
+export class LiveCrashIncidentGuard {
+  private readonly windowMs: number;
+  private fingerprint: string = '';
+  private timestampMs: number = 0;
+
+  constructor(windowMs: number) {
+    this.windowMs = windowMs;
+  }
+
+  remember(fingerprint: string, timestampMs: number): void {
+    this.fingerprint = fingerprint;
+    this.timestampMs = timestampMs;
+  }
+
+  isDuplicate(fingerprint: string, timestampMs: number): boolean {
+    const elapsed: number = timestampMs - this.timestampMs;
+    return this.fingerprint.length > 0 && this.fingerprint === fingerprint &&
+      elapsed >= 0 && elapsed <= this.windowMs;
+  }
+}
+
+/** Result of evaluating one recoverable crash against persisted loop history. */
+export class CrashLoopDecision {
+  readonly allowRestart: boolean;
+  readonly updatedTimestamps: number[];
+
+  constructor(allowRestart: boolean, updatedTimestamps: number[]) {
+    this.allowRestart = allowRestart;
+    this.updatedTimestamps = updatedTimestamps;
+  }
+}
+
+/** Pure crash-loop decision and sidecar serialization helpers. */
+export class CrashLoopGuard {
+  static decide(
+    nowMs: number,
+    persistedTimestamps: number[],
+    threshold: number,
+    windowMs: number,
+    cooldownMs: number
+  ): CrashLoopDecision {
+    const safeThreshold: number = threshold < 1 ? 1 : threshold;
+    const safeWindowMs: number = windowMs < 1 ? 1 : windowMs;
+    const safeCooldownMs: number = cooldownMs < 1 ? 1 : cooldownMs;
+    const valid: number[] = [];
+    let newestTimestamp: number = 0;
+    // Discard timestamps from the future (clock set ahead, then corrected):
+    // a future newestTimestamp makes `nowMs - newestTimestamp` negative forever,
+    // so cooldown never fires and the guard stays tripped for the install's life.
+    const futureCutoffMs: number = nowMs + 60 * 1000;
+    for (let i: number = 0; i < persistedTimestamps.length; i++) {
+      const timestamp: number = persistedTimestamps[i];
+      if (timestamp > 0 && timestamp <= futureCutoffMs) {
+        valid.push(timestamp);
+        if (timestamp > newestTimestamp) {
+          newestTimestamp = timestamp;
+        }
+      }
+    }
+
+    const cooledDown: boolean =
+      newestTimestamp > 0 && nowMs - newestTimestamp >= safeCooldownMs;
+    const source: number[] = cooledDown ? [] : valid;
+    const previouslyTripped: boolean = source.length >= safeThreshold;
+    if (previouslyTripped) {
+      // Preserve a bounded threshold-sized history as the persisted tripped
+      // state. Each blocked crash becomes the newest timestamp, so recovery
+      // remains disabled until the app has stayed crash-free for the cooldown.
+      const blocked: number[] = [];
+      let start: number = source.length - safeThreshold + 1;
+      if (start < 0) {
+        start = 0;
+      }
+      for (let i: number = start; i < source.length; i++) {
+        blocked.push(source[i]);
+      }
+      blocked.push(nowMs);
+      return new CrashLoopDecision(false, blocked);
+    }
+
+    const cutoffMs: number = nowMs - safeWindowMs;
+    const updated: number[] = [];
+    for (let i: number = 0; i < source.length; i++) {
+      if (source[i] >= cutoffMs) {
+        updated.push(source[i]);
+      }
+    }
+    updated.push(nowMs);
+    return new CrashLoopDecision(updated.length < safeThreshold, updated);
+  }
+
+  static serializeHistory(timestamps: number[]): string {
+    return JSON.stringify(timestamps);
+  }
+
+  static parseHistory(serialized: string): number[] {
+    const timestamps: number[] = [];
+    if (serialized.length === 0) {
+      return timestamps;
+    }
+    try {
+      const value: Object = JSON.parse(serialized) as Object;
+      if (!Array.isArray(value)) {
+        return timestamps;
+      }
+      const items: Array<Object> = value as Array<Object>;
+      for (let i: number = 0; i < items.length; i++) {
+        const item: Object = items[i];
+        if (typeof item === 'number' && item > 0) {
+          timestamps.push(item);
+        }
+      }
+    } catch (_error) {
+      return [];
+    }
+    return timestamps;
+  }
+}
+
+/** Small persisted metadata entry for a pending incident already replayed to RUM. */
+export class ConsumedCrashIncident {
+  readonly incidentId: string;
+  readonly fingerprint: string;
+  /** The CRASH (fault) time — what watcher-event timestamps are matched against. */
+  readonly timestampMs: number;
+  /** When the incident was consumed (reported). Retention is keyed on THIS —
+   * keying it on the fault time deleted the entry the instant it was created
+   * for any relaunch >24 h after the crash, guaranteeing a watcher double-report. */
+  readonly consumedAtMs: number;
+
+  constructor(incidentId: string, fingerprint: string, timestampMs: number, consumedAtMs: number = 0) {
+    this.incidentId = incidentId;
+    this.fingerprint = fingerprint;
+    this.timestampMs = timestampMs;
+    this.consumedAtMs = consumedAtMs > 0 ? consumedAtMs : timestampMs;
+  }
+
+  toRecord(): Record<string, Object> {
+    return {
+      'incident_id': this.incidentId,
+      'fingerprint': this.fingerprint,
+      'timestamp_ms': this.timestampMs,
+      'consumed_at_ms': this.consumedAtMs
+    };
+  }
+}
+
+/** Pure cross-launch window matching and retention helpers. */
+export class CrashDeduplication {
+  static serializeConsumed(consumed: ConsumedCrashIncident[]): string {
+    const records: Array<Record<string, Object>> = [];
+    for (let i: number = 0; i < consumed.length; i++) {
+      records.push(consumed[i].toRecord());
+    }
+    return JSON.stringify(records);
+  }
+
+  static parseConsumed(serialized: string): ConsumedCrashIncident[] {
+    const consumed: ConsumedCrashIncident[] = [];
+    try {
+      const value: Object = JSON.parse(serialized) as Object;
+      if (!Array.isArray(value)) {
+        return consumed;
+      }
+      const items: Array<Object> = value as Array<Object>;
+      for (let i: number = 0; i < items.length; i++) {
+        const item: Object = items[i];
+        if (typeof item !== 'object' || item === null || Array.isArray(item)) {
+          continue;
+        }
+        const record: Record<string, Object> = item as Record<string, Object>;
+        const incidentId: string = CrashDeduplication.stringValue(record['incident_id']);
+        const fingerprint: string = CrashDeduplication.stringValue(record['fingerprint']);
+        const timestampMs: number = CrashDeduplication.numberValue(record['timestamp_ms']);
+        // Legacy records have no consumed_at_ms — the constructor falls back to
+        // the fault time, preserving the old (conservative) retention for them.
+        const consumedAtMs: number = CrashDeduplication.numberValue(record['consumed_at_ms']);
+        if (incidentId.length > 0 && fingerprint.length > 0 && timestampMs > 0) {
+          consumed.push(new ConsumedCrashIncident(incidentId, fingerprint, timestampMs, consumedAtMs));
+        }
+      }
+    } catch (_error) {
+      return [];
+    }
+    return consumed;
+  }
+
+  static matchesConsumed(
+    fingerprint: string,
+    eventTimestampMs: number,
+    consumed: ConsumedCrashIncident[],
+    windowMs: number
+  ): boolean {
+    for (let i: number = 0; i < consumed.length; i++) {
+      const incident: ConsumedCrashIncident = consumed[i];
+      if (incident.fingerprint === fingerprint &&
+        Math.abs(eventTimestampMs - incident.timestampMs) <= windowMs) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /** Fingerprint-only match — used when the fault payload carries no usable
+   * timestamp (unknown ROM param name), where the time-window check would fail
+   * open and double-report every crash relaunched >30 s later. */
+  static matchesConsumedFingerprint(fingerprint: string, consumed: ConsumedCrashIncident[]): boolean {
+    for (let i: number = 0; i < consumed.length; i++) {
+      if (consumed[i].fingerprint === fingerprint) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /** True when this exact incident id has already been replayed. */
+  static containsIncident(incidentId: string, consumed: ConsumedCrashIncident[]): boolean {
+    for (let i: number = 0; i < consumed.length; i++) {
+      if (consumed[i].incidentId === incidentId) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  static retainRecent(
+    consumed: ConsumedCrashIncident[],
+    nowMs: number,
+    retentionMs: number
+  ): ConsumedCrashIncident[] {
+    const recent: ConsumedCrashIncident[] = [];
+    for (let i: number = 0; i < consumed.length; i++) {
+      const incident: ConsumedCrashIncident = consumed[i];
+      // Keyed on when the incident was CONSUMED, not when the crash happened:
+      // the watcher copy of an old crash arrives after the relaunch, so the
+      // entry must survive relative to now, not relative to the fault time.
+      if (nowMs - incident.consumedAtMs <= retentionMs) {
+        recent.push(incident);
+      }
+    }
+    return recent;
+  }
+
+  private static stringValue(value: Object | undefined): string {
+    return typeof value === 'string' ? value : '';
+  }
+
+  private static numberValue(value: Object | undefined): number {
+    return typeof value === 'number' ? value : 0;
+  }
+}
+
+/** Dedicated durable record written before policy-driven process termination. */
+export class CrashIncidentRecord {
+  readonly incidentId: string;
+  readonly timestampMs: number;
+  readonly exceptionName: string;
+  readonly message: string;
+  readonly stack: string;
+  readonly fingerprint: string;
+  readonly policy: JsCrashPolicy;
+  readonly sdkVersion: string;
+  readonly sessionId: string;
+  readonly viewId: string;
+  readonly viewName: string;
+  readonly viewUrl: string;
+  /** False when the crashed run's session was sampled OUT. Sampling must apply
+   * uniformly: replaying an unsampled-origin crash into whatever session exists
+   * at replay time inflated that session's crash count and skewed crash-free
+   * rate by ~1/sampleRate. Legacy records without the field parse as true. */
+  readonly originSampled: boolean;
+
+  constructor(
+    incidentId: string,
+    timestampMs: number,
+    exceptionName: string,
+    message: string,
+    stack: string,
+    fingerprint: string,
+    policy: JsCrashPolicy,
+    sdkVersion: string,
+    sessionId: string,
+    viewId: string,
+    viewName: string,
+    viewUrl: string = '',
+    originSampled: boolean = true
+  ) {
+    this.incidentId = incidentId;
+    this.timestampMs = timestampMs;
+    this.exceptionName = exceptionName;
+    this.message = message;
+    this.stack = CrashFingerprint.partsFromText(stack).stack;
+    this.fingerprint = fingerprint;
+    this.policy = policy;
+    this.sdkVersion = sdkVersion;
+    this.sessionId = sessionId;
+    this.viewId = viewId;
+    this.viewName = viewName;
+    this.viewUrl = viewUrl;
+    this.originSampled = originSampled;
+  }
+
+  serialize(): string {
+    const record: Record<string, Object> = {
+      'incident_id': this.incidentId,
+      'timestamp_ms': this.timestampMs,
+      'exception_name': this.exceptionName,
+      'message': this.message,
+      'stack': this.stack,
+      'fingerprint': this.fingerprint,
+      'policy': this.policy as string,
+      'sdk_version': this.sdkVersion,
+      'session_id': this.sessionId,
+      'view_id': this.viewId,
+      'view_name': this.viewName,
+      'view_url': this.viewUrl,
+      'origin_sampled': this.originSampled
+    };
+    return JSON.stringify(record);
+  }
+
+  static parse(serialized: string): CrashIncidentRecord | null {
+    try {
+      const value: Object = JSON.parse(serialized) as Object;
+      if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+        return null;
+      }
+      const record: Record<string, Object> = value as Record<string, Object>;
+      const incidentId: string = CrashIncidentRecord.stringValue(record['incident_id']);
+      const timestampMs: number = CrashIncidentRecord.numberValue(record['timestamp_ms']);
+      const exceptionName: string = CrashIncidentRecord.stringValue(record['exception_name']);
+      const message: string = CrashIncidentRecord.stringValue(record['message']);
+      const stack: string = CrashIncidentRecord.stringValue(record['stack']);
+      const fingerprint: string = CrashIncidentRecord.stringValue(record['fingerprint']);
+      const policy: JsCrashPolicy | null = CrashIncidentRecord.policyValue(record['policy']);
+      if (incidentId.length === 0 || timestampMs <= 0 || exceptionName.length === 0 ||
+        fingerprint.length === 0 || policy === null) {
+        return null;
+      }
+      return new CrashIncidentRecord(
+        incidentId,
+        timestampMs,
+        exceptionName,
+        message,
+        stack,
+        fingerprint,
+        policy,
+        CrashIncidentRecord.stringValue(record['sdk_version']),
+        CrashIncidentRecord.stringValue(record['session_id']),
+        CrashIncidentRecord.stringValue(record['view_id']),
+        CrashIncidentRecord.stringValue(record['view_name']),
+        CrashIncidentRecord.stringValue(record['view_url']),
+        record['origin_sampled'] !== false);
+    } catch (_error) {
+      return null;
+    }
+  }
+
+  private static policyValue(value: Object | undefined): JsCrashPolicy | null {
+    if (value === JsCrashPolicy.REPORT_THEN_EXIT) {
+      return JsCrashPolicy.REPORT_THEN_EXIT;
+    }
+    if (value === JsCrashPolicy.REPORT_AND_RECOVER) {
+      return JsCrashPolicy.REPORT_AND_RECOVER;
+    }
+    if (value === JsCrashPolicy.OBSERVE_ONLY) {
+      return JsCrashPolicy.OBSERVE_ONLY;
+    }
+    return null;
+  }
+
+  private static stringValue(value: Object | undefined): string {
+    return typeof value === 'string' ? value : '';
+  }
+
+  private static numberValue(value: Object | undefined): number {
+    return typeof value === 'number' ? value : 0;
+  }
+}

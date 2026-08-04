@@ -88,7 +88,9 @@ export class ConfigurationBuilder {
   }
 
   setBatchUploadFrequencyMs(frequencyMs: number): ConfigurationBuilder {
-    this.batchUploadFrequencyMs = frequencyMs;
+    // Floor at 1 s: 0 or a negative value would turn the upload scheduler's
+    // idle tick into a setTimeout(0) hot loop (CPU/battery burn, no benefit).
+    this.batchUploadFrequencyMs = Math.max(1000, frequencyMs);
     return this;
   }
 

@@ -13,7 +13,7 @@ export type NavContext = common.UIAbilityContext | UIContext;
  * start/stopView calls — so apps using `router` navigation get a correct view
  * tree without any manual `startView`/`stopView`.
  *
- * Mapping (see docs/PHASE-2-PLAN.md A1):
+ * Mapping:
  * - `ON_PAGE_SHOW`  → startView (page becomes visible)
  * - `ON_PAGE_HIDE`  → stopView  (page hidden — closes its time_spent)
  * - key  = stable `pageId` (falls back to `path`); name = `name` (falls back to
@@ -27,21 +27,25 @@ export type NavContext = common.UIAbilityContext | UIContext;
  * later refinement — `router` covers the broadest set of apps first (OQ-2).
  */
 export class RumNavigationTracker {
-  private static callback: ((info: uiObserver.RouterPageInfo) => void) | null = null;
-  private static boundContext: NavContext | null = null;
+  // `uiObserver.on('routerPageUpdate', context, cb)` is scoped PER context.
+  // Keyed per context (not a single static): a multi-UIAbility app attaches
+  // once per ability, and a global single-attach guard silently disabled
+  // navigation tracking for every context but the first.
+  private static readonly attached: Map<NavContext, (info: uiObserver.RouterPageInfo) => void> =
+    new Map<NavContext, (info: uiObserver.RouterPageInfo) => void>();
 
   /**
    * Attach the router observer scoped to `context` (a UIAbilityContext or a
-   * UIContext obtained in UI land). Call once after RUM is enabled.
+   * UIContext obtained in UI land). Call once per context after RUM is enabled.
    */
   static attach(context: NavContext): void {
     if (!RumAutoInstrumentation.isNavigationTrackingEnabled()) {
       FlashcatLog.d('rum.nav: trackNavigation disabled — observer not attached');
       return;
     }
-    if (RumNavigationTracker.callback !== null) {
-      FlashcatLog.d('rum.nav: observer already attached — ignoring');
-      return; // idempotent
+    if (RumNavigationTracker.attached.has(context)) {
+      FlashcatLog.d('rum.nav: observer already attached to this context — ignoring');
+      return; // idempotent per context
     }
     const cb = (info: uiObserver.RouterPageInfo): void => {
       try {
@@ -52,27 +56,38 @@ export class RumNavigationTracker {
     };
     try {
       uiObserver.on('routerPageUpdate', context, cb);
-      RumNavigationTracker.callback = cb;
-      RumNavigationTracker.boundContext = context;
-      FlashcatLog.d('rum.nav: routerPageUpdate observer attached');
+      RumNavigationTracker.attached.set(context, cb);
+      FlashcatLog.d(`rum.nav: routerPageUpdate observer attached (contexts=${RumNavigationTracker.attached.size})`);
     } catch (e) {
       FlashcatLog.e(`rum.nav: observer attach failed: ${e instanceof Error ? e.message : `${e}`}`);
     }
   }
 
-  /** Detach the observer. Called on SDK stop so it doesn't leak across re-enable. */
+  /** Detach all observers. Called on SDK stop so they don't leak across re-enable. */
   static detach(): void {
-    const cb: ((info: uiObserver.RouterPageInfo) => void) | null = RumNavigationTracker.callback;
-    const ctx: NavContext | null = RumNavigationTracker.boundContext;
-    if (cb !== null && ctx !== null) {
+    RumNavigationTracker.attached.forEach(
+      (cb: (info: uiObserver.RouterPageInfo) => void, ctx: NavContext) => {
+        try {
+          uiObserver.off('routerPageUpdate', ctx, cb);
+        } catch (_e) {
+          // already removed / context torn down
+        }
+      });
+    RumNavigationTracker.attached.clear();
+  }
+
+  /** Detach the observer bound to one context (e.g. before that ability is destroyed). */
+  static detachContext(context: NavContext): void {
+    const cb: ((info: uiObserver.RouterPageInfo) => void) | undefined =
+      RumNavigationTracker.attached.get(context);
+    if (cb !== undefined) {
       try {
-        uiObserver.off('routerPageUpdate', ctx, cb);
+        uiObserver.off('routerPageUpdate', context, cb);
       } catch (_e) {
         // already removed / context torn down
       }
+      RumNavigationTracker.attached.delete(context);
     }
-    RumNavigationTracker.callback = null;
-    RumNavigationTracker.boundContext = null;
   }
 
   /** Pure: translate a router page update into a start/stopView. */

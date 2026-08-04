@@ -5,4 +5,4 @@
  * Keep this in sync with the `version` field of each module's
  * `oh-package.json5` on every release bump.
  */
-export const SDK_VERSION: string = '0.1.3';
+export const SDK_VERSION: string = '0.3.2';

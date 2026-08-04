@@ -54,8 +54,8 @@ FLASHCAT_UPLOAD=1 FLASHCAT_API_KEY=*** \
   hvigorw uploadFlashcatSymbols --mode module -p module=entry@default -p product=default
 ```
 
-The task is registered with `postDependencies: ['assembleHap','assembleHar']`, so
-the sourcemap + native libs exist when it runs. A missing artifact or upload
+The task is registered with `dependencies: ['assembleHap','assembleHar']` (it runs
+after the assemble tasks), so the sourcemap + native libs exist when it runs. A missing artifact or upload
 failure is logged but never fails the build.
 
 ## Programmatic / CI use

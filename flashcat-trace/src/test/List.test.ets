@@ -41,6 +41,18 @@ export default function testsuite(): void {
         .assertEqual('dd=s:1;o:rum,foo=bar,baz=qux');
     });
 
+    // ---- _dd.span_id decimal encoding (Datadog convention; intake parses base-10) ----
+    it('convertsHexSpanIdToUnsignedDecimal', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+      expect(TraceContext.hexToUnsignedDecimalString('0')).assertEqual('0');
+      expect(TraceContext.hexToUnsignedDecimalString('ff')).assertEqual('255');
+      expect(TraceContext.hexToUnsignedDecimalString('00000000000000ff')).assertEqual('255');
+      // 64-bit value above Number's 53-bit precision — must round-trip exactly.
+      expect(TraceContext.hexToUnsignedDecimalString('ffffffffffffffff')).assertEqual('18446744073709551615');
+      expect(TraceContext.hexToUnsignedDecimalString('a3f2b1c4d5e6f708')).assertEqual('11813700231506622216');
+      expect(TraceContext.hexToUnsignedDecimalString('not-hex')).assertEqual('');
+      expect(TraceContext.hexToUnsignedDecimalString('')).assertEqual('');
+    });
+
     it('traceInjectionSkipsExistingTraceparent', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
       const headers: Record<string, Object> = {};
       headers['TraceParent'] = 'custom';

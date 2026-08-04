@@ -3,6 +3,17 @@
 # API calls aren't mangled. The SDK's own internals may still be obfuscated.
 -keep-global-name
   Flashcat
+  ConfigurationBuilder
+  TrackingConsent
+  FlashcatSite
 -keep-property-name
   initialize
+  initializeForDeferredUpload
   getInstance
+  isInitialized
+  setTrackingConsent
+  setUserInfo
+  clearUserInfo
+  flush
+  flushAndWait
+  stopInstance

@@ -1,4 +1,6 @@
 import { RumErrorSource } from './RumErrorSourceLite';
+import { CrashIncidentRecord } from './CrashIncident';
+import { JsCrashPolicy } from '../CrashConfiguration';
 
 /**
  * Pure translation of a hiAppEvent system-event payload (the `params` object of an
@@ -39,6 +41,29 @@ export class CrashEventMapper {
     return CrashEventMapper.build(params, 'freeze');
   }
 
+  static fromPendingIncident(incident: CrashIncidentRecord): Record<string, Object> {
+    const exception: Record<string, Object> = {
+      'name': incident.exceptionName,
+      'message': incident.message,
+      'stack': incident.stack
+    };
+    const event: Record<string, Object> = CrashEventMapper.fromAppCrash({
+      'crash_type': 'JsError',
+      'exception': exception
+    });
+    event['incident_id'] = incident.incidentId;
+    event['fingerprint'] = incident.fingerprint;
+    event['timestamp_ms'] = incident.timestampMs;
+    event['original_session_id'] = incident.sessionId;
+    event['original_view_id'] = incident.viewId;
+    event['original_view_name'] = incident.viewName;
+    event['original_view_url'] = incident.viewUrl;
+    if (incident.policy === JsCrashPolicy.REPORT_AND_RECOVER) {
+      event['crash.recovered'] = true;
+    }
+    return event;
+  }
+
   private static build(params: Record<string, Object>, kind: string): Record<string, Object> {
     const exception: Record<string, Object> = CrashEventMapper.asRecord(params['exception']);
     const name: string = CrashEventMapper.asString(exception['name']);
@@ -54,9 +79,13 @@ export class CrashEventMapper {
       stack = CrashEventMapper.framesToStack(exception['frames']);
     }
 
-    // Message: "Name: reason" when present (JS); native faults have neither, so fall
+    // Message: "Name: reason" when present (JS); a name with no reason (e.g. a
+    // banner-only stack parsed to CrashExceptionParts('Error', '')) stays just
+    // the name — never a dangling "Error: ". Native faults have neither, so fall
     // back to the crash type ("NativeCrash"/...) before the generic placeholder.
-    let message: string = name.length > 0 ? `${name}: ${reason}` : reason;
+    let message: string = name.length > 0
+      ? (reason.length > 0 ? `${name}: ${reason}` : name)
+      : reason;
     if (message.length === 0) {
       message = crashType.length > 0 ? crashType : 'Unknown crash';
     }
