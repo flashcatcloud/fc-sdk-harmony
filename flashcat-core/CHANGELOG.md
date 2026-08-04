@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.3.2
+
+- Added a durable snapshot of the last written ViewEvent, used by the RUM
+  feature to attribute crashes the SDK could not observe in-process (native
+  signals, freezes) to the session and view that died.
+- Revoking tracking consent now deletes that snapshot along with the collected
+  batches — it is a whole ViewEvent, so it carries user id, name, email and any
+  custom context.
+
 ## 0.3.1
 
 - **Reverts a 0.3.0 behavior change**: the tracking-consent value passed to

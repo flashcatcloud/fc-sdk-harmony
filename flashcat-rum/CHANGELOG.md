@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.3.2
+
+- Crash attribution now covers faults the SDK cannot observe in-process. Native
+  crashes and freezes previously replayed into the live post-restart session at
+  the current time; they are now written into the session and view the app was
+  actually in when it died, stamped with the real fault time. The crashed view's
+  document is re-emitted so the crash lands on the session that died.
+- A replayed crash counts as an error as well as a crash, matching the live
+  path. Crashed sessions previously reported one error fewer than they held.
+- The view snapshot backing the above is consumed on load, so a launch that
+  crashes before writing a view of its own cannot make the next launch
+  re-attribute to an already-closed session.
+- A replayed crash is only marked delivered once BOTH the error and the updated
+  view document are persisted; a partial write is retried on the next launch
+  instead of leaving the session reading crash-free.
+
 ## 0.3.1
 
 - Version bump to keep the SDK packages in lockstep (see `@flashcatcloud/core`

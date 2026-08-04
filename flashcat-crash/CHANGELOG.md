@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.2
+
+- Version bump to keep the SDK packages in lockstep. Native crashes and freezes
+  replayed through this module are now attributed to the session and view that
+  died (see `@flashcatcloud/rum` 0.3.2).
+
 ## 0.3.1
 
 - Version bump to keep the SDK packages in lockstep (see `@flashcatcloud/core`
