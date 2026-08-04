@@ -4,7 +4,7 @@
   description: "FlashCat HarmonyOS RUM: views, actions, resources, errors, sessions.",
   main: "Index.ets",
   license: "Apache-2.0",
-  author: "FlashCat",
+  author: "FlashCat <developer@flashcat.com> (https://flashcat.cloud)",
   dependencies: {
     "@flashcatcloud/core": "0.3.0"
   }

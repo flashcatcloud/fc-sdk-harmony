@@ -4,6 +4,6 @@
   description: "FlashCat HarmonyOS SDK core: init, configuration, context, message bus, storage and batched upload.",
   main: "Index.ets",
   license: "Apache-2.0",
-  author: "FlashCat",
+  author: "FlashCat <developer@flashcat.com> (https://flashcat.cloud)",
   dependencies: {}
 }
