@@ -9,7 +9,16 @@ const INCIDENT_PREFIX: string = 'incident-';
 const INCIDENT_SUFFIX: string = '.json';
 const CONSUMED_FILE: string = 'consumed.json';
 const LOOP_FILE: string = 'loop.json';
+// Snapshot of the most recently written ViewEvent. Faults the SDK cannot
+// observe in-process (native crashes, freezes) carry no RUM identity of their
+// own, so on the next launch this is the only record of which session/view the
+// app was in when it died. Mirrors the Android SDK's `lastViewEvent`.
+const LAST_VIEW_FILE: string = 'last-view.json';
 const TMP_SUFFIX: string = '.tmp';
+// A ViewEvent is re-emitted on every action/error/resource, so this file is
+// rewritten far more often than the other sidecars. Cap it so a pathological
+// context payload cannot bloat the crash dir.
+const MAX_LAST_VIEW_BYTES: number = 256 * 1024;
 // Cap on pending incident files. Unreplayed incidents accumulate when the RUM
 // feature is never enabled (or delivery keeps failing) — without a cap the dir
 // grows by one file per crash forever. Oldest are evicted first (name sort =
@@ -80,6 +89,40 @@ export class CrashPendingStore implements FeatureEventReceiver {
       event['success'] = this.writeFile(
         `${this.rootDir}/${LOOP_FILE}`,
         CrashPendingStore.stringValue(event['serialized']));
+    } else if (type === 'crash_storage_write_last_view') {
+      event['success'] = this.writeLastView(
+        CrashPendingStore.stringValue(event['serialized']));
+    } else if (type === 'crash_storage_read_last_view') {
+      event['serialized'] = this.readSidecar(LAST_VIEW_FILE);
+    }
+  }
+
+  /**
+   * Persist the latest ViewEvent. Deliberately NOT the atomic fsync path the
+   * other sidecars use: this runs on every view write (i.e. after every action,
+   * error and resource), and an fsync per event would put disk latency on the
+   * hot path. Losing the newest snapshot to a hard kill is acceptable — the
+   * previous one is at most one document_version behind, and a stale snapshot
+   * still attributes the crash to the right session and view.
+   */
+  private writeLastView(serialized: string): boolean {
+    if (serialized.length === 0 || serialized.length > MAX_LAST_VIEW_BYTES) {
+      return false;
+    }
+    this.ensureDir();
+    const path: string = `${this.rootDir}/${LAST_VIEW_FILE}`;
+    try {
+      const mode: number = fs.OpenMode.WRITE_ONLY | fs.OpenMode.CREATE | fs.OpenMode.TRUNC;
+      const file: fs.File = fs.openSync(path, mode);
+      try {
+        fs.writeSync(file.fd, serialized);
+        return true;
+      } finally {
+        fs.closeSync(file);
+      }
+    } catch (error) {
+      FlashcatLog.e(`crash.storage: last-view write failed: ${CrashPendingStore.errorText(error)}`);
+      return false;
     }
   }
 
