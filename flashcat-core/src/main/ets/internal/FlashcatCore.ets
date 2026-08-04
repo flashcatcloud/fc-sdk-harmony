@@ -225,6 +225,11 @@ export class FlashcatCore implements SdkCore {
         r.persistence.wipeAll();
         r.scheduler.stop();
       });
+      // The RUM view snapshot lives outside the feature batches but is just as
+      // personal — it is a whole ViewEvent, user fields and custom context
+      // included. Revocation has to take it too.
+      this.bus.send(CRASH_STORAGE_TARGET,
+        { 'type': 'crash_storage_delete_last_view' } as Record<string, Object>);
       this.deferredUploadRegistrar.deregister(this.deferredWorkOptions());
     } else {
       // → PENDING: stop uploading; new events buffer separately until a decision.
