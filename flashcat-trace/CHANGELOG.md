@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.3.0
 
 - `_dd.span_id` emitted as unsigned decimal (RUM↔APM correlation fixed).
 - Trace ids attached to RUM resources only for SAMPLED traces; rcp interceptor

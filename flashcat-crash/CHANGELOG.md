@@ -1,7 +1,15 @@
 # Changelog
 
-## Unreleased
+## 0.3.0
 
+- **Behavior change**: `error.stack` now carries frames only. The errorManager
+  callback's label lines (`Error name:` / `Error message:` / `Stacktrace:`) and
+  the "Cannot get SourceMap info" banner are a callback FORMAT, not stack
+  content — shipping them made the backend read `Error name:Error` as the
+  exception header, mis-titling issues and polluting the stack view. Crash
+  fingerprints are unaffected whenever the stack has real frames (the first
+  `at `/`#` line is used); only crashes with no parseable frame at all can hash
+  differently than on 0.2.0.
 - Exactly-once-oriented delivery: incidents deleted only after RUM acks a
   durable write; replay/watcher deduplicate against each other by fingerprint
   and consumption-time-keyed retention; live/watcher fingerprint parity.

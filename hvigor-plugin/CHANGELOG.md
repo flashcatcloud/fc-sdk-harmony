@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.2
+
+- Fix the `uploadFlashcatSymbols` task ordering: the task declared
+  `postDependencies: ['assembleHap','assembleHar']`, which schedules it BEFORE
+  the assemble tasks — so it uploaded the previous build's sourcemap and `.so`
+  symbols under the new version number, and crashes on the new version could not
+  be symbolicated. It now uses `dependencies`, so the assemble tasks run first.
+- `pluginVersion` fallback reported to fc-rum tracks the package version (0.1.2).
+
 ## 0.1.1
 
 - Publish as CommonJS (`"type": "commonjs"`) so hvigor can `require()` the plugin

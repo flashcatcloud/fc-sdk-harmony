@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.3.0
 
 - **Breaking behavior**: consent semantics reworked — the constructor literal is
   trusted, with exactly one override: a persisted NOT_GRANTED stays sticky until

@@ -1,9 +1,14 @@
 # Changelog
 
-## Unreleased
+## 0.3.0
 
 - **Breaking behavior**: `setTrackNetworkRequests(false)` (the default) now
   actually disables resource capture — it was previously accepted and ignored.
+- New `RumConfigurationBuilder.setTrackErrors(enabled)` (default `true`) toggles
+  AUTOMATIC error capture — uncaught non-crash reports and unhandled Promise
+  rejections. Crash reporting is NOT affected (uncaught exceptions still follow
+  the crash policy and are replayed as `is_crash` errors), and manual `addError`
+  calls still deliver; use the event mapper to drop those too if needed.
 - Crash attribution: crashes are counted and replayed into the ORIGINAL session
   (crash in session A, relaunch session B → queryable in A); >23 h-old replays
   fall back to current-time reporting; unsampled-origin crashes are dropped
@@ -13,7 +18,9 @@
   backdated or stop-type events, in-flight resources survive view AND session
   transitions, frozen time_spent after close, resolved view.url on all events.
 - New monitor APIs: `stopSession()`, `getAttributes()`, `clearAttributes()`.
-- Error quality: BusinessError-shaped rejection reasons unwrapped, sourcemap
+- Error quality: uncaught-error `error.stack` carries frames only (the
+  errorManager label lines are stripped, so issues are no longer titled
+  "Error name"), BusinessError-shaped rejection reasons unwrapped, sourcemap
   banner skipped, client-side `error.id`, os/device/connectivity fields.
 
 ## 0.2.0
