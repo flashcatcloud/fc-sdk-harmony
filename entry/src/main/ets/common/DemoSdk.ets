@@ -5,7 +5,13 @@ import {
 import { FlashcatRum, RumConfigurationBuilder, GlobalRumMonitor, RumMonitor } from '@flashcatcloud/rum';
 import { FlashcatTrace, TraceConfigurationBuilder } from '@flashcatcloud/trace';
 import { FlashcatCrash, CrashConfigurationBuilder, JsCrashPolicy } from '@flashcatcloud/crash';
+import { CrashSightMain } from 'crashsight';
 import { DemoConfig, DemoConfigLoader } from './DemoConfig';
+
+// Comparison harness only: Tencent CrashSight runs side by side with the
+// FlashCat SDK so the same fault reaches both backends and the reports can be
+// diffed. Not part of the shipped SDK or the demo's normal integration path.
+const CRASHSIGHT_APP_ID: string = 'e001cfb55f';
 
 /**
  * Centralizes SDK setup for the demo so the UI stays declarative.
@@ -20,6 +26,7 @@ import { DemoConfig, DemoConfigLoader } from './DemoConfig';
  */
 export class DemoSdk {
   private static initialized: boolean = false;
+  private static crashSightReady: boolean = false;
   private static envLabel: string = '(not initialized)';
 
   static isInitialized(): boolean {
@@ -73,10 +80,47 @@ export class DemoSdk {
     }
     FlashcatCrash.enable(crashBuilder.build());
 
+    DemoSdk.initCrashSight(context);
+
     DemoSdk.initialized = true;
     const host: string = customEndpoint.length > 0 ? customEndpoint : (prod ? 'browser.flashcat.cloud' : 'jira.flashcat.cloud');
     DemoSdk.envLabel = `${prod ? 'prod' : 'staging'} · ${host}` +
       (recover ? ' · crash recovery' : '');
+  }
+
+  /**
+   * Bring up Tencent CrashSight next to the FlashCat SDK. Contained so a
+   * CrashSight failure can never affect the FlashCat measurements we are here
+   * to take — this is a comparison rig, not production code.
+   */
+  private static initCrashSight(context: common.Context): void {
+    try {
+      const cs: CrashSightMain = CrashSightMain.getInstance();
+      cs.initContextInJS(context);
+      cs.configDebugMode(true);
+      cs.initWithAppId(CRASHSIGHT_APP_ID);
+      DemoSdk.crashSightReady = true;
+      console.info(`[compare] CrashSight initialized appId=${CRASHSIGHT_APP_ID}`);
+    } catch (e) {
+      DemoSdk.crashSightReady = false;
+      console.error(`[compare] CrashSight init failed: ${e instanceof Error ? e.message : `${e}`}`);
+    }
+  }
+
+  static isCrashSightReady(): boolean {
+    return DemoSdk.crashSightReady;
+  }
+
+  /**
+   * Comparison control: bring up ONLY CrashSight, with no FlashCat SDK at all.
+   * Needed because FlashCat's REPORT_THEN_EXIT policy terminates the process
+   * itself, which may pre-empt any other crash handler — so a fair reading of
+   * what CrashSight can capture requires running it alone.
+   */
+  static initCrashSightOnly(context: common.Context): void {
+    DemoSdk.initCrashSight(context);
+    DemoSdk.initialized = true;
+    DemoSdk.envLabel = 'CrashSight only (no FlashCat SDK)';
   }
 
   static monitor(): RumMonitor {

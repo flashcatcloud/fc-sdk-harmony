@@ -81,8 +81,15 @@ struct Index {
         this.customEndpoint = endpoint;
         this.useProd = false;
       }
-      // crash-only: auto error capture disabled, crash pipeline kept.
-      this.initSdkE2e(scenario !== 'crash-only');
+      if (scenario === 'cs-only') {
+        // Comparison control: CrashSight alone, FlashCat SDK not initialized.
+        DemoSdk.initCrashSightOnly(this.context);
+        this.initialized = true;
+        this.statusText = `Initialized → ${DemoSdk.currentEnv()}`;
+      } else {
+        // crash-only: auto error capture disabled, crash pipeline kept.
+        this.initSdkE2e(scenario !== 'crash-only');
+      }
     }
     this.append(`e2e: scenario "${scenario}" endpoint ${endpoint}`);
     hilog.info(0x0000, 'FlashcatDemo', 'e2e scenario "%{public}s" scheduled', scenario);
@@ -106,7 +113,12 @@ struct Index {
   }
 
   private runE2eScenario(name: string): void {
-    if (name === 'crash-only') {
+    if (name === 'cs-only') {
+      this.append('e2e: CrashSight-only — crashing in 800ms');
+      setTimeout(() => {
+        throw new Error('CS-only crash marker');
+      }, 800);
+    } else if (name === 'crash-only') {
       // Auto-captured signals that MUST be suppressed with trackErrors=false:
       const bizReason: Record<string, Object> = { 'code': 424242, 'message': 'suppressed rejection' };
       Promise.reject(bizReason as Object);
