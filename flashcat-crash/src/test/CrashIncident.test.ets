@@ -45,7 +45,7 @@ export default function crashIncidentTests(): void {
     it('roundTripsViewUrlThroughSerialization', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
       const record: CrashIncidentRecord = new CrashIncidentRecord(
         'inc-1', 1000, 'Error', 'boom', 'Error: boom\n    at f (a.ets:1:1)', 'fp-1',
-        JsCrashPolicy.REPORT_THEN_EXIT, '0.3.1', 's-1', 'v-1', 'Home', 'pages/Home');
+        JsCrashPolicy.REPORT_THEN_EXIT, '0.3.2', 's-1', 'v-1', 'Home', 'pages/Home');
 
       const parsed: CrashIncidentRecord | null = CrashIncidentRecord.parse(record.serialize());
 
@@ -162,7 +162,7 @@ export default function crashIncidentTests(): void {
         'TypeError: boom\n    at run (Index.ets:1:2)',
         'fp-1',
         JsCrashPolicy.REPORT_THEN_EXIT,
-        '0.3.1',
+        '0.3.2',
         'session-1',
         'view-1',
         'Home');
@@ -178,7 +178,7 @@ export default function crashIncidentTests(): void {
         expect(parsed.stack.indexOf('Index.ets')).assertLarger(-1);
         expect(parsed.fingerprint).assertEqual('fp-1');
         expect(parsed.policy).assertEqual(JsCrashPolicy.REPORT_THEN_EXIT);
-        expect(parsed.sdkVersion).assertEqual('0.3.1');
+        expect(parsed.sdkVersion).assertEqual('0.3.2');
         expect(parsed.sessionId).assertEqual('session-1');
         expect(parsed.viewId).assertEqual('view-1');
         expect(parsed.viewName).assertEqual('Home');

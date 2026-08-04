@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.3.2
+
+- Version bump to keep the SDK packages in lockstep.
+
 ## 0.3.1
 
 - Version bump to keep the SDK packages in lockstep (see `@flashcatcloud/core`
