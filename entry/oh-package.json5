@@ -10,6 +10,9 @@
     "@flashcatcloud/rum": "file:../flashcat-rum",
     "@flashcatcloud/trace": "file:../flashcat-trace",
     "@flashcatcloud/crash": "file:../flashcat-crash",
-    "libentry.so": "file:./src/main/cpp/types/libentry"
+    "libentry.so": "file:./src/main/cpp/types/libentry",
+    // Demo-only: exercises the manual axios instrumentation reference in
+    // common/AxiosTracking.ets. The SDK modules do NOT depend on axios.
+    "@ohos/axios": "^2.2.13"
   }
 }
