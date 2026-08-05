@@ -1,15 +1,15 @@
 import { http } from '@kit.NetworkKit';
 import { TraceContext } from './internal/TraceContext';
 import {
-  hostOfUrl, contentTypeOf, shouldInjectTraceHeaders, headerStringValue, setHeaderValue
+  contentTypeOf, shouldInjectTraceHeaders, headerStringValue, setHeaderValue
 } from './internal/TraceInterceptor';
 import { FlashcatTrace } from './FlashcatTrace';
 import { TracedResource } from './TracedResource';
 
 /**
- * Phase-2 A2: drop-in `@ohos.net.http` wrapper that auto-captures the request as
- * a RUM resource and injects a W3C `traceparent` — with NO manual interceptor
- * wiring. Use it exactly like `http.createHttp().request(...)`:
+ * Drop-in `@ohos.net.http` wrapper that reports the request as a RUM resource
+ * and injects a W3C `traceparent`, with no interceptor wiring. Use it exactly
+ * like `http.createHttp().request(...)`:
  *
  * ```ets
  * const resp = await FlashcatHttp.request('https://api.example.com/items', {
@@ -17,17 +17,15 @@ import { TracedResource } from './TracedResource';
  * });
  * ```
  *
- * Behaviour (see docs/PHASE-2-PLAN.md A2):
- * - emits `network_request_started/completed/failed` on the bus → the RUM feature
- *   turns them into a ResourceEvent (or a network ErrorEvent on failure);
- * - injects `traceparent`/`tracestate` only when consent is GRANTED, the host is
- *   first-party (TraceConfiguration.firstPartyHosts — empty = all hosts), and the
- *   request does not already carry a `traceparent`;
- * - never throws beyond the underlying request's own error; always destroys the
- *   HttpRequest handle.
+ * All of the resource and trace behaviour — consent and first-party gating,
+ * sampled-only correlation, the event the RUM feature turns into a resource —
+ * belongs to {@link FlashcatTrace.startTracedResource}. What this wrapper adds
+ * is the request itself: it copies the returned headers onto the options,
+ * never throws beyond the underlying request's own error, and always destroys
+ * the HttpRequest handle.
  *
- * Requires `FlashcatTrace.enable(...)` (for trace context) and, for resources to
- * surface, `FlashcatRum.enable(...)` with `setTrackNetworkRequests(true)`.
+ * Requires `FlashcatTrace.enable(...)` and, for resources to surface,
+ * `FlashcatRum.enable(...)` with `setTrackNetworkRequests(true)`.
  */
 export class FlashcatHttp {
   static async request(reqUrl: string, options?: http.HttpRequestOptions): Promise<http.HttpResponse> {
@@ -39,8 +37,7 @@ export class FlashcatHttp {
     // copies the returned headers onto it.
     const traced: TracedResource =
       FlashcatTrace.startTracedResource(reqUrl, method, shouldInjectTraceHeaders(opts.header));
-    const names: string[] = Object.keys(traced.headers);
-    if (names.length > 0) {
+    if (Object.keys(traced.headers).length > 0) {
       const header: Record<string, Object> = FlashcatHttp.headerRecord(opts);
       setHeaderValue(header, 'traceparent', traced.headers['traceparent']);
       // Preserve other vendors already present on the request.
@@ -87,10 +84,5 @@ export class FlashcatHttp {
       return result.length;
     }
     return 0;
-  }
-
-  /** Pure: extract the host from a URL (no @ohos.url dependency). */
-  static hostOf(rawUrl: string): string {
-    return hostOfUrl(rawUrl);
   }
 }

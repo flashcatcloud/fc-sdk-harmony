@@ -11,6 +11,9 @@
   Requires `setTrackNetworkRequests(true)`, like every other network path.
 - `FlashcatHttp` now builds on the same entry point instead of duplicating the
   injection and resource-lifecycle logic.
+- **Breaking**: `FlashcatHttp.hostOf()` removed. Host parsing moved behind the
+  first-party gate inside the SDK and the method had no callers left; it was a
+  URL helper rather than part of this package's purpose.
 
 ## 0.3.2
 

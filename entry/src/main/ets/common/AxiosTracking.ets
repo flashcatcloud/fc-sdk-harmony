@@ -37,8 +37,7 @@ export function trackAxios(instance: AxiosInstance): void {
     const traced: TracedResource = FlashcatTrace.startTracedResource(
       url, config.method ?? 'GET', !config.headers.has('traceparent'));
 
-    const names: string[] = Object.keys(traced.headers);
-    for (const name of names) {
+    for (const name of Object.keys(traced.headers)) {
       config.headers.set(name, traced.headers[name]);
     }
     pending.set(config, traced.key);

@@ -1,10 +1,9 @@
 import { describe, expect, it, Level, Size, TestType } from '@ohos/hypium';
 import { FlashcatTrace } from '../main/ets/FlashcatTrace';
-import { FlashcatHttp } from '../main/ets/FlashcatHttp';
 import { TracedResource } from '../main/ets/TracedResource';
 import { TraceConfiguration } from '../main/ets/TraceConfiguration';
 import { TraceContext } from '../main/ets/internal/TraceContext';
-import { shouldInjectTraceHeaders } from '../main/ets/internal/TraceInterceptor';
+import { shouldInjectTraceHeaders, hostOfUrl } from '../main/ets/internal/TraceInterceptor';
 
 export default function testsuite(): void {
   describe('flashcat-trace', (): void => {
@@ -60,12 +59,12 @@ export default function testsuite(): void {
       expect(shouldInjectTraceHeaders(headers)).assertFalse();
     });
 
-    // ---- Phase 2 A2: FlashcatHttp host parsing ----
-    it('hostOfParsesSchemeHostPortPathQuery', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
-      expect(FlashcatHttp.hostOf('https://api.example.com/v1/items?x=1')).assertEqual('api.example.com');
-      expect(FlashcatHttp.hostOf('http://api.example.com:8080/p')).assertEqual('api.example.com');
-      expect(FlashcatHttp.hostOf('https://user:pw@api.example.com/p')).assertEqual('api.example.com');
-      expect(FlashcatHttp.hostOf('api.example.com/p')).assertEqual('api.example.com');
+    // ---- host parsing behind the first-party gate ----
+    it('hostOfUrlParsesSchemeHostPortPathQuery', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+      expect(hostOfUrl('https://api.example.com/v1/items?x=1')).assertEqual('api.example.com');
+      expect(hostOfUrl('http://api.example.com:8080/p')).assertEqual('api.example.com');
+      expect(hostOfUrl('https://user:pw@api.example.com/p')).assertEqual('api.example.com');
+      expect(hostOfUrl('api.example.com/p')).assertEqual('api.example.com');
     });
 
     // ---- Phase 2 A2: first-party host gating ----
