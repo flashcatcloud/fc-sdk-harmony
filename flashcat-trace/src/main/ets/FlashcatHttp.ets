@@ -1,14 +1,10 @@
 import { http } from '@kit.NetworkKit';
-import { util } from '@kit.ArkTS';
-import { SdkCore } from '@flashcatcloud/core';
 import { TraceContext } from './internal/TraceContext';
 import {
-  isInjectionAllowed, publishTraceId, hostOfUrl,
-  publishResourceStarted, publishResourceCompleted, publishResourceFailed, contentTypeOf,
-  shouldInjectTraceHeaders, headerStringValue, setHeaderValue
+  hostOfUrl, contentTypeOf, shouldInjectTraceHeaders, headerStringValue, setHeaderValue
 } from './internal/TraceInterceptor';
 import { FlashcatTrace } from './FlashcatTrace';
-import { TraceConfiguration } from './TraceConfiguration';
+import { TracedResource } from './TracedResource';
 
 /**
  * Phase-2 A2: drop-in `@ohos.net.http` wrapper that auto-captures the request as
@@ -35,39 +31,32 @@ import { TraceConfiguration } from './TraceConfiguration';
  */
 export class FlashcatHttp {
   static async request(reqUrl: string, options?: http.HttpRequestOptions): Promise<http.HttpResponse> {
-    const core: SdkCore | null = FlashcatTrace.currentCore();
-    const config: TraceConfiguration = FlashcatTrace.currentConfiguration();
     const opts: http.HttpRequestOptions = options ?? {};
     const method: string = FlashcatHttp.methodOf(opts);
-    const key: string = util.generateRandomUUID(true);
 
-    // traceparent injection — consent-gated AND first-party-gated.
-    let traceId: string | undefined = undefined;
-    let spanId: string | undefined = undefined;
-    const host: string = FlashcatHttp.hostOf(reqUrl);
-    if (isInjectionAllowed(core) && config.isFirstParty(host) && shouldInjectTraceHeaders(opts.header)) {
-      const tc: TraceContext = TraceContext.generate(config.sampleRate);
+    // The resource lifecycle and the consent / first-party gating live in
+    // startTracedResource — this wrapper only adds the @kit.NetworkKit call and
+    // copies the returned headers onto it.
+    const traced: TracedResource =
+      FlashcatTrace.startTracedResource(reqUrl, method, shouldInjectTraceHeaders(opts.header));
+    const names: string[] = Object.keys(traced.headers);
+    if (names.length > 0) {
       const header: Record<string, Object> = FlashcatHttp.headerRecord(opts);
-      setHeaderValue(header, 'traceparent', tc.traceparent());
-      setHeaderValue(header, 'tracestate', tc.tracestate(headerStringValue(header, 'tracestate')));
+      setHeaderValue(header, 'traceparent', traced.headers['traceparent']);
+      // Preserve other vendors already present on the request.
+      setHeaderValue(header, 'tracestate', TraceContext.mergeDatadogTracestate(
+        headerStringValue(header, 'tracestate'), traced.headers['tracestate']));
       opts.header = header;
-      // An unsampled trace is dropped by the APM backend — correlate only when sampled.
-      if (tc.sampled) {
-        publishTraceId(core, tc.traceId);
-        traceId = tc.traceId;
-        spanId = tc.spanId;
-      }
     }
 
-    publishResourceStarted(core, key, reqUrl, method, traceId, spanId);
     const httpRequest: http.HttpRequest = http.createHttp();
     try {
       const response: http.HttpResponse = await httpRequest.request(reqUrl, opts);
-      publishResourceCompleted(core, key, FlashcatHttp.statusOf(response), FlashcatHttp.sizeOf(response),
-        contentTypeOf(response.header));
+      FlashcatTrace.stopTracedResource(traced.key, FlashcatHttp.statusOf(response),
+        FlashcatHttp.sizeOf(response), contentTypeOf(response.header));
       return response;
     } catch (e) {
-      publishResourceFailed(core, key, e instanceof Error ? e.message : 'network request failed');
+      FlashcatTrace.failTracedResource(traced.key, e instanceof Error ? e.message : 'network request failed');
       throw (e instanceof Error ? e : new Error('network request failed'));
     } finally {
       httpRequest.destroy();

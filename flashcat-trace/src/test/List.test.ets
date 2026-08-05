@@ -1,6 +1,7 @@
 import { describe, expect, it, Level, Size, TestType } from '@ohos/hypium';
 import { FlashcatTrace } from '../main/ets/FlashcatTrace';
 import { FlashcatHttp } from '../main/ets/FlashcatHttp';
+import { TracedResource } from '../main/ets/TracedResource';
 import { TraceConfiguration } from '../main/ets/TraceConfiguration';
 import { TraceContext } from '../main/ets/internal/TraceContext';
 import { shouldInjectTraceHeaders } from '../main/ets/internal/TraceInterceptor';
@@ -79,6 +80,54 @@ export default function testsuite(): void {
     it('isFirstPartyAllowsAllWhenEmpty', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
       const cfg: TraceConfiguration = new TraceConfiguration(100, []);
       expect(cfg.isFirstParty('anything.com')).assertTrue();
+    });
+
+    // ---- startTracedResource: the network-stack-agnostic entry point ----
+    // Callers pair every start with a stop/fail. That pairing must hold even
+    // when nothing is being tracked, otherwise integrations need a second code
+    // path for "SDK not ready" and will get it wrong.
+    it('startTracedResourceAlwaysReturnsAUsableKey', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+      const first: TracedResource = FlashcatTrace.startTracedResource('https://api.example.com/a', 'GET');
+      const second: TracedResource = FlashcatTrace.startTracedResource('https://api.example.com/b', 'GET');
+      expect(first.key.length > 0).assertTrue();
+      expect(second.key.length > 0).assertTrue();
+      expect(first.key === second.key).assertFalse();
+    });
+
+    it('startTracedResourceInjectsNothingBeforeConsent', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+      const traced: TracedResource = FlashcatTrace.startTracedResource('https://api.example.com/a', 'GET');
+      expect(Object.keys(traced.headers).length).assertEqual(0);
+    });
+
+    // A request that already carries a traceparent belongs to an existing
+    // trace: generating a second context would both overwrite the caller's
+    // chain and tie the resource to a trace that was never sent.
+    it('startTracedResourceHonoursInjectTraceFalse', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+      const traced: TracedResource = FlashcatTrace.startTracedResource('https://api.example.com/a', 'GET', false);
+      expect(traced.key.length > 0).assertTrue();
+      expect(Object.keys(traced.headers).length).assertEqual(0);
+    });
+
+    // Closing is best-effort: an unknown key or a torn-down core must not throw
+    // into the caller's response handler.
+    it('stopAndFailAreSafeWithoutCoreOrKnownKey', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+      let threw: boolean = false;
+      try {
+        FlashcatTrace.stopTracedResource('no-such-key', 200, 128);
+        FlashcatTrace.failTracedResource('no-such-key', 'boom');
+      } catch (_e) {
+        threw = true;
+      }
+      expect(threw).assertFalse();
+    });
+
+    // FlashcatHttp merges the generated tracestate onto whatever the request
+    // already carries, so this helper is load-bearing for that path.
+    it('mergeDatadogTracestateKeepsOtherVendorsAndLeads', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+      expect(TraceContext.mergeDatadogTracestate('', 'dd=s:1;o:rum')).assertEqual('dd=s:1;o:rum');
+      expect(TraceContext.mergeDatadogTracestate('foo=bar', 'dd=s:1;o:rum')).assertEqual('dd=s:1;o:rum,foo=bar');
+      expect(TraceContext.mergeDatadogTracestate('foo=bar,dd=s:0;o:rum', 'dd=s:1;o:rum'))
+        .assertEqual('dd=s:1;o:rum,foo=bar');
     });
   });
 }

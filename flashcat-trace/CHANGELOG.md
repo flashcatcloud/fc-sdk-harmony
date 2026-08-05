@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+- `FlashcatTrace.startTracedResource(url, method, injectTrace?)` +
+  `stopTracedResource` / `failTracedResource`: report a request as a RUM
+  resource from any network stack the SDK cannot instrument itself — axios, a
+  custom client, a WebSocket handshake. Returns the `traceparent` /
+  `tracestate` to send, with consent and first-party gating, sampled-only trace
+  correlation and the decimal `_dd.span_id` encoding all handled inside the SDK.
+  Requires `setTrackNetworkRequests(true)`, like every other network path.
+- `FlashcatHttp` now builds on the same entry point instead of duplicating the
+  injection and resource-lifecycle logic.
+
 ## 0.3.2
 
 - Version bump to keep the SDK packages in lockstep.
