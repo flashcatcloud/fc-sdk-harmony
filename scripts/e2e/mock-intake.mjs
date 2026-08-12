@@ -4,6 +4,11 @@
  * deflate/gzip bodies, appends each NDJSON line to the capture file, and
  * replies 202 — the emulator reaches it at http://10.0.2.2:<port>.
  *
+ * Also serves /e2e/* as a stand-in origin server for network instrumentation
+ * scenarios, recording each request's headers to <captureFile>.requests so the
+ * assertions can compare the traceparent that actually left the device against
+ * the resource event the SDK reported for it.
+ *
  * Usage: node mock-intake.mjs <port> <captureFile>
  */
 import http from 'node:http';
@@ -12,8 +17,27 @@ import zlib from 'node:zlib';
 
 const port = Number(process.argv[2] ?? '19533');
 const captureFile = process.argv[3] ?? '/tmp/flashcat-e2e-capture.ndjson';
+const requestsFile = `${captureFile}.requests`;
+
+/** Stand-in origin server: never treated as intake traffic. */
+function serveOrigin(req, res) {
+  fs.appendFileSync(requestsFile, `${JSON.stringify({
+    url: req.url, method: req.method, headers: req.headers
+  })}\n`);
+  const status = req.url.startsWith('/e2e/status/')
+    ? Number(req.url.slice('/e2e/status/'.length)) || 200
+    : 200;
+  console.log(`origin ${req.method} ${req.url} -> ${status}`);
+  res.writeHead(status, { 'content-type': 'application/json' })
+    .end(JSON.stringify({ echo: true, path: req.url }));
+}
 
 const server = http.createServer((req, res) => {
+  if (req.url.startsWith('/e2e/')) {
+    req.resume();
+    req.on('end', () => serveOrigin(req, res));
+    return;
+  }
   const chunks = [];
   req.on('data', (c) => chunks.push(c));
   req.on('end', () => {

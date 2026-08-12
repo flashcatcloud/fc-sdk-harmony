@@ -93,7 +93,11 @@ export class TraceContext {
     return TraceContext.mergeDatadogTracestate(existing, `dd=s:${sampling};o:rum`);
   }
 
-  private static mergeDatadogTracestate(existing: string, datadogMember: string): string {
+  /**
+   * @internal — also used when merging a generated `tracestate` onto a request
+   * that already carries other vendors' members.
+   */
+  static mergeDatadogTracestate(existing: string, datadogMember: string): string {
     const trimmed: string = existing.trim();
     if (trimmed.length === 0) {
       return datadogMember;

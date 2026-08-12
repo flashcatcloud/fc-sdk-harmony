@@ -10,6 +10,13 @@ import { TrackingConsent } from '@flashcatcloud/core';
 import testNapi from 'libentry.so';
 import { DemoSdk } from '../common/DemoSdk';
 import { SpikeMode, SpikeModeStore } from '../common/SpikeMode';
+import axios, { AxiosInstance, AxiosResponse } from '@ohos/axios';
+import { trackAxios } from '../common/AxiosTracking';
+
+/** ArkTS requires every object literal to have a declared type. */
+interface AxiosDemoPayload {
+  demo: boolean;
+}
 
 const SPIKE_DOMAIN: number = 0x0000;
 const SPIKE_TAG: string = 'FCSpike';
@@ -44,6 +51,7 @@ struct Index {
   private resourceSeq: number = 0;
   private faultPackageHolder: hiAppEvent.AppEventPackageHolder | null = null;
   private faultWatcherRegistered: boolean = false;
+  private trackedAxios: AxiosInstance | null = null;
 
   aboutToAppear(): void {
     try {
@@ -122,6 +130,13 @@ struct Index {
       const bizReason: Record<string, Object> = { 'code': 1234567, 'message': 'e2e biz error' };
       Promise.reject(bizReason as Object);
       this.append('e2e: events scenario emitted');
+    } else if (name === 'axios') {
+      // Hits the mock intake's echo endpoint so the assertions can compare the
+      // traceparent that actually left the device against the resource event.
+      const endpoint: string = AppStorage.get<string>('e2eEndpoint') ?? '';
+      this.axiosRequest('GET', `${endpoint}/e2e/echo`);
+      this.axiosRequest('GET', `${endpoint}/e2e/status/404`);
+      this.append('e2e: axios scenario emitted');
     } else if (name === 'crash') {
       this.append('e2e: crashing in 800ms');
       setTimeout(() => {
@@ -259,6 +274,32 @@ struct Index {
     } catch (e) {
       this.append(`auto-http ${method} ${shortUrl(url)} FAILED: ${e instanceof Error ? e.message : 'error'}`);
     }
+  }
+
+  // Manual axios instrumentation (common/AxiosTracking.ets) — axios ships its
+  // own @ohos.net.http adapter, so neither the rcp interceptor nor FlashcatHttp
+  // sees these requests; the resource comes from the manual API instead.
+  private async axiosRequest(method: string, url: string): Promise<void> {
+    try {
+      const client: AxiosInstance = this.axiosClient();
+      const body: AxiosDemoPayload = { demo: true };
+      const resp: AxiosResponse = method === 'POST'
+        ? await client.post(url, body)
+        : await client.get(url);
+      this.append(`axios ${method} ${shortUrl(url)} → ${resp.status}`);
+    } catch (e) {
+      this.append(`axios ${method} ${shortUrl(url)} FAILED: ${e instanceof Error ? e.message : 'error'}`);
+    }
+  }
+
+  /** One tracked instance per process — attaching twice would double-report. */
+  private axiosClient(): AxiosInstance {
+    if (this.trackedAxios === null) {
+      const client: AxiosInstance = axios.create();
+      trackAxios(client);
+      this.trackedAxios = client;
+    }
+    return this.trackedAxios;
   }
 
   private manualResource(): void {
@@ -473,6 +514,9 @@ struct Index {
           this.btn('Manual resource (no network)', () => { this.manualResource(); })
           this.btn('Auto HTTP GET (FlashcatHttp, no interceptor)', () => { this.autoHttp(http.RequestMethod.GET, 'https://httpbingo.org/get'); })
           this.btn('Auto HTTP POST (FlashcatHttp, no interceptor)', () => { this.autoHttp(http.RequestMethod.POST, 'https://httpbingo.org/post'); })
+          this.btn('axios GET (manual instrumentation)', () => { this.axiosRequest('GET', 'https://httpbingo.org/get'); })
+          this.btn('axios POST (manual instrumentation)', () => { this.axiosRequest('POST', 'https://httpbingo.org/post'); })
+          this.btn('axios 404 (manual, error path)', () => { this.axiosRequest('GET', 'https://httpbingo.org/status/404'); })
           this.btn('Auto HTTP image (→ resource_type=image)', () => { this.autoHttp(http.RequestMethod.GET, 'https://httpbingo.org/image/png'); })
           this.btn('Auto HTTP image 404 (static error)', () => { this.autoHttp(http.RequestMethod.GET, 'https://httpbingo.org/image/missing.png'); })
 

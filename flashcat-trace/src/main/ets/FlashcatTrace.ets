@@ -1,8 +1,13 @@
 import { rcp } from '@kit.RemoteCommunicationKit';
+import { util } from '@kit.ArkTS';
 import { Flashcat, SdkCore } from '@flashcatcloud/core';
 import { TraceConfiguration } from './TraceConfiguration';
+import { TracedResource } from './TracedResource';
 import { TraceContext } from './internal/TraceContext';
-import { TraceInterceptor, publishTraceId, isInjectionAllowed, hostOfUrl } from './internal/TraceInterceptor';
+import {
+  TraceInterceptor, publishTraceId, isInjectionAllowed, hostOfUrl,
+  publishResourceStarted, publishResourceCompleted, publishResourceFailed
+} from './internal/TraceInterceptor';
 
 /**
  * Distributed-tracing context propagation for HarmonyOS.
@@ -56,6 +61,71 @@ export class FlashcatTrace {
    * without it the caller takes over that responsibility, and trace ids
    * attached to third-party hosts leak correlation identifiers.
    */
+  /**
+   * Registers an outgoing request as a RUM resource and returns the trace
+   * headers to send with it. For network stacks the SDK cannot instrument on
+   * its own — axios, a custom client, a WebSocket handshake.
+   *
+   * Pair every call with `stopTracedResource` or `failTracedResource`,
+   * including on the failure path, or the resource never closes.
+   *
+   * ```ets
+   * const traced = FlashcatTrace.startTracedResource(url, 'GET');
+   * // merge traced.headers into the request, then send it
+   * FlashcatTrace.stopTracedResource(traced.key, response.status, size);
+   * ```
+   *
+   * The resource reaches RUM through the same path as the rcp interceptor and
+   * `FlashcatHttp`, so it requires `setTrackNetworkRequests(true)` on the RUM
+   * configuration, and is a no-op when the RUM feature is not enabled.
+   *
+   * @param url full request url — a relative path has no host to match against
+   *        `setFirstPartyHosts()`, which would skip injection entirely
+   * @param method HTTP method; case-insensitive
+   * @param injectTrace pass false when the request already carries a
+   *        `traceparent`. No trace context is generated, so the resource is not
+   *        tied to a trace the caller never sent.
+   */
+  static startTracedResource(url: string, method: string, injectTrace: boolean = true): TracedResource {
+    const core: SdkCore | null = FlashcatTrace.core;
+    const config: TraceConfiguration = FlashcatTrace.configuration;
+    const key: string = util.generateRandomUUID(true);
+    const headers: Record<string, string> = {};
+    let traceId: string | undefined = undefined;
+    let spanId: string | undefined = undefined;
+
+    if (injectTrace && isInjectionAllowed(core) && config.isFirstParty(hostOfUrl(url))) {
+      const tc: TraceContext = TraceContext.generate(config.sampleRate);
+      headers['traceparent'] = tc.traceparent();
+      headers['tracestate'] = tc.tracestate();
+      // An unsampled trace is dropped by the APM backend — correlate only when
+      // it will actually exist there.
+      if (tc.sampled) {
+        publishTraceId(core, tc.traceId);
+        traceId = tc.traceId;
+        spanId = tc.spanId;
+      }
+    }
+
+    publishResourceStarted(core, key, url, method, traceId, spanId);
+    return new TracedResource(key, headers);
+  }
+
+  /** Closes a traced resource that got a response, whatever its status. */
+  static stopTracedResource(key: string, statusCode: number, size: number, mimeType: string = ''): void {
+    publishResourceCompleted(FlashcatTrace.core, key, statusCode, size, mimeType);
+  }
+
+  /**
+   * Closes a traced resource that never got a response — a transport failure.
+   * Reports a network error rather than a resource. A response carrying an
+   * error status is not this: pass it to `stopTracedResource` instead, so it
+   * stays a resource with that status.
+   */
+  static failTracedResource(key: string, message: string): void {
+    publishResourceFailed(FlashcatTrace.core, key, message);
+  }
+
   static getHeaders(url?: string): Record<string, string> {
     const headers: Record<string, string> = {};
     if (!isInjectionAllowed(FlashcatTrace.core)) {
