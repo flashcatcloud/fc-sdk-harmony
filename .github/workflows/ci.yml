@@ -20,6 +20,20 @@ jobs:
       - name: Run unit tests
         run: node scripts/unit-node/run.mjs
 
+  hvigor-plugin-tests:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: hvigor-plugin
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          # npm test type-checks with --experimental-strip-types, which needs Node >= 22.6
+          node-version: '22'
+      - run: npm ci
+      - run: npm test
+
   build-gate:
     # Requires a self-hosted macOS runner with DevEco Studio installed
     # (label: deveco). Skipped automatically when no such runner exists.

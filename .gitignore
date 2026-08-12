@@ -15,6 +15,7 @@ oh-package-lock.json5
 
 # Local docs/work notes
 /docs/
+.worktrees/
 
 # DevEco / IDE
 .idea

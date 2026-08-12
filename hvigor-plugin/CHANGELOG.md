@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.1.3
+
+- Default symbol-upload host is now `https://ci.flashcat.cloud` (was
+  `https://browser.flashcat.cloud`, which 404s — that host is RUM ingest only).
+- Honour `FLASHCAT_SOURCEMAP_INTAKE_URL` first (same variable as Android /
+  flashcat-cli); `FLASHCAT_ENDPOINT` remains a legacy alias and emits a warning.
+- Explicit empty `endpoint` / empty env vars **skip** upload instead of falling
+  back to SaaS. Values are validated with `new URL()` (http(s), no query/hash).
+- Warn when the resolved host is a known RUM-ingest-only host
+  (`browser.flashcat.cloud` / `jira.flashcat.cloud`).
+- If the configured endpoint already ends with `/sourcemap/upload`, do not
+  append the path again.
+- `pluginVersion` fallback reads `package.json` (no hand-copied literal).
+
 ## 0.1.2
 
 - Fix the `uploadFlashcatSymbols` task ordering: the task declared
