@@ -12,15 +12,21 @@ Zero runtime dependencies (uses Node ≥18 built-in `fetch`/`FormData`).
 
 ## Install
 
-hvigor plugins are declared in the project's `hvigor/hvigor-config.json5`
-`dependencies` (this is the hvigor mechanism — **not** `ohpm install`, which is for
-ArkTS/ohpm packages). hvigor installs it from npm and resolves the import below.
+The plugin is published on **npm**, not ohpm. Install it as a devDependency in
+the project root `package.json` (not `oh-package.json5`):
+
+```sh
+npm install -D @flashcatcloud/hvigor-plugin
+```
+
+Alternatively, declare it in `hvigor/hvigor-config.json5` `dependencies` —
+hvigor still fetches it from npm:
 
 ```json5
 {
   "modelVersion": "5.0.0",
   "dependencies": {
-    "@flashcatcloud/hvigor-plugin": "^0.1.0"
+    "@flashcatcloud/hvigor-plugin": "^0.1.3"
   }
 }
 ```
@@ -37,7 +43,9 @@ export default {
   system: hapTasks,
   plugins: [
     flashcatSymbolUploadPlugin({
-      endpoint: 'https://browser.flashcat.cloud', // staging: https://jira.flashcat.cloud
+      // Omit endpoint for SaaS (defaults to https://ci.flashcat.cloud).
+      // Private deploy: set FLASHCAT_SOURCEMAP_INTAKE_URL=https://rum.example.com
+      // (scheme + host, no path), or pass endpoint: 'https://rum.example.com'.
       apiKey: process.env.FLASHCAT_API_KEY ?? '',
       service: 'my-app',
       version: '1.0.0',
@@ -54,6 +62,15 @@ FLASHCAT_UPLOAD=1 FLASHCAT_API_KEY=*** \
   hvigorw uploadFlashcatSymbols --mode module -p module=entry@default -p product=default
 ```
 
+Endpoint resolution (first match wins):
+
+1. `endpoint` option — if provided (even as `''`), it is the only source; empty/invalid **skips** upload (no SaaS fallback)
+2. `FLASHCAT_SOURCEMAP_INTAKE_URL` (preferred for private deploys; same name as Android / flashcat-cli)
+3. Legacy `FLASHCAT_ENDPOINT` (deprecated; emits a warning — historically often set to the RUM host `browser.flashcat.cloud`, which 404s on symbol upload)
+4. SaaS default `https://ci.flashcat.cloud`
+
+Do **not** use `browser.flashcat.cloud` / `jira.flashcat.cloud` for symbol upload — those are RUM ingest hosts only.
+
 The task is registered with `dependencies: ['assembleHap','assembleHar']` (it runs
 after the assemble tasks), so the sourcemap + native libs exist when it runs. A missing artifact or upload
 failure is logged but never fails the build.
@@ -63,7 +80,8 @@ failure is logged but never fails the build.
 ```ts
 import { uploadAll } from '@flashcatcloud/hvigor-plugin';
 const result = await uploadAll('entry/build/default', {
-  endpoint, apiKey, service, version, pluginVersion: '0.1.0'
+  endpoint: process.env.FLASHCAT_SOURCEMAP_INTAKE_URL || 'https://ci.flashcat.cloud',
+  apiKey, service, version, pluginVersion: '0.1.3'
 }, console.log);
 ```
 

@@ -1,5 +1,10 @@
+import { createRequire } from 'node:module';
 import { uploadAll } from './index.ts';
-import type { UploadConfig } from './upload.ts';
+import { resolveUploadEndpoint, type UploadConfig } from './upload.ts';
+
+// Keep the reported plugin version in sync with package.json (no hand-copied literal).
+const requirePackageJson = createRequire(__filename);
+const PACKAGE_VERSION: string = (requirePackageJson('../package.json') as { version: string }).version;
 
 // The hvigor plugin API (@ohos/hvigor) is provided by DevEco at build time and is
 // not a build-time dependency of this package. We model only the surface we use so
@@ -14,9 +19,10 @@ export interface HvigorPlugin {
 }
 
 export interface FlashcatPluginOptions {
-  /** RUM ingest base URL. Optional — defaults to $FLASHCAT_ENDPOINT, else the SaaS
-   *  ingest (https://browser.flashcat.cloud). Set it (or the env var) for staging /
-   *  self-hosted. */
+  /** Symbol-upload base URL. Optional — when omitted, uses $FLASHCAT_SOURCEMAP_INTAKE_URL,
+   *  then legacy $FLASHCAT_ENDPOINT, then SaaS `https://ci.flashcat.cloud`.
+   *  When set (including empty string), that value is used alone: empty/invalid skips
+   *  upload instead of falling back to SaaS. Private deploys: scheme + host, no path. */
   endpoint?: string;
   apiKey: string;
   service: string;
@@ -67,14 +73,22 @@ export function flashcatSymbolUploadPlugin(options: FlashcatPluginOptions): Hvig
             console.warn('flashcat: FLASHCAT_API_KEY not set — skipping symbol upload.');
             return;
           }
-          // endpoint may be omitted in config; fall back to env then the SaaS ingest.
-          const endpoint = options.endpoint ?? process.env.FLASHCAT_ENDPOINT ?? 'https://browser.flashcat.cloud';
+          const resolved = resolveUploadEndpoint(options.endpoint);
+          for (const w of resolved.warnings) {
+            // eslint-disable-next-line no-console
+            console.warn(`flashcat: ${w}`);
+          }
+          if (!resolved.ok) {
+            // eslint-disable-next-line no-console
+            console.warn(`flashcat: ${resolved.reason}`);
+            return;
+          }
           const cfg: UploadConfig = {
-            endpoint,
+            endpoint: resolved.endpoint,
             apiKey: options.apiKey,
             service: options.service,
             version: options.version,
-            pluginVersion: options.pluginVersion ?? '0.1.2' // keep in sync with package.json version
+            pluginVersion: options.pluginVersion ?? PACKAGE_VERSION
           };
           const buildDir = `${node.getNodePath()}/${options.buildDir ?? 'build/default'}`;
           // eslint-disable-next-line no-console
