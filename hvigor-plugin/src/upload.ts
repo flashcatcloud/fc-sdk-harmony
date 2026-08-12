@@ -17,7 +17,7 @@ const RUM_INGEST_ONLY_HOSTS = new Set(['browser.flashcat.cloud', 'jira.flashcat.
 
 export type EndpointResolution =
   | { ok: true; endpoint: string; warnings: string[] }
-  | { ok: false; reason: string };
+  | { ok: false; reason: string; warnings: string[] };
 
 /**
  * Resolve the symbol-upload base URL.
@@ -25,11 +25,12 @@ export type EndpointResolution =
  * Priority when `explicit` is **omitted** (`undefined`):
  * `FLASHCAT_SOURCEMAP_INTAKE_URL` → legacy `FLASHCAT_ENDPOINT` → SaaS default.
  *
- * When `explicit` is provided (including `''`), it is the only source — an empty
+ * When `explicit` is provided (`''` included; `null` counts as omitted — plain-JS
+ * hvigorfiles pass it from config lookups), it is the only source — an empty
  * or invalid value skips the upload instead of falling back to SaaS.
  */
 export function resolveUploadEndpoint(
-  explicit?: string,
+  explicit?: string | null,
   env: NodeJS.ProcessEnv = process.env
 ): EndpointResolution {
   const warnings: string[] = [];
@@ -37,11 +38,11 @@ export function resolveUploadEndpoint(
   let raw: string;
   let source: 'option' | 'FLASHCAT_SOURCEMAP_INTAKE_URL' | 'FLASHCAT_ENDPOINT' | 'default';
 
-  if (explicit !== undefined) {
+  if (explicit != null) {
     raw = explicit.trim();
     source = 'option';
     if (!raw) {
-      return { ok: false, reason: 'endpoint is empty — skipping symbol upload (will not fall back to SaaS)' };
+      return { ok: false, reason: 'endpoint is empty — skipping symbol upload (will not fall back to SaaS)', warnings };
     }
   } else if (env.FLASHCAT_SOURCEMAP_INTAKE_URL !== undefined) {
     raw = env.FLASHCAT_SOURCEMAP_INTAKE_URL.trim();
@@ -49,7 +50,8 @@ export function resolveUploadEndpoint(
     if (!raw) {
       return {
         ok: false,
-        reason: 'FLASHCAT_SOURCEMAP_INTAKE_URL is empty — skipping symbol upload (will not fall back to SaaS)'
+        reason: 'FLASHCAT_SOURCEMAP_INTAKE_URL is empty — skipping symbol upload (will not fall back to SaaS)',
+        warnings
       };
     }
   } else if (env.FLASHCAT_ENDPOINT !== undefined) {
@@ -58,7 +60,8 @@ export function resolveUploadEndpoint(
     if (!raw) {
       return {
         ok: false,
-        reason: 'FLASHCAT_ENDPOINT is empty — skipping symbol upload (will not fall back to SaaS)'
+        reason: 'FLASHCAT_ENDPOINT is empty — skipping symbol upload (will not fall back to SaaS)',
+        warnings
       };
     }
     warnings.push(
@@ -73,19 +76,21 @@ export function resolveUploadEndpoint(
   try {
     url = new URL(raw);
   } catch {
-    return { ok: false, reason: `invalid symbol-upload endpoint from ${source}: ${JSON.stringify(raw)}` };
+    return { ok: false, reason: `invalid symbol-upload endpoint from ${source}: ${JSON.stringify(raw)}`, warnings };
   }
 
   if (url.protocol !== 'http:' && url.protocol !== 'https:') {
     return {
       ok: false,
-      reason: `symbol-upload endpoint from ${source} must be http(s), got ${url.protocol}`
+      reason: `symbol-upload endpoint from ${source} must be http(s), got ${url.protocol}`,
+      warnings
     };
   }
   if (url.search || url.hash) {
     return {
       ok: false,
-      reason: `symbol-upload endpoint from ${source} must not include query or hash`
+      reason: `symbol-upload endpoint from ${source} must not include query or hash`,
+      warnings
     };
   }
 

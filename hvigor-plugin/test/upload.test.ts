@@ -76,6 +76,21 @@ test('resolveUploadEndpoint skips on explicit empty endpoint (no SaaS fallback)'
   if (!r.ok) assert.match(r.reason, /endpoint is empty/);
 });
 
+test('resolveUploadEndpoint treats null endpoint as omitted (plain-JS hvigorfile)', () => {
+  const r = resolveUploadEndpoint(null, { FLASHCAT_SOURCEMAP_INTAKE_URL: 'https://private.example.com' });
+  assert.equal(r.ok, true);
+  if (r.ok) assert.equal(r.endpoint, 'https://private.example.com');
+  const fallback = resolveUploadEndpoint(null, {});
+  assert.equal(fallback.ok, true);
+  if (fallback.ok) assert.equal(fallback.endpoint, 'https://ci.flashcat.cloud');
+});
+
+test('resolveUploadEndpoint keeps warnings when resolution then fails', () => {
+  const r = resolveUploadEndpoint(undefined, { FLASHCAT_ENDPOINT: 'legacy.example.com' });
+  assert.equal(r.ok, false);
+  assert.ok(r.warnings.some((w) => w.includes('FLASHCAT_ENDPOINT is deprecated')));
+});
+
 test('resolveUploadEndpoint skips on whitespace-only env (no SaaS fallback)', () => {
   const r = resolveUploadEndpoint(undefined, { FLASHCAT_SOURCEMAP_INTAKE_URL: '   ' });
   assert.equal(r.ok, false);

@@ -74,7 +74,7 @@ export function flashcatSymbolUploadPlugin(options: FlashcatPluginOptions): Hvig
             return;
           }
           const resolved = resolveUploadEndpoint(options.endpoint);
-          for (const w of resolved.ok ? resolved.warnings : []) {
+          for (const w of resolved.warnings) {
             // eslint-disable-next-line no-console
             console.warn(`flashcat: ${w}`);
           }
