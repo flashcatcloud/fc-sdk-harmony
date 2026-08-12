@@ -1,5 +1,5 @@
 import { uploadAll } from './index.ts';
-import type { UploadConfig } from './upload.ts';
+import { resolveUploadEndpoint, type UploadConfig } from './upload.ts';
 
 // The hvigor plugin API (@ohos/hvigor) is provided by DevEco at build time and is
 // not a build-time dependency of this package. We model only the surface we use so
@@ -14,9 +14,9 @@ export interface HvigorPlugin {
 }
 
 export interface FlashcatPluginOptions {
-  /** RUM ingest base URL. Optional — defaults to $FLASHCAT_ENDPOINT, else the SaaS
-   *  ingest (https://browser.flashcat.cloud). Set it (or the env var) for staging /
-   *  self-hosted. */
+  /** Symbol-upload base URL. Optional — defaults to $FLASHCAT_SOURCEMAP_INTAKE_URL,
+   *  then legacy $FLASHCAT_ENDPOINT, then SaaS `https://ci.flashcat.cloud`.
+   *  Set it for private / self-hosted deployments (scheme + host, no path). */
   endpoint?: string;
   apiKey: string;
   service: string;
@@ -67,14 +67,12 @@ export function flashcatSymbolUploadPlugin(options: FlashcatPluginOptions): Hvig
             console.warn('flashcat: FLASHCAT_API_KEY not set — skipping symbol upload.');
             return;
           }
-          // endpoint may be omitted in config; fall back to env then the SaaS ingest.
-          const endpoint = options.endpoint ?? process.env.FLASHCAT_ENDPOINT ?? 'https://browser.flashcat.cloud';
           const cfg: UploadConfig = {
-            endpoint,
+            endpoint: resolveUploadEndpoint(options.endpoint),
             apiKey: options.apiKey,
             service: options.service,
             version: options.version,
-            pluginVersion: options.pluginVersion ?? '0.1.2' // keep in sync with package.json version
+            pluginVersion: options.pluginVersion ?? '0.1.3' // keep in sync with package.json version
           };
           const buildDir = `${node.getNodePath()}/${options.buildDir ?? 'build/default'}`;
           // eslint-disable-next-line no-console

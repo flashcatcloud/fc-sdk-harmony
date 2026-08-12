@@ -12,15 +12,21 @@ Zero runtime dependencies (uses Node ≥18 built-in `fetch`/`FormData`).
 
 ## Install
 
-hvigor plugins are declared in the project's `hvigor/hvigor-config.json5`
-`dependencies` (this is the hvigor mechanism — **not** `ohpm install`, which is for
-ArkTS/ohpm packages). hvigor installs it from npm and resolves the import below.
+The plugin is published on **npm**, not ohpm. Install it as a devDependency in
+the project root `package.json` (not `oh-package.json5`):
+
+```sh
+npm install -D @flashcatcloud/hvigor-plugin
+```
+
+Alternatively, declare it in `hvigor/hvigor-config.json5` `dependencies` —
+hvigor still fetches it from npm:
 
 ```json5
 {
   "modelVersion": "5.0.0",
   "dependencies": {
-    "@flashcatcloud/hvigor-plugin": "^0.1.0"
+    "@flashcatcloud/hvigor-plugin": "^0.1.3"
   }
 }
 ```
@@ -37,7 +43,9 @@ export default {
   system: hapTasks,
   plugins: [
     flashcatSymbolUploadPlugin({
-      endpoint: 'https://browser.flashcat.cloud', // staging: https://jira.flashcat.cloud
+      // SaaS default is https://ci.flashcat.cloud. For a private deployment,
+      // set endpoint (or FLASHCAT_SOURCEMAP_INTAKE_URL) to scheme + host, no path.
+      endpoint: 'https://ci.flashcat.cloud',
       apiKey: process.env.FLASHCAT_API_KEY ?? '',
       service: 'my-app',
       version: '1.0.0',
@@ -54,6 +62,9 @@ FLASHCAT_UPLOAD=1 FLASHCAT_API_KEY=*** \
   hvigorw uploadFlashcatSymbols --mode module -p module=entry@default -p product=default
 ```
 
+`endpoint` may be omitted: the plugin then uses `FLASHCAT_SOURCEMAP_INTAKE_URL`,
+then legacy `FLASHCAT_ENDPOINT`, then SaaS `https://ci.flashcat.cloud`.
+
 The task is registered with `dependencies: ['assembleHap','assembleHar']` (it runs
 after the assemble tasks), so the sourcemap + native libs exist when it runs. A missing artifact or upload
 failure is logged but never fails the build.
@@ -63,7 +74,7 @@ failure is logged but never fails the build.
 ```ts
 import { uploadAll } from '@flashcatcloud/hvigor-plugin';
 const result = await uploadAll('entry/build/default', {
-  endpoint, apiKey, service, version, pluginVersion: '0.1.0'
+  endpoint, apiKey, service, version, pluginVersion: '0.1.3'
 }, console.log);
 ```
 

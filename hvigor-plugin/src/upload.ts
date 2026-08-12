@@ -9,8 +9,33 @@ export const TYPE_SOURCEMAP = 'harmony_sourcemap';
 /** event.type for a native (.so DWARF) symbol-file upload. */
 export const TYPE_SYMBOL_FILE = 'harmony_symbol_file';
 
+/** SaaS sourcemap/symbol upload host. Distinct from RUM ingest (`browser.flashcat.cloud`). */
+export const DEFAULT_UPLOAD_ENDPOINT = 'https://ci.flashcat.cloud';
+
+/**
+ * Resolve the symbol-upload base URL.
+ * Priority: explicit `endpoint` option → `FLASHCAT_SOURCEMAP_INTAKE_URL` (same
+ * var as Android / flashcat-cli) → legacy `FLASHCAT_ENDPOINT` → SaaS default.
+ */
+export function resolveUploadEndpoint(explicit?: string): string {
+  const fromEnv = process.env.FLASHCAT_SOURCEMAP_INTAKE_URL || process.env.FLASHCAT_ENDPOINT;
+  return (explicit || fromEnv || DEFAULT_UPLOAD_ENDPOINT).trim().replace(/\/+$/, '');
+}
+
+/**
+ * Build the upload URL. Accepts either a base host or a full
+ * `.../sourcemap/upload` path so private-deploy pastes don't double the suffix.
+ */
+export function resolveSourcemapUploadUrl(endpoint: string): string {
+  const normalized = endpoint.trim().replace(/\/+$/, '');
+  if (normalized.endsWith('/sourcemap/upload')) {
+    return normalized;
+  }
+  return `${normalized}/sourcemap/upload`;
+}
+
 export interface UploadConfig {
-  /** Ingest host, e.g. https://browser.flashcat.cloud (prod) or https://jira.flashcat.cloud (staging). */
+  /** Symbol-upload base URL, e.g. https://ci.flashcat.cloud (SaaS) or a private ingest host. */
   endpoint: string;
   apiKey: string;
   service: string;
@@ -53,7 +78,7 @@ function headers(cfg: UploadConfig): Record<string, string> {
 }
 
 function uploadUrl(cfg: UploadConfig): string {
-  return `${cfg.endpoint.replace(/\/+$/, '')}/sourcemap/upload`;
+  return resolveSourcemapUploadUrl(cfg.endpoint);
 }
 
 function fileBlob(filePath: string): Blob {
