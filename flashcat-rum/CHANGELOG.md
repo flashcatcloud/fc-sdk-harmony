@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.4.0
+
+- Version bump to keep the SDK packages in lockstep (see `@flashcatcloud/trace`
+  0.4.0: resources can now be reported from any network stack).
+
 ## 0.3.2
 
 - Crash attribution now covers faults the SDK cannot observe in-process. Native

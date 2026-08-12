@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.4.0
+
+- Version bump to keep the SDK packages in lockstep.
+
 ## 0.3.2
 
 - Added a durable snapshot of the last written ViewEvent, used by the RUM
