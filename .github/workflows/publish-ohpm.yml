@@ -20,6 +20,12 @@ concurrency:
   group: publish-ohpm-${{ github.ref }}
   cancel-in-progress: false
 
+# Workflow-level so the notification jobs describe the same set the publish job
+# actually handled — the list used to be written out separately in four places
+# and went stale the first time a package was added.
+env:
+  HARMONY_MODULES: "flashcat_core flashcat_rum flashcat_crash flashcat_trace flashcat_axios"
+
 jobs:
   publish-ohpm:
     name: Publish Harmony SDK packages to OHPM
@@ -30,7 +36,6 @@ jobs:
 
     env:
       OHPM_PUBLISH_REGISTRY: https://ohpm.openharmony.cn/ohpm/
-      HARMONY_MODULES: "flashcat_core flashcat_rum flashcat_crash flashcat_trace flashcat_axios"
       HARMONY_COMMAND_LINE_TOOLS_HOME: ${{ vars.HARMONY_COMMAND_LINE_TOOLS_HOME }}
       DEVECO_SDK_HOME: ${{ vars.DEVECO_SDK_HOME }}
 
@@ -226,10 +231,24 @@ jobs:
         if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.dry_run) }}
         run: |
           set -euo pipefail
-          ohpm publish flashcat-core/build/default/outputs/default/flashcat_core.har --publish_registry "$OHPM_PUBLISH_REGISTRY"
-          ohpm publish flashcat-rum/build/default/outputs/default/flashcat_rum.har --publish_registry "$OHPM_PUBLISH_REGISTRY"
-          ohpm publish flashcat-crash/build/default/outputs/default/flashcat_crash.har --publish_registry "$OHPM_PUBLISH_REGISTRY"
-          ohpm publish flashcat-trace/build/default/outputs/default/flashcat_trace.har --publish_registry "$OHPM_PUBLISH_REGISTRY"
+          for module in $HARMONY_MODULES; do
+            dir="${module//_/-}"
+            har="${dir}/build/default/outputs/default/${module}.har"
+            echo "==> publishing ${har}"
+            if output=$(ohpm publish "$har" --publish_registry "$OHPM_PUBLISH_REGISTRY" 2>&1); then
+              echo "$output"
+              continue
+            fi
+            echo "$output"
+            # Re-running a release, or catching up a package the previous run
+            # missed, re-submits versions the registry already holds. That is
+            # not a failure of this run; anything else is.
+            if echo "$output" | grep -qiE "already (exist|publish)"; then
+              echo "::warning::${module}: this version is already on the registry, skipping"
+              continue
+            fi
+            exit 1
+          done
 
       - name: Publish summary
         if: always()
@@ -240,10 +259,9 @@ jobs:
             echo "- Ref: ${GITHUB_REF}"
             echo "- Actor: ${GITHUB_ACTOR}"
             echo "- Packages:"
-            echo "  - @flashcatcloud/core"
-            echo "  - @flashcatcloud/rum"
-            echo "  - @flashcatcloud/crash"
-            echo "  - @flashcatcloud/trace"
+            for module in $HARMONY_MODULES; do
+              echo "  - @flashcatcloud/${module#flashcat_}"
+            done
           } >> "$GITHUB_STEP_SUMMARY"
 
   notify-success:
@@ -258,6 +276,11 @@ jobs:
           else
             echo "PUBLISH_MODE=Publish" >> "$GITHUB_ENV"
           fi
+          packages=""
+          for module in $HARMONY_MODULES; do
+            packages="${packages:+${packages}, }@flashcatcloud/${module#flashcat_}"
+          done
+          echo "PACKAGE_LIST=${packages}" >> "$GITHUB_ENV"
 
       - name: Notify DingTalk on success
         uses: zcong1993/actions-ding@master
@@ -269,7 +292,7 @@ jobs:
               "msgtype": "markdown",
               "markdown": {
                 "title": "fc-sdk-harmony OHPM 发布通知",
-                "text": "### ✅ fc-sdk-harmony OHPM 流程成功\n\n---\n\n 🔖 分支/标签: ${{ github.ref }}\n\n 📦 类型: ${{ env.PUBLISH_MODE }}\n\n 📚 包名: @flashcatcloud/core, @flashcatcloud/rum, @flashcatcloud/crash, @flashcatcloud/trace\n\n 👨‍💻 触发人: ${{ github.actor }}\n\n 🚀 [查看详情](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})"
+                "text": "### ✅ fc-sdk-harmony OHPM 流程成功\n\n---\n\n 🔖 分支/标签: ${{ github.ref }}\n\n 📦 类型: ${{ env.PUBLISH_MODE }}\n\n 📚 包名: ${{ env.PACKAGE_LIST }}\n\n 👨‍💻 触发人: ${{ github.actor }}\n\n 🚀 [查看详情](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})"
               }
             }
 
@@ -285,6 +308,11 @@ jobs:
           else
             echo "PUBLISH_MODE=Publish" >> "$GITHUB_ENV"
           fi
+          packages=""
+          for module in $HARMONY_MODULES; do
+            packages="${packages:+${packages}, }@flashcatcloud/${module#flashcat_}"
+          done
+          echo "PACKAGE_LIST=${packages}" >> "$GITHUB_ENV"
 
       - name: Notify DingTalk on failure
         uses: zcong1993/actions-ding@master
@@ -296,6 +324,6 @@ jobs:
               "msgtype": "markdown",
               "markdown": {
                 "title": "fc-sdk-harmony OHPM 发布通知",
-                "text": "### ❌ fc-sdk-harmony OHPM 流程失败\n\n---\n\n 🔖 分支/标签: ${{ github.ref }}\n\n 📦 类型: ${{ env.PUBLISH_MODE }}\n\n 📚 包名: @flashcatcloud/core, @flashcatcloud/rum, @flashcatcloud/crash, @flashcatcloud/trace\n\n 👨‍💻 触发人: ${{ github.actor }}\n\n 🚀 [查看详情](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})"
+                "text": "### ❌ fc-sdk-harmony OHPM 流程失败\n\n---\n\n 🔖 分支/标签: ${{ github.ref }}\n\n 📦 类型: ${{ env.PUBLISH_MODE }}\n\n 📚 包名: ${{ env.PACKAGE_LIST }}\n\n 👨‍💻 触发人: ${{ github.actor }}\n\n 🚀 [查看详情](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})"
               }
             }
