@@ -8,7 +8,6 @@ export {
 } from './collect.ts';
 export {
   uploadSourcemap, uploadSymbol, sourcemapEvent, symbolFileEvent,
-  resolveUploadEndpoint, resolveSourcemapUploadUrl, DEFAULT_UPLOAD_ENDPOINT,
   ORIGIN, TYPE_SOURCEMAP, TYPE_SYMBOL_FILE, type UploadConfig
 } from './upload.ts';
 export { flashcatSymbolUploadPlugin } from './plugin.ts';

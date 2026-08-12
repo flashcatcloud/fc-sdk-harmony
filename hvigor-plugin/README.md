@@ -43,9 +43,9 @@ export default {
   system: hapTasks,
   plugins: [
     flashcatSymbolUploadPlugin({
-      // SaaS default is https://ci.flashcat.cloud. For a private deployment,
-      // set endpoint (or FLASHCAT_SOURCEMAP_INTAKE_URL) to scheme + host, no path.
-      endpoint: 'https://ci.flashcat.cloud',
+      // Omit endpoint for SaaS (defaults to https://ci.flashcat.cloud).
+      // Private deploy: set FLASHCAT_SOURCEMAP_INTAKE_URL=https://rum.example.com
+      // (scheme + host, no path), or pass endpoint: 'https://rum.example.com'.
       apiKey: process.env.FLASHCAT_API_KEY ?? '',
       service: 'my-app',
       version: '1.0.0',
@@ -62,8 +62,14 @@ FLASHCAT_UPLOAD=1 FLASHCAT_API_KEY=*** \
   hvigorw uploadFlashcatSymbols --mode module -p module=entry@default -p product=default
 ```
 
-`endpoint` may be omitted: the plugin then uses `FLASHCAT_SOURCEMAP_INTAKE_URL`,
-then legacy `FLASHCAT_ENDPOINT`, then SaaS `https://ci.flashcat.cloud`.
+Endpoint resolution (first match wins):
+
+1. `endpoint` option — if provided (even as `''`), it is the only source; empty/invalid **skips** upload (no SaaS fallback)
+2. `FLASHCAT_SOURCEMAP_INTAKE_URL` (preferred for private deploys; same name as Android / flashcat-cli)
+3. Legacy `FLASHCAT_ENDPOINT` (deprecated; emits a warning — historically often set to the RUM host `browser.flashcat.cloud`, which 404s on symbol upload)
+4. SaaS default `https://ci.flashcat.cloud`
+
+Do **not** use `browser.flashcat.cloud` / `jira.flashcat.cloud` for symbol upload — those are RUM ingest hosts only.
 
 The task is registered with `dependencies: ['assembleHap','assembleHar']` (it runs
 after the assemble tasks), so the sourcemap + native libs exist when it runs. A missing artifact or upload
@@ -74,7 +80,8 @@ failure is logged but never fails the build.
 ```ts
 import { uploadAll } from '@flashcatcloud/hvigor-plugin';
 const result = await uploadAll('entry/build/default', {
-  endpoint, apiKey, service, version, pluginVersion: '0.1.3'
+  endpoint: process.env.FLASHCAT_SOURCEMAP_INTAKE_URL || 'https://ci.flashcat.cloud',
+  apiKey, service, version, pluginVersion: '0.1.3'
 }, console.log);
 ```
 

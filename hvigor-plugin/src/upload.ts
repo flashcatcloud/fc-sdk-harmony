@@ -10,16 +10,93 @@ export const TYPE_SOURCEMAP = 'harmony_sourcemap';
 export const TYPE_SYMBOL_FILE = 'harmony_symbol_file';
 
 /** SaaS sourcemap/symbol upload host. Distinct from RUM ingest (`browser.flashcat.cloud`). */
-export const DEFAULT_UPLOAD_ENDPOINT = 'https://ci.flashcat.cloud';
+const DEFAULT_UPLOAD_ENDPOINT = 'https://ci.flashcat.cloud';
+
+/** Known RUM-ingest-only hosts that 404 on `/sourcemap/upload`. */
+const RUM_INGEST_ONLY_HOSTS = new Set(['browser.flashcat.cloud', 'jira.flashcat.cloud']);
+
+export type EndpointResolution =
+  | { ok: true; endpoint: string; warnings: string[] }
+  | { ok: false; reason: string };
 
 /**
  * Resolve the symbol-upload base URL.
- * Priority: explicit `endpoint` option → `FLASHCAT_SOURCEMAP_INTAKE_URL` (same
- * var as Android / flashcat-cli) → legacy `FLASHCAT_ENDPOINT` → SaaS default.
+ *
+ * Priority when `explicit` is **omitted** (`undefined`):
+ * `FLASHCAT_SOURCEMAP_INTAKE_URL` → legacy `FLASHCAT_ENDPOINT` → SaaS default.
+ *
+ * When `explicit` is provided (including `''`), it is the only source — an empty
+ * or invalid value skips the upload instead of falling back to SaaS.
  */
-export function resolveUploadEndpoint(explicit?: string): string {
-  const fromEnv = process.env.FLASHCAT_SOURCEMAP_INTAKE_URL || process.env.FLASHCAT_ENDPOINT;
-  return (explicit || fromEnv || DEFAULT_UPLOAD_ENDPOINT).trim().replace(/\/+$/, '');
+export function resolveUploadEndpoint(
+  explicit?: string,
+  env: NodeJS.ProcessEnv = process.env
+): EndpointResolution {
+  const warnings: string[] = [];
+
+  let raw: string;
+  let source: 'option' | 'FLASHCAT_SOURCEMAP_INTAKE_URL' | 'FLASHCAT_ENDPOINT' | 'default';
+
+  if (explicit !== undefined) {
+    raw = explicit.trim();
+    source = 'option';
+    if (!raw) {
+      return { ok: false, reason: 'endpoint is empty — skipping symbol upload (will not fall back to SaaS)' };
+    }
+  } else if (env.FLASHCAT_SOURCEMAP_INTAKE_URL !== undefined) {
+    raw = env.FLASHCAT_SOURCEMAP_INTAKE_URL.trim();
+    source = 'FLASHCAT_SOURCEMAP_INTAKE_URL';
+    if (!raw) {
+      return {
+        ok: false,
+        reason: 'FLASHCAT_SOURCEMAP_INTAKE_URL is empty — skipping symbol upload (will not fall back to SaaS)'
+      };
+    }
+  } else if (env.FLASHCAT_ENDPOINT !== undefined) {
+    raw = env.FLASHCAT_ENDPOINT.trim();
+    source = 'FLASHCAT_ENDPOINT';
+    if (!raw) {
+      return {
+        ok: false,
+        reason: 'FLASHCAT_ENDPOINT is empty — skipping symbol upload (will not fall back to SaaS)'
+      };
+    }
+    warnings.push(
+      'FLASHCAT_ENDPOINT is deprecated for symbol upload; prefer FLASHCAT_SOURCEMAP_INTAKE_URL (or omit for SaaS)'
+    );
+  } else {
+    raw = DEFAULT_UPLOAD_ENDPOINT;
+    source = 'default';
+  }
+
+  let url: URL;
+  try {
+    url = new URL(raw);
+  } catch {
+    return { ok: false, reason: `invalid symbol-upload endpoint from ${source}: ${JSON.stringify(raw)}` };
+  }
+
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+    return {
+      ok: false,
+      reason: `symbol-upload endpoint from ${source} must be http(s), got ${url.protocol}`
+    };
+  }
+  if (url.search || url.hash) {
+    return {
+      ok: false,
+      reason: `symbol-upload endpoint from ${source} must not include query or hash`
+    };
+  }
+
+  if (RUM_INGEST_ONLY_HOSTS.has(url.hostname)) {
+    warnings.push(
+      `${url.hostname} is a RUM ingest host and returns 404 on /sourcemap/upload — use https://ci.flashcat.cloud (SaaS) or your private symbol-upload base URL`
+    );
+  }
+
+  const endpoint = raw.replace(/\/+$/, '');
+  return { ok: true, endpoint, warnings };
 }
 
 /**
