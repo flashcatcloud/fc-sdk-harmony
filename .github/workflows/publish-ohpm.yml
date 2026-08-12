@@ -30,7 +30,7 @@ jobs:
 
     env:
       OHPM_PUBLISH_REGISTRY: https://ohpm.openharmony.cn/ohpm/
-      HARMONY_MODULES: "flashcat_core flashcat_rum flashcat_crash flashcat_trace"
+      HARMONY_MODULES: "flashcat_core flashcat_rum flashcat_crash flashcat_trace flashcat_axios"
       HARMONY_COMMAND_LINE_TOOLS_HOME: ${{ vars.HARMONY_COMMAND_LINE_TOOLS_HOME }}
       DEVECO_SDK_HOME: ${{ vars.DEVECO_SDK_HOME }}
 

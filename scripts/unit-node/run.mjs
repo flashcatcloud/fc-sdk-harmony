@@ -43,7 +43,7 @@ if (ts === null) {
   process.exit(2);
 }
 
-const MODULES = ['flashcat-core', 'flashcat-rum', 'flashcat-crash', 'flashcat-trace'];
+const MODULES = ['flashcat-core', 'flashcat-rum', 'flashcat-crash', 'flashcat-trace', 'flashcat-axios'];
 
 // ---- transpile ----
 fs.rmSync(outRoot, { recursive: true, force: true });
@@ -104,7 +104,8 @@ const SHIM_MAP = {
   '@kit.PerformanceAnalysisKit': path.join(shimDir, 'kit-performance.js'),
   '@kit.RemoteCommunicationKit': path.join(shimDir, 'kit-rcp.js'),
   '@ohos.app.ability.appRecovery': path.join(shimDir, 'app-recovery.js'),
-  '@flashcatcloud/core': path.join(outRoot, 'flashcat-core', 'Index.js')
+  '@flashcatcloud/core': path.join(outRoot, 'flashcat-core', 'Index.js'),
+  '@flashcatcloud/trace': path.join(outRoot, 'flashcat-trace', 'Index.js')
 };
 Module._resolveFilename = function patched(request, ...rest) {
   if (SHIM_MAP[request] !== undefined) {

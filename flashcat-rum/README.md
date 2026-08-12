@@ -14,7 +14,7 @@ ohpm install @flashcatcloud/rum
 ## Usage
 
 ```ts
-import { FlashcatRum, RumConfigurationBuilder } from '@flashcatcloud/rum';
+import { FlashcatRum, GlobalRumMonitor, RumConfigurationBuilder } from '@flashcatcloud/rum';
 
 const rumConfig = new RumConfigurationBuilder('<application-id>')
   .setTrackUserInteractions(true)
@@ -22,7 +22,7 @@ const rumConfig = new RumConfigurationBuilder('<application-id>')
   .build();
 
 FlashcatRum.enable(rumConfig);
-FlashcatRum.startView('home', 'Home');
+GlobalRumMonitor.get().startView('home', 'Home');
 ```
 
 ## Instrumentation coverage (read before integrating)

@@ -48,6 +48,18 @@
       ]
     },
     {
+      name: "flashcat_axios",
+      srcPath: "./flashcat-axios",
+      targets: [
+        {
+          name: "default",
+          applyToProducts: [
+            "default"
+          ]
+        }
+      ]
+    },
+    {
       name: "flashcat_trace",
       srcPath: "./flashcat-trace",
       targets: [

@@ -1,37 +1,40 @@
-/**
- * axios instrumentation built on `FlashcatTrace.startTracedResource` — the
- * network-stack-agnostic entry point.
- *
- * `@ohos/axios` sends requests through its own `@ohos.net.http` adapter, which
- * neither the rcp interceptor nor the `FlashcatHttp` wrapper observes. The
- * primitive registers the resource and hands back the trace headers, leaving
- * this file with only what is genuinely axios-shaped: resolving the url,
- * copying headers onto the request, and carrying the key between the two
- * interceptors.
- *
- * ```ets
- * const api = axios.create({ baseURL: 'https://api.example.com' });
- * trackAxios(api);
- * ```
- *
- * Requires `setTrackNetworkRequests(true)` on the RUM configuration — the
- * resource travels the same path as the rcp interceptor and FlashcatHttp.
- */
 import { AxiosInstance, InternalAxiosRequestConfig, AxiosResponse, AxiosError } from '@ohos/axios';
 import { FlashcatTrace, TracedResource } from '@flashcatcloud/trace';
 
 /**
- * Resource keys of in-flight requests, keyed by the axios request config —
- * axios hands the same object back on `response.config` and `error.config`.
+ * Resource keys of in-flight requests, keyed by the axios request config.
+ * axios hands the very same config object back on `response.config` and
+ * `error.config`, which makes it a reliable join key across the two
+ * interceptors.
  */
 const pending: Map<Object, string> = new Map();
 
-/** Report every request made through `instance` as a RUM resource. */
+/**
+ * Reports every request made through `instance` as a RUM resource, with the
+ * distributed-trace headers attached.
+ *
+ * ```ets
+ * import axios from '@ohos/axios';
+ * import { trackAxios } from '@flashcatcloud/axios';
+ *
+ * const api = axios.create({ baseURL: 'https://api.example.com' });
+ * trackAxios(api);
+ * ```
+ *
+ * Interceptors are registered per instance: the default `axios` export and
+ * anything from `axios.create()` do not share them. Track each instance whose
+ * requests should appear in RUM, and track it exactly once — registering twice
+ * reports every request twice.
+ *
+ * Requires `FlashcatTrace.enable(...)` and, for resources to surface,
+ * `FlashcatRum.enable(...)` with `setTrackNetworkRequests(true)`.
+ */
 export function trackAxios(instance: AxiosInstance): void {
   instance.interceptors.request.use((config: InternalAxiosRequestConfig) => {
-    // A request interceptor sees the relative path; axios joins it with
-    // `baseURL` inside the adapter. Without the host the first-party check
-    // cannot match, and the resource would carry a path with no host.
+    // A request interceptor sees `config.url` as the relative path — axios
+    // joins it with `baseURL` further down, inside the adapter. Resolving it
+    // here is what lets the first-party host check match, and what puts a full
+    // url on the resource instead of a bare path.
     const url: string = fullUrlOf(config);
     // An inbound traceparent means this request already belongs to a trace.
     const traced: TracedResource = FlashcatTrace.startTracedResource(
@@ -54,8 +57,10 @@ export function trackAxios(instance: AxiosInstance): void {
     },
     (error: AxiosError) => {
       // axios rejects on HTTP status, so this branch is not only transport
-      // failures. A response means the request completed and stays a resource
-      // carrying that status; only a request that never got one is an error.
+      // failures. A response means the request completed, so it stays a
+      // resource carrying that status — matching how the rcp interceptor and
+      // FlashcatHttp report a 404. Only a request that never got a response
+      // becomes a network error.
       const key: string = takeKey(error.config);
       if (key.length > 0) {
         const response: AxiosResponse | undefined = error.response;
@@ -70,8 +75,13 @@ export function trackAxios(instance: AxiosInstance): void {
   );
 }
 
-/** The url axios will actually request: `baseURL` joined with the path. */
-function fullUrlOf(config: InternalAxiosRequestConfig): string {
+/**
+ * The url axios will actually request: `baseURL` joined with the per-request
+ * path, unless the path is already absolute.
+ *
+ * @internal — exported for tests.
+ */
+export function fullUrlOf(config: InternalAxiosRequestConfig): string {
   const url: string = config.url ?? '';
   const base: string = config.baseURL ?? '';
   if (url.startsWith('http://') || url.startsWith('https://')) {
@@ -101,8 +111,13 @@ function takeKey(config: Object | undefined): string {
   return key;
 }
 
-/** Best-effort response size; axios exposes the decoded body, not raw bytes. */
-function sizeOf(data: Object | undefined): number {
+/**
+ * Best-effort response size — axios exposes the decoded body, not the bytes
+ * that came off the wire.
+ *
+ * @internal — exported for tests.
+ */
+export function sizeOf(data: Object | undefined): number {
   if (data instanceof ArrayBuffer) {
     return data.byteLength;
   }

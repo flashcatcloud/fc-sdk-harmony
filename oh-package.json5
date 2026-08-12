@@ -13,6 +13,7 @@
     "@ohos/hamock": "1.0.0"
   },
   overrides: {
-    "@flashcatcloud/core": "file:./flashcat-core"
+    "@flashcatcloud/core": "file:./flashcat-core",
+    "@flashcatcloud/trace": "file:./flashcat-trace"
   }
 }

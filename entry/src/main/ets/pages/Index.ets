@@ -11,7 +11,7 @@ import testNapi from 'libentry.so';
 import { DemoSdk } from '../common/DemoSdk';
 import { SpikeMode, SpikeModeStore } from '../common/SpikeMode';
 import axios, { AxiosInstance, AxiosResponse } from '@ohos/axios';
-import { trackAxios } from '../common/AxiosTracking';
+import { trackAxios } from '@flashcatcloud/axios';
 
 /** ArkTS requires every object literal to have a declared type. */
 interface AxiosDemoPayload {
