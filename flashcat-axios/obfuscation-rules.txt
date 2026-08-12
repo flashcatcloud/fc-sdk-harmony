@@ -1,0 +1,3 @@
+# Keep the axios integration entry point readable for integrators.
+-keep-global-name
+  trackAxios

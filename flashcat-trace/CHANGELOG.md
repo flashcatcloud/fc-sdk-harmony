@@ -1,7 +1,12 @@
 # Changelog
 
-## Unreleased
+## 0.4.0
 
+- **Breaking**: `FlashcatHttp.hostOf()` removed. Host parsing moved behind the
+  first-party gate inside the SDK and the method had no callers left; it was a
+  URL helper on a public class rather than part of what this package does.
+  Applications that called it can extract the host themselves — it was a plain
+  string operation with no SDK state behind it.
 - `FlashcatTrace.startTracedResource(url, method, injectTrace?)` +
   `stopTracedResource` / `failTracedResource`: report a request as a RUM
   resource from any network stack the SDK cannot instrument itself — axios, a
@@ -11,9 +16,6 @@
   Requires `setTrackNetworkRequests(true)`, like every other network path.
 - `FlashcatHttp` now builds on the same entry point instead of duplicating the
   injection and resource-lifecycle logic.
-- **Breaking**: `FlashcatHttp.hostOf()` removed. Host parsing moved behind the
-  first-party gate inside the SDK and the method had no callers left; it was a
-  URL helper rather than part of this package's purpose.
 
 ## 0.3.2
 
