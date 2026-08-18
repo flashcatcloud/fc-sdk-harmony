@@ -10,6 +10,9 @@ import { TrackingConsent } from '@flashcatcloud/core';
 import testNapi from 'libentry.so';
 import { DemoSdk } from '../common/DemoSdk';
 import { SpikeMode, SpikeModeStore } from '../common/SpikeMode';
+import {
+  BenchSample, BenchStats, NetworkContentionBench
+} from '../common/NetworkContentionBench';
 import axios, { AxiosInstance, AxiosResponse } from '@ohos/axios';
 import { trackAxios } from '@flashcatcloud/axios';
 
@@ -101,7 +104,8 @@ struct Index {
 
   private initSdkE2e(trackErrors: boolean): void {
     try {
-      DemoSdk.init(this.context, this.useProd, this.customEndpoint, false, trackErrors);
+      const pacing: string = AppStorage.get<string>('netbenchPacing') ?? 'demo'; // SDK init only
+      DemoSdk.init(this.context, this.useProd, this.customEndpoint, false, trackErrors, pacing);
     } catch (e) {
       this.append(e instanceof Error ? e.message : 'SDK initialization failed');
       return;
@@ -111,6 +115,43 @@ struct Index {
     DemoSdk.monitor().startView('demo-home', 'DemoHome');
     FlashcatRum.startViewTracking(this.getUIContext());
     this.append(`init OK (${DemoSdk.currentEnv()}); trackErrors=${trackErrors}`);
+  }
+
+  /**
+   * Network-contention measurement, one group per app run. `netbench_pacing`
+   * selects the group: 'off' is the baseline (SDK present but silent), while
+   * 'default' and 'low' generate load under their respective pacing settings.
+   *
+   * Results go to HiLog under NETBENCH so a run is driven and collected over
+   * hdc alone — no tapping, reproducible from a script on any SDK version.
+   */
+  private async runNetBench(url: string): Promise<void> {
+    const rounds: number = Number.parseInt(AppStorage.get<string>('netbenchRounds') ?? '20', 10);
+    const bodyBytes: number = Number.parseInt(AppStorage.get<string>('netbenchBodyBytes') ?? '16384', 10);
+    const perTick: number = Number.parseInt(AppStorage.get<string>('netbenchEvents') ?? '10', 10);
+    const pacing: string = AppStorage.get<string>('netbenchPacing') ?? 'off';
+    const uploading: boolean = pacing !== 'off';
+    hilog.info(0x0000, 'NETBENCH', 'group=%{public}s rounds=%{public}d body=%{public}d perTick=%{public}d',
+      pacing, rounds, bodyBytes, perTick);
+    try {
+      const samples: Array<BenchSample> = await NetworkContentionBench.runGroup(
+        url, rounds, bodyBytes, perTick, uploading,
+        (done: number, total: number): void => {
+          hilog.info(0x0000, 'NETBENCH', 'progress %{public}d/%{public}d', done, total);
+        });
+      const stats: BenchStats = NetworkContentionBench.summarize(samples);
+      hilog.info(0x0000, 'NETBENCH', 'result group=%{public}s n=%{public}d mean=%{public}d p50=%{public}d p95=%{public}d failures=%{public}d',
+        pacing, stats.count, stats.meanMs, stats.p50Ms, stats.p95Ms, stats.failures);
+      for (const sample of samples) {
+        hilog.info(0x0000, 'NETBENCH', 'sample %{public}d %{public}d %{public}s',
+          sample.round, sample.durationMs, `${sample.ok}`);
+      }
+      hilog.info(0x0000, 'NETBENCH', 'done');
+      this.append(`netbench ${pacing}: mean ${stats.meanMs}ms p95 ${stats.p95Ms}ms`);
+    } catch (e) {
+      hilog.error(0x0000, 'NETBENCH', 'failed: %{public}s',
+        e instanceof Error ? e.message : `${e}`);
+    }
   }
 
   private runE2eScenario(name: string): void {
@@ -137,6 +178,10 @@ struct Index {
       this.axiosRequest('GET', `${endpoint}/e2e/echo`);
       this.axiosRequest('GET', `${endpoint}/e2e/status/404`);
       this.append('e2e: axios scenario emitted');
+    } else if (name === 'netbench') {
+      const endpoint: string = AppStorage.get<string>('e2eEndpoint') ?? '';
+      this.append('e2e: netbench started');
+      this.runNetBench(`${endpoint}/e2e/echo`);
     } else if (name === 'crash') {
       this.append('e2e: crashing in 800ms');
       setTimeout(() => {
