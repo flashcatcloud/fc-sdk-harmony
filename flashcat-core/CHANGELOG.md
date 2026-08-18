@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.5.1
+
+- Version bump to keep the SDK packages in lockstep (see `@flashcatcloud/rum`
+  0.5.1: app freezes are now categorized as ANR).
+
 ## 0.5.0
 
 ### Breaking
