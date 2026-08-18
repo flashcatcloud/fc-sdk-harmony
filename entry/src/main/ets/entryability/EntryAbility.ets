@@ -98,6 +98,17 @@ export default class EntryAbility extends UIAbility {
       AppStorage.setOrCreate('e2eEndpoint', e2eEndpoint);
       AppStorage.setOrCreate('e2eScenario', scenario);
       AppStorage.setOrCreate('e2eRunSeq', (AppStorage.get<number>('e2eRunSeq') ?? 0) + 1);
+      // netbench knobs, so a run's shape is set from the command line rather
+      // than baked into the build.
+      const rounds: Object | undefined = params['netbench_rounds'];
+      const events: Object | undefined = params['netbench_events'];
+      AppStorage.setOrCreate('netbenchRounds', typeof rounds === 'string' ? rounds : '20');
+      AppStorage.setOrCreate('netbenchEvents', typeof events === 'string' ? events : '200');
+      const pacing: Object | undefined = params['netbench_pacing'];
+      AppStorage.setOrCreate('netbenchPacing', typeof pacing === 'string' ? pacing : 'demo');
+      const bodyBytes: Object | undefined = params['netbench_body_bytes'];
+      AppStorage.setOrCreate('netbenchBodyBytes',
+        typeof bodyBytes === 'string' ? bodyBytes : '16384');
       hilog.info(DOMAIN, TAG, 'e2e params from %{public}s: endpoint=%{public}s scenario=%{public}s',
         from, e2eEndpoint, scenario);
     } else {

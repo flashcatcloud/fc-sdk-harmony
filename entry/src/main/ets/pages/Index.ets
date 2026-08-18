@@ -10,6 +10,9 @@ import { TrackingConsent } from '@flashcatcloud/core';
 import testNapi from 'libentry.so';
 import { DemoSdk } from '../common/DemoSdk';
 import { SpikeMode, SpikeModeStore } from '../common/SpikeMode';
+import {
+  BenchReport, BenchSample, NetworkContentionBench
+} from '../common/NetworkContentionBench';
 import axios, { AxiosInstance, AxiosResponse } from '@ohos/axios';
 import { trackAxios } from '@flashcatcloud/axios';
 
@@ -101,7 +104,8 @@ struct Index {
 
   private initSdkE2e(trackErrors: boolean): void {
     try {
-      DemoSdk.init(this.context, this.useProd, this.customEndpoint, false, trackErrors);
+      const pacing: string = AppStorage.get<string>('netbenchPacing') ?? 'demo';
+      DemoSdk.init(this.context, this.useProd, this.customEndpoint, false, trackErrors, pacing);
     } catch (e) {
       this.append(e instanceof Error ? e.message : 'SDK initialization failed');
       return;
@@ -111,6 +115,46 @@ struct Index {
     DemoSdk.monitor().startView('demo-home', 'DemoHome');
     FlashcatRum.startViewTracking(this.getUIContext());
     this.append(`init OK (${DemoSdk.currentEnv()}); trackErrors=${trackErrors}`);
+  }
+
+  /**
+   * Network-contention A/B. Results go to HiLog under NETBENCH so a run is
+   * driven and collected entirely over hdc — no tapping, and reproducible from
+   * a script on every SDK version.
+   *
+   * Pacing (UploadFrequency / BatchSize / BatchProcessingLevel) is fixed at
+   * initialize, so comparing pacing settings means one app run per setting.
+   * Within a run only the upload on/off state alternates.
+   */
+  private async runNetBench(url: string): Promise<void> {
+    const rounds: number = Number.parseInt(AppStorage.get<string>('netbenchRounds') ?? '20', 10);
+    const events: number = Number.parseInt(AppStorage.get<string>('netbenchEvents') ?? '200', 10);
+    const bodyBytes: number = Number.parseInt(AppStorage.get<string>('netbenchBodyBytes') ?? '16384', 10);
+    hilog.info(0x0000, 'NETBENCH', 'start url=%{public}s rounds=%{public}d events=%{public}d body=%{public}d',
+      url, rounds, events, bodyBytes);
+    try {
+      const samples: Array<BenchSample> = await NetworkContentionBench.run(
+        url, rounds, events, bodyBytes,
+        (done: number, total: number): void => {
+          hilog.info(0x0000, 'NETBENCH', 'progress %{public}d/%{public}d', done, total);
+        });
+      const report: BenchReport = NetworkContentionBench.summarize(samples);
+      hilog.info(0x0000, 'NETBENCH', 'paused n=%{public}d mean=%{public}d p50=%{public}d p95=%{public}d',
+        report.paused.count, report.paused.meanMs, report.paused.p50Ms, report.paused.p95Ms);
+      hilog.info(0x0000, 'NETBENCH', 'active n=%{public}d mean=%{public}d p50=%{public}d p95=%{public}d',
+        report.active.count, report.active.meanMs, report.active.p50Ms, report.active.p95Ms);
+      hilog.info(0x0000, 'NETBENCH', 'delta mean=%{public}s%% p95=%{public}s%% failures=%{public}d',
+        `${report.deltaPercentMean}`, `${report.deltaPercentP95}`, report.failures);
+      for (const sample of samples) {
+        hilog.info(0x0000, 'NETBENCH', 'sample %{public}d %{public}s %{public}d %{public}s',
+          sample.round, sample.arm, sample.durationMs, `${sample.ok}`);
+      }
+      hilog.info(0x0000, 'NETBENCH', 'done');
+      this.append(`netbench: mean ${report.deltaPercentMean}% p95 ${report.deltaPercentP95}%`);
+    } catch (e) {
+      hilog.error(0x0000, 'NETBENCH', 'failed: %{public}s',
+        e instanceof Error ? e.message : `${e}`);
+    }
   }
 
   private runE2eScenario(name: string): void {
@@ -137,6 +181,10 @@ struct Index {
       this.axiosRequest('GET', `${endpoint}/e2e/echo`);
       this.axiosRequest('GET', `${endpoint}/e2e/status/404`);
       this.append('e2e: axios scenario emitted');
+    } else if (name === 'netbench') {
+      const endpoint: string = AppStorage.get<string>('e2eEndpoint') ?? '';
+      this.append('e2e: netbench started');
+      this.runNetBench(`${endpoint}/e2e/echo`);
     } else if (name === 'crash') {
       this.append('e2e: crashing in 800ms');
       setTimeout(() => {

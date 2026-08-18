@@ -1,6 +1,7 @@
 import { common } from '@kit.AbilityKit';
 import {
-  Flashcat, Configuration, ConfigurationBuilder, FlashcatSite, TrackingConsent, UserInfo, UploadFrequency
+  Flashcat, Configuration, ConfigurationBuilder, FlashcatSite, TrackingConsent, UserInfo,
+  UploadFrequency, BatchSize, BatchProcessingLevel
 } from '@flashcatcloud/core';
 import { FlashcatRum, RumConfigurationBuilder, GlobalRumMonitor, RumMonitor } from '@flashcatcloud/rum';
 import { FlashcatTrace, TraceConfigurationBuilder } from '@flashcatcloud/trace';
@@ -37,8 +38,13 @@ export class DemoSdk {
    *        local capture/proxy debugging. Empty → use the site host.
    * @param recover true → opt into REPORT_AND_RECOVER for crash testing.
    */
+  /**
+   * @param pacing 'default' or 'low'. Upload pacing is fixed at initialize, so
+   *   comparing settings means one app run per setting — hence a launch
+   *   parameter rather than a runtime toggle.
+   */
   static init(context: common.Context, prod: boolean, customEndpoint: string,
-    recover: boolean = false, trackErrors: boolean = true): void {
+    recover: boolean = false, trackErrors: boolean = true, pacing: string = 'demo'): void {
     if (DemoSdk.initialized) {
       return;
     }
@@ -51,8 +57,20 @@ export class DemoSdk {
     const builder: ConfigurationBuilder = new ConfigurationBuilder(demoConfig.clientToken, prod ? 'prod' : 'staging')
       .setService(demoConfig.service)
       .useSite(site)
-      .setUploadFrequency(UploadFrequency.FREQUENT) // demo: flush quickly so you see uploads sooner
       .setVerbose(true);               // emit internal HiLog (tag "Flashcat")
+    if (pacing === 'default') {
+      builder.setUploadFrequency(UploadFrequency.AVERAGE)
+        .setBatchSize(BatchSize.MEDIUM)
+        .setBatchProcessingLevel(BatchProcessingLevel.MEDIUM);
+    } else if (pacing === 'low') {
+      // The combination recommended for an app with latency-sensitive requests
+      // of its own on a narrow uplink.
+      builder.setUploadFrequency(UploadFrequency.RARE)
+        .setBatchSize(BatchSize.LARGE)
+        .setBatchProcessingLevel(BatchProcessingLevel.LOW);
+    } else {
+      builder.setUploadFrequency(UploadFrequency.FREQUENT); // demo: see uploads sooner
+    }
     if (customEndpoint.length > 0) {
       builder.setCustomEndpoint(customEndpoint);
     }
