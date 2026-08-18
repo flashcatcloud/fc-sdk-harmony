@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.5.0
+
+- Version bump to keep the SDK packages in lockstep.
+
 ## 0.4.0
 
 - **Breaking**: `FlashcatHttp.hostOf()` removed. Host parsing moved behind the
