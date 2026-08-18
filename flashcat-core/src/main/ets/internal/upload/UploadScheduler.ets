@@ -2,6 +2,11 @@ import { UploadPersistence, Batch } from '../persistence/FilePersistenceStrategy
 import { BatchUploader, UploadStatus } from './DataUploader';
 import { FlashcatLog } from '../FlashcatLog';
 
+// Matches Android's BatchProcessingLevel.MEDIUM. Draining without a bound empties
+// a backlog in one uninterrupted burst, which is what starves an app's own
+// latency-sensitive requests on a narrow uplink.
+const DEFAULT_MAX_BATCHES_PER_CYCLE: number = 10;
+
 /**
  * Drains persisted batches to the uploader on a cadence, with exponential backoff
  * on RETRY. While the app is foregrounded this runs an in-process timer; for
@@ -13,7 +18,18 @@ export class UploadScheduler {
   private readonly persistence: UploadPersistence;
   private readonly uploader: BatchUploader;
   private readonly baseDelayMs: number;
+  /** Batches shipped back-to-back before the cycle yields; see Configuration.maxBatchesPerCycle. */
+  private readonly maxBatchesPerCycle: number;
   private currentDelayMs: number;
+  /** Batches already shipped in the current cycle. Reset when a cycle ends. */
+  private cycleCount: number = 0;
+  /**
+   * Wall-clock instant the current cycle yielded the uplink until, set when the
+   * per-cycle budget is spent. Every scheduling path floors its delay at this —
+   * a bound only honored by the timer path would be no bound at all, since a
+   * force-flush stream re-enters the drain through triggerNow.
+   */
+  private cycleYieldUntilMs: number = 0;
   private timerId: number = -1;
   private running: boolean = false;
   private draining: boolean = false;      // a drainOnce (incl. its await) is in flight
@@ -22,10 +38,12 @@ export class UploadScheduler {
   // `running` because extension/tests legitimately flush without start().
   private stopRequested: boolean = false;
 
-  constructor(persistence: UploadPersistence, uploader: BatchUploader, baseDelayMs: number) {
+  constructor(persistence: UploadPersistence, uploader: BatchUploader, baseDelayMs: number,
+              maxBatchesPerCycle: number = DEFAULT_MAX_BATCHES_PER_CYCLE) {
     this.persistence = persistence;
     this.uploader = uploader;
     this.baseDelayMs = baseDelayMs;
+    this.maxBatchesPerCycle = Math.max(1, maxBatchesPerCycle);
     this.currentDelayMs = baseDelayMs;
   }
 
@@ -38,6 +56,8 @@ export class UploadScheduler {
     // A previous stop (consent PENDING) must not carry its backed-off delay
     // into the new run — restart the exponential ladder from base.
     this.currentDelayMs = this.baseDelayMs;
+    this.cycleCount = 0;
+    this.cycleYieldUntilMs = 0;
     this.scheduleNext(this.baseDelayMs);
   }
 
@@ -57,7 +77,16 @@ export class UploadScheduler {
       clearTimeout(this.timerId);
       this.timerId = -1;
     }
-    this.scheduleNext(0);
+    // Ship at once — unless this cycle already spent its budget. Without the
+    // floor, an app that force-flushes on every error (the usual pattern) would
+    // drain a batch per error and never see the per-cycle bound at all.
+    this.scheduleNext(this.yieldDelayMs());
+  }
+
+  /** Remaining wait owed to a spent cycle; 0 when the cycle has budget left. */
+  private yieldDelayMs(): number {
+    const remainingMs: number = this.cycleYieldUntilMs - Date.now();
+    return remainingMs > 0 ? remainingMs : 0;
   }
 
   stop(): void {
@@ -88,7 +117,9 @@ export class UploadScheduler {
       const batch: Batch | null = this.persistence.readNextBatch();
       if (batch === null) {
         // Idle tick — nothing to drain. Silent (was a debug log) to avoid per-tick spam.
+        // An idle pass also ends the cycle: the next batch starts a fresh budget.
         this.currentDelayMs = this.baseDelayMs;
+        this.cycleCount = 0;
         this.scheduleNext(this.baseDelayMs);
         return;
       }
@@ -100,10 +131,22 @@ export class UploadScheduler {
       if (status === UploadStatus.SUCCESS || status === UploadStatus.DROP) {
         this.persistence.deleteBatch(batch.batchId);
         this.currentDelayMs = this.baseDelayMs;
-        this.scheduleNext(0); // try the next batch immediately (no-op when stopped)
+        this.cycleCount += 1;
+        if (this.cycleCount >= this.maxBatchesPerCycle) {
+          // Cycle budget spent — yield the uplink for one interval instead of
+          // draining the rest of a backlog back-to-back. cycleYieldUntilMs makes
+          // that stick for force-flushes too, not just the timer path.
+          this.cycleCount = 0;
+          this.cycleYieldUntilMs = Date.now() + this.baseDelayMs;
+          this.scheduleNext(this.baseDelayMs);
+        } else {
+          this.scheduleNext(0); // try the next batch immediately (no-op when stopped)
+        }
       } else {
         this.persistence.restoreBatch(batch);
-        // RETRY: keep the batch, back off (capped at 60s).
+        // RETRY: keep the batch, back off (capped at 60s). A failed cycle starts
+        // over — the backoff, not the budget, is what paces retries.
+        this.cycleCount = 0;
         this.currentDelayMs = Math.min(this.currentDelayMs * 2, 60000);
         this.scheduleNext(this.currentDelayMs);
       }
@@ -111,15 +154,18 @@ export class UploadScheduler {
       this.draining = false;
       if (this.retrigger) {
         this.retrigger = false;
-        // Coalesced force-flush that arrived mid-drain. Honor the backoff the
+        // Coalesced force-flush that arrived mid-drain. Honor whatever pacing this
         // drain just chose: draining at delay 0 after a RETRY would let every
-        // force-flushed error reset the exponential backoff, hammering a
-        // failing intake at the app's error rate.
+        // force-flushed error reset the exponential backoff, hammering a failing
+        // intake at the app's error rate — and after a spent cycle it would let a
+        // steady error stream bypass the per-cycle bound entirely.
         if (this.timerId !== -1) {
           clearTimeout(this.timerId);
           this.timerId = -1;
         }
-        this.scheduleNext(this.currentDelayMs > this.baseDelayMs ? this.currentDelayMs : 0);
+        const backoffMs: number = this.currentDelayMs > this.baseDelayMs ? this.currentDelayMs : 0;
+        const yieldMs: number = this.yieldDelayMs();
+        this.scheduleNext(backoffMs > yieldMs ? backoffMs : yieldMs);
       }
     }
   }

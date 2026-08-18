@@ -3,7 +3,7 @@ import { fileIo as fs } from '@kit.CoreFileKit';
 import { FlashcatLog } from '../FlashcatLog';
 
 const MAX_BATCH_BYTES: number = 512 * 1024;       // roll the active file past this size (UTF-8 bytes)
-const MAX_BATCH_AGE_MS: number = 5000;            // …or this age, so events don't linger
+const DEFAULT_BATCH_AGE_MS: number = 5000;        // …or this age, so events don't linger (override: Configuration.batchWindowMs)
 const MAX_TOTAL_BYTES: number = 4 * 1024 * 1024;  // disk quota per feature (oldest-evicted)
 const MAX_BATCH_COUNT: number = 200;              // file-count quota per feature
 // Batches older than this are deleted instead of uploaded: the intake discards
@@ -19,8 +19,11 @@ const UPLOADING_SUFFIX: string = '.uploading';
 const UPLOADING_RECOVERY_AGE_MS: number = 10 * 60 * 1000;
 // A batch created by ANOTHER process may still be that process's active file
 // (appended without any cross-process lock). Owners never append to a file older
-// than MAX_BATCH_AGE_MS (shouldRoll opens a new one), so a foreign batch becomes
+// than their roll window (shouldRoll opens a new one), so a foreign batch becomes
 // safe to claim once it is past the roll age plus slack for an in-flight append.
+// This is why both processes must be built from the SAME Configuration: the guard
+// is derived from THIS instance's window, so a shorter one here would let this
+// process claim a batch the other one is still appending to.
 const FOREIGN_CLAIM_SLACK_MS: number = 2000;
 const PENDING_DIR: string = 'pending';
 const PENDING_FILE: string = 'pending.ndjson';
@@ -59,8 +62,11 @@ export class FilePersistenceStrategy implements UploadPersistence {
   private readonly ownNames: Set<string> = new Set<string>();
   private pendingBytes: number = -1;          // -1 = not yet read from disk
   private seq: number = 0;
+  /** Roll window for the active batch; see Configuration.batchWindowMs. */
+  private readonly batchAgeMs: number;
 
-  constructor(context: common.Context, featureName: string) {
+  constructor(context: common.Context, featureName: string, batchAgeMs: number = DEFAULT_BATCH_AGE_MS) {
+    this.batchAgeMs = batchAgeMs;
     const filesDir: string = context.filesDir;
     this.rootDir = `${filesDir}/flashcat/${featureName}`;
     this.pendingDir = `${this.rootDir}/${PENDING_DIR}`;
@@ -140,7 +146,7 @@ export class FilePersistenceStrategy implements UploadPersistence {
 
   private shouldRoll(now: number, incomingBytes: number): boolean {
     return (this.activeBytes + incomingBytes) > MAX_BATCH_BYTES
-      || (now - this.activeCreatedMs) > MAX_BATCH_AGE_MS;
+      || (now - this.activeCreatedMs) > this.batchAgeMs;
   }
 
   private openNewActive(now: number): void {
@@ -353,7 +359,7 @@ export class FilePersistenceStrategy implements UploadPersistence {
   /** Oldest closed batch ready to upload; ages out the active file first if stale. */
   readNextBatch(): Batch | null {
     const now: number = Date.now();
-    if (this.activeName !== null && (now - this.activeCreatedMs) > MAX_BATCH_AGE_MS) {
+    if (this.activeName !== null && (now - this.activeCreatedMs) > this.batchAgeMs) {
       this.activeName = null; // close so it's eligible in this same pass
     }
     // Recover stale claims on every drain pass, not only at construction — an
@@ -373,7 +379,7 @@ export class FilePersistenceStrategy implements UploadPersistence {
       // appends with no cross-process lock, and claiming it silently loses
       // acknowledged writes (or clobbers them on a later restore).
       if (!this.ownNames.has(originalName)
-        && createdMs > 0 && (now - createdMs) <= MAX_BATCH_AGE_MS + FOREIGN_CLAIM_SLACK_MS) {
+        && createdMs > 0 && (now - createdMs) <= this.batchAgeMs + FOREIGN_CLAIM_SLACK_MS) {
         continue;
       }
       // The claim carries its own timestamp so stale-claim recovery is keyed on

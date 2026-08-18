@@ -34,6 +34,55 @@ Declare in your app's `module.json5` (`requestPermissions`):
   `connectivity` context on every event degrades to `maybe` (unknown) instead of
   the real network status/interfaces.
 
+## Upload pacing
+
+Event uploads share the uplink with the app's own requests. On a narrow
+connection that competition is measurable, so three knobs control how much
+airtime the SDK takes:
+
+```ts
+const config = new ConfigurationBuilder('<client-token>', 'prod')
+  .setBatchUploadFrequencyMs(5000)  // interval between upload cycles (default 5 s)
+  .setBatchWindowMs(35000)          // how long a batch stays open    (default 5 s)
+  .setMaxBatchesPerCycle(1)         // batches per cycle              (default 10)
+  .build();
+```
+
+- **`setBatchWindowMs`** — how long the active batch collects events before it
+  is rolled and becomes drainable. Larger packs more events into each request
+  and compresses better, so the same events cost fewer bytes. The cost is
+  latency: an event can wait this long before it is eligible to ship
+  (`Flashcat.flush()` and backgrounding still roll it early). Clamped to
+  [1 s, 60 s].
+- **`setMaxBatchesPerCycle`** — how many batches ship back-to-back before the
+  cycle yields for one interval. This is what bounds a burst: without it a
+  backlog built up while offline drains in one uninterrupted run. Floored at 1.
+
+These mirror Android's `BatchSize` and `BatchProcessingLevel` as continuous
+values; the default of 10 batches per cycle matches
+`BatchProcessingLevel.MEDIUM`.
+
+**If the app has latency-sensitive requests on a narrow uplink**, set
+`setMaxBatchesPerCycle(1)` and raise `setBatchWindowMs` to 30–35 s.
+
+**If uploads must not overlap one specific operation at all**, pacing is not
+enough — a cycle already in flight cannot be recalled. Gate uploads instead:
+`Flashcat.setTrackingConsent(TrackingConsent.PENDING)` stops every drain and
+buffers new events; `GRANTED` migrates the buffer back and resumes. Keep the
+pause short — the buffer is capped at 4 MB and evicts its oldest half when full.
+Do not use `NOT_GRANTED` for this: it wipes collected data rather than buffering.
+
+**If event volume itself is the problem**, pacing only redistributes bytes.
+Reduce events at the source with `RumConfigurationBuilder`'s
+`setSessionSampleRate` (drops whole sessions before anything is written) or
+`setEventMapper` returning `null` (drops individual events before they reach
+disk).
+
+> `setBatchWindowMs` must be identical in the deferred-upload process. The
+> cross-process claim guard is derived from it, so a shorter window in one
+> process would let it claim a batch the other is still appending to. Build the
+> configuration once and share it — see below.
+
 ## Deferred upload (optional, background delivery)
 
 Uploads normally happen while the app runs. To also deliver batches when the

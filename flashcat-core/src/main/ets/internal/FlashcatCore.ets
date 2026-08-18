@@ -128,7 +128,8 @@ export class FlashcatCore implements SdkCore {
     if (this.features.has(feature.name)) {
       return; // already enabled — ignore the duplicate (avoids leaking a 2nd hook)
     }
-    const persistence: FilePersistenceStrategy = new FilePersistenceStrategy(this.context, feature.name);
+    const persistence: FilePersistenceStrategy =
+      new FilePersistenceStrategy(this.context, feature.name, this.configuration.batchWindowMs);
     // Settle a pre-consent buffer left by an EARLIER launch. Without this, an
     // app that persisted the user's consent itself (init with GRANTED on launch
     // 2) leaves the launch-1 buffer orphaned forever — and under NOT_GRANTED
@@ -144,7 +145,8 @@ export class FlashcatCore implements SdkCore {
       () => this.contextProvider.snapshot()
     );
     const scheduler: UploadScheduler =
-      new UploadScheduler(persistence, uploader, this.configuration.batchUploadFrequencyMs);
+      new UploadScheduler(persistence, uploader, this.configuration.batchUploadFrequencyMs,
+        this.configuration.maxBatchesPerCycle);
     const scope: CoreFeatureScope = new CoreFeatureScope(
       this.contextProvider, this.bus, feature.name, persistence,
       () => this.consent, () => scheduler.triggerNow());
