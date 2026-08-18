@@ -1,13 +1,13 @@
 {
   name: "@flashcatcloud/axios",
-  version: "0.5.0",
+  version: "0.5.1",
   description: "FlashCat HarmonyOS axios integration: reports @ohos/axios requests as RUM resources with distributed-trace headers.",
   main: "Index.ets",
   license: "Apache-2.0",
   author: "FlashCat <developer@flashcat.com> (https://flashcat.cloud)",
   repository: "https://github.com/flashcatcloud/fc-sdk-harmony",
   dependencies: {
-    "@flashcatcloud/trace": "0.5.0",
+    "@flashcatcloud/trace": "0.5.1",
     "@ohos/axios": "^2.2.4"
   }
 }

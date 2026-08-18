@@ -1,12 +1,12 @@
 {
   name: "@flashcatcloud/trace",
-  version: "0.5.0",
+  version: "0.5.1",
   description: "FlashCat HarmonyOS trace-context propagation: W3C traceparent generation + rcp interceptor + manual headers.",
   main: "Index.ets",
   license: "Apache-2.0",
   author: "FlashCat <developer@flashcat.com> (https://flashcat.cloud)",
   repository: "https://github.com/flashcatcloud/fc-sdk-harmony",
   dependencies: {
-    "@flashcatcloud/core": "0.5.0"
+    "@flashcatcloud/core": "0.5.1"
   }
 }

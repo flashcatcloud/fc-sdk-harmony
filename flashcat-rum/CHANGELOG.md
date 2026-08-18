@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.5.1
 
 - App freezes (`APP_FREEZE`) are now reported with `error.category: "ANR"`
   instead of `"App Hang"`. HarmonyOS freezes are the system watchdog's
