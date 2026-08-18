@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.5.0
+
+- Version bump to keep the SDK packages in lockstep (see `@flashcatcloud/core`
+  0.5.0: upload pacing now uses the cross-platform batching enums).
+
 ## 0.4.0
 
 - Version bump to keep the SDK packages in lockstep (see `@flashcatcloud/trace`

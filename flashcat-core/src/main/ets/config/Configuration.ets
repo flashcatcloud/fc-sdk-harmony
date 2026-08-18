@@ -1,4 +1,5 @@
 import { FlashcatSite } from '../FlashcatSite';
+import { BatchProcessingLevel, BatchSize, UploadFrequency } from './Batching';
 
 /**
  * Immutable core SDK configuration. Built via {@link ConfigurationBuilder}.
@@ -10,7 +11,12 @@ export class Configuration {
   readonly variant: string;
   readonly service: string | undefined;
   readonly site: FlashcatSite;
-  readonly batchUploadFrequencyMs: number;
+  /** How often an upload cycle starts. */
+  readonly uploadFrequency: UploadFrequency;
+  /** How long the active batch stays open before it is rolled. */
+  readonly batchSize: BatchSize;
+  /** How many batches one cycle ships back-to-back before yielding. */
+  readonly batchProcessingLevel: BatchProcessingLevel;
   readonly deferredUploadAbilityName: string;
   readonly deferredUploadWorkId: number;
   readonly uploadOnWifiOnly: boolean;
@@ -30,7 +36,9 @@ export class Configuration {
     variant: string,
     service: string | undefined,
     site: FlashcatSite,
-    batchUploadFrequencyMs: number,
+    uploadFrequency: UploadFrequency,
+    batchSize: BatchSize,
+    batchProcessingLevel: BatchProcessingLevel,
     deferredUploadAbilityName: string,
     deferredUploadWorkId: number,
     uploadOnWifiOnly: boolean,
@@ -43,7 +51,9 @@ export class Configuration {
     this.variant = variant;
     this.service = service;
     this.site = site;
-    this.batchUploadFrequencyMs = batchUploadFrequencyMs;
+    this.uploadFrequency = uploadFrequency;
+    this.batchSize = batchSize;
+    this.batchProcessingLevel = batchProcessingLevel;
     this.deferredUploadAbilityName = deferredUploadAbilityName;
     this.deferredUploadWorkId = deferredUploadWorkId;
     this.uploadOnWifiOnly = uploadOnWifiOnly;
@@ -59,7 +69,9 @@ export class ConfigurationBuilder {
   private variant: string = '';
   private service: string | undefined = undefined;
   private site: FlashcatSite = FlashcatSite.CN;
-  private batchUploadFrequencyMs: number = 5000;
+  private uploadFrequency: UploadFrequency = UploadFrequency.AVERAGE;
+  private batchSize: BatchSize = BatchSize.MEDIUM;
+  private batchProcessingLevel: BatchProcessingLevel = BatchProcessingLevel.MEDIUM;
   private deferredUploadAbilityName: string = '';
   private deferredUploadWorkId: number = 71001;
   private uploadOnWifiOnly: boolean = false;
@@ -87,10 +99,40 @@ export class ConfigurationBuilder {
     return this;
   }
 
-  setBatchUploadFrequencyMs(frequencyMs: number): ConfigurationBuilder {
-    // Floor at 1 s: 0 or a negative value would turn the upload scheduler's
-    // idle tick into a setTimeout(0) hot loop (CPU/battery burn, no benefit).
-    this.batchUploadFrequencyMs = Math.max(1000, frequencyMs);
+  /**
+   * How often an upload cycle starts. Default {@link UploadFrequency.AVERAGE}.
+   */
+  setUploadFrequency(frequency: UploadFrequency): ConfigurationBuilder {
+    this.uploadFrequency = frequency;
+    return this;
+  }
+
+  /**
+   * How long the active batch collects events before it is rolled and becomes
+   * drainable. Default {@link BatchSize.MEDIUM}.
+   *
+   * Larger batches mean fewer, better-compressed requests — less airtime for the
+   * same events — at the cost of delivery latency.
+   *
+   * Must match in the deferred-upload process: the cross-process claim guard is
+   * derived from this window, so a shorter one in either process would let it
+   * claim a batch the other is still appending to.
+   */
+  setBatchSize(size: BatchSize): ConfigurationBuilder {
+    this.batchSize = size;
+    return this;
+  }
+
+  /**
+   * How many batches one upload cycle ships back-to-back before yielding for one
+   * interval. Default {@link BatchProcessingLevel.MEDIUM}.
+   *
+   * Set {@link BatchProcessingLevel.LOW} when the app has latency-sensitive
+   * requests of its own competing for a narrow uplink — it is what stops a
+   * backlog from going out as one uninterrupted burst.
+   */
+  setBatchProcessingLevel(level: BatchProcessingLevel): ConfigurationBuilder {
+    this.batchProcessingLevel = level;
     return this;
   }
 
@@ -138,7 +180,9 @@ export class ConfigurationBuilder {
       this.variant,
       this.service,
       this.site,
-      this.batchUploadFrequencyMs,
+      this.uploadFrequency,
+      this.batchSize,
+      this.batchProcessingLevel,
       this.deferredUploadAbilityName,
       this.deferredUploadWorkId,
       this.uploadOnWifiOnly,

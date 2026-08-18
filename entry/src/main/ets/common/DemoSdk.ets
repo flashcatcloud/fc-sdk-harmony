@@ -1,6 +1,6 @@
 import { common } from '@kit.AbilityKit';
 import {
-  Flashcat, Configuration, ConfigurationBuilder, FlashcatSite, TrackingConsent, UserInfo
+  Flashcat, Configuration, ConfigurationBuilder, FlashcatSite, TrackingConsent, UserInfo, UploadFrequency
 } from '@flashcatcloud/core';
 import { FlashcatRum, RumConfigurationBuilder, GlobalRumMonitor, RumMonitor } from '@flashcatcloud/rum';
 import { FlashcatTrace, TraceConfigurationBuilder } from '@flashcatcloud/trace';
@@ -51,7 +51,7 @@ export class DemoSdk {
     const builder: ConfigurationBuilder = new ConfigurationBuilder(demoConfig.clientToken, prod ? 'prod' : 'staging')
       .setService(demoConfig.service)
       .useSite(site)
-      .setBatchUploadFrequencyMs(2000) // demo: flush quickly so you see uploads sooner
+      .setUploadFrequency(UploadFrequency.FREQUENT) // demo: flush quickly so you see uploads sooner
       .setVerbose(true);               // emit internal HiLog (tag "Flashcat")
     if (customEndpoint.length > 0) {
       builder.setCustomEndpoint(customEndpoint);
