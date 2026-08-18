@@ -5,122 +5,112 @@ import { GlobalRumMonitor, RumActionType, RumMonitor } from '@flashcatcloud/rum'
 /**
  * Measures how much SDK upload traffic slows the app's own requests.
  *
- * Method mirrors the alternating A/B used for the Android investigation: the two
- * arms are interleaved round by round rather than run as two blocks, so network
- * drift over the session cancels out instead of landing entirely on whichever
- * arm ran second. A block design is what made the first Android numbers
- * unusable.
+ * BETWEEN-GROUP design: one group per app run, compared across runs. An earlier
+ * version alternated uploads on/off round by round inside a single run, which
+ * reads as the stronger design — it cancels drift — but it silently breaks.
+ * Consent PENDING stops new drains, not an HTTP upload already in flight, so as
+ * soon as an upload outlives its round it spills into the supposedly quiet arm
+ * and both arms end up carrying upload traffic. Measured at 0.5 Mbps that wiped
+ * the effect out entirely (p95 delta fell from +32..44% to ~0).
  *
- * The only difference between arms is whether the SDK is uploading:
+ * Groups are therefore whole runs, matching the three-group experiment used for
+ * the Android investigation. Drift is handled by repeating each group and
+ * comparing medians instead.
  *
- * - PAUSED  — consent PENDING. Every drain is stopped and no events are
- *   generated, so nothing accumulates to flush later.
- * - ACTIVE  — consent GRANTED, a fixed number of events generated, then an
- *   explicit flush so the upload is in flight *while* the measured request runs.
- *   Without the flush the scheduler might not have started before the request
- *   finished, and the arm would measure nothing.
+ * Load is organic: events are generated continuously and the SDK's own scheduler
+ * decides when to upload. There is deliberately no flush() — forcing the upload
+ * bypasses the batch window, the cycle interval and the per-cycle bound, which
+ * is to say it bypasses every setting the experiment exists to compare.
  */
-export enum BenchArm {
-  UPLOADS_PAUSED = 'uploads_paused',
-  UPLOADS_ACTIVE = 'uploads_active'
-}
-
 export interface BenchSample {
   round: number;
-  arm: BenchArm;
   durationMs: number;
   ok: boolean;
 }
 
-export interface ArmStats {
-  arm: BenchArm;
+export interface BenchStats {
   count: number;
   meanMs: number;
   p50Ms: number;
   p95Ms: number;
-}
-
-export interface BenchReport {
-  paused: ArmStats;
-  active: ArmStats;
-  /** Positive means requests were slower while the SDK was uploading. */
-  deltaPercentMean: number;
-  deltaPercentP95: number;
   failures: number;
 }
 
 export class NetworkContentionBench {
+  private static generatorId: number = -1;
+
   /**
-   * @param url the app's own request under test — use something representative
-   *   of a latency-sensitive call, not a CDN asset.
-   * @param rounds rounds per arm; the harness runs 2 x rounds requests.
-   * @param eventsPerRound RUM events generated per ACTIVE round. Raise it to
-   *   model an event flood (offline replay, error storm).
+   * @param uploading false runs the baseline group: consent stays PENDING and no
+   *   events are generated, so the SDK contributes no traffic at all.
+   * @param eventsPerTick events emitted every 20 ms while the group runs. Raise
+   *   it until uploads occupy a meaningful share of the link — RUM events
+   *   compress hard (roughly 25 bytes each on the wire), so a low rate produces
+   *   nothing to contend with.
    */
-  static async run(url: string, rounds: number, eventsPerRound: number, requestBodyBytes: number,
-    onProgress: (done: number, total: number) => void): Promise<BenchSample[]> {
-    const body: string = 'x'.repeat(requestBodyBytes);
+  static async runGroup(url: string, rounds: number, bodyBytes: number, eventsPerTick: number,
+    uploading: boolean, onProgress: (done: number, total: number) => void): Promise<BenchSample[]> {
+    const body: string = 'x'.repeat(bodyBytes);
     const samples: Array<BenchSample> = [];
-    const total: number = rounds * 2;
-    for (let i: number = 0; i < total; i++) {
-      const arm: BenchArm = (i % 2 === 0) ? BenchArm.UPLOADS_PAUSED : BenchArm.UPLOADS_ACTIVE;
-      await NetworkContentionBench.prepareArm(arm, eventsPerRound);
-      const sample: BenchSample = await NetworkContentionBench.timeRequest(url, body, i, arm);
-      samples.push(sample);
-      onProgress(i + 1, total);
+    if (uploading) {
+      Flashcat.setTrackingConsent(TrackingConsent.GRANTED);
+      NetworkContentionBench.startGenerator(eventsPerTick);
+    } else {
+      Flashcat.setTrackingConsent(TrackingConsent.PENDING);
     }
-    // Leave the SDK in its normal state rather than whatever the last arm set.
-    Flashcat.setTrackingConsent(TrackingConsent.GRANTED);
+    // Let the group's steady state establish before the first measurement: with
+    // uploads on, the first batch has to reach the wire or the early rounds
+    // measure an idle link and drag the group's mean toward the baseline.
+    await NetworkContentionBench.pause(2000);
+    try {
+      for (let i: number = 0; i < rounds; i++) {
+        samples.push(await NetworkContentionBench.timeRequest(url, body, i));
+        await NetworkContentionBench.pause(200);
+        onProgress(i + 1, rounds);
+      }
+    } finally {
+      NetworkContentionBench.stopGenerator();
+      Flashcat.setTrackingConsent(TrackingConsent.GRANTED);
+    }
     return samples;
   }
 
-  private static async prepareArm(arm: BenchArm, eventsPerRound: number): Promise<void> {
-    if (arm === BenchArm.UPLOADS_PAUSED) {
-      // Stops every drain. Nothing is generated either, so the next ACTIVE round
-      // does not inherit a backlog that would distort its load.
-      Flashcat.setTrackingConsent(TrackingConsent.PENDING);
-      await NetworkContentionBench.settle();
-      return;
-    }
-    Flashcat.setTrackingConsent(TrackingConsent.GRANTED);
-    await NetworkContentionBench.settle(); // consent change in effect before load
+  private static startGenerator(eventsPerTick: number): void {
+    NetworkContentionBench.stopGenerator();
     const monitor: RumMonitor = GlobalRumMonitor.get();
-    for (let n: number = 0; n < eventsPerRound; n++) {
-      monitor.addAction(RumActionType.CUSTOM, 'bench_event', { 'seq': n as Object });
-    }
-    Flashcat.flush();
-    // Deliberately NO settle here. The measured request has to start while the
-    // upload is still on the wire — that overlap is the entire experiment. An
-    // earlier version waited 150 ms after the flush and reported no effect,
-    // because a batch this size clears the link in well under that and the
-    // request then ran against an idle link.
+    let seq: number = 0;
+    NetworkContentionBench.generatorId = setInterval((): void => {
+      for (let n: number = 0; n < eventsPerTick; n++) {
+        seq += 1;
+        monitor.addAction(RumActionType.CUSTOM, 'bench_event', { 'seq': seq as Object });
+      }
+    }, 20);
   }
 
-  /** Short pause so the arm's upload state is actually in effect before timing. */
-  private static settle(): Promise<void> {
+  private static stopGenerator(): void {
+    if (NetworkContentionBench.generatorId !== -1) {
+      clearInterval(NetworkContentionBench.generatorId);
+      NetworkContentionBench.generatorId = -1;
+    }
+  }
+
+  private static pause(ms: number): Promise<void> {
     return new Promise<void>((resolve: () => void): void => {
-      setTimeout(resolve, 150);
+      setTimeout(resolve, ms);
     });
   }
 
-  private static async timeRequest(url: string, body: string, round: number,
-    arm: BenchArm): Promise<BenchSample> {
+  private static async timeRequest(url: string, body: string, round: number): Promise<BenchSample> {
     const client: http.HttpRequest = http.createHttp();
     const startedAt: number = Date.now();
     let ok: boolean = false;
     try {
       const response: http.HttpResponse = await client.request(url, {
-        // POST with a real payload, not a bare GET. A request that sends almost
-        // nothing costs almost no uplink, so it cannot be delayed by competing
-        // uploads no matter how narrow the link — the first run measured 2 ms
-        // round-trips and reported pure noise. The call this models (an API
-        // request carrying a body) is what actually queues behind SDK traffic.
+        // POST with a real payload. A bare GET sends almost nothing, so it costs
+        // almost no uplink and cannot be delayed however narrow the link is —
+        // an earlier run measured 2 ms round-trips and reported pure noise.
         method: http.RequestMethod.POST,
         extraData: body,
         header: { 'Content-Type': 'application/json' } as Record<string, string>,
-        // No connection reuse across rounds: the customer-side call under
-        // investigation opens its own connection each time, and a pooled socket
-        // would hide exactly the setup cost that contention inflates.
         usingCache: false,
         connectTimeout: 30000,
         readTimeout: 30000
@@ -131,41 +121,28 @@ export class NetworkContentionBench {
     } finally {
       client.destroy();
     }
-    return { round, arm, durationMs: Date.now() - startedAt, ok };
+    return { round, durationMs: Date.now() - startedAt, ok };
   }
 
-  /** Aggregates raw samples. Failed requests are excluded from the timings. */
-  static summarize(samples: Array<BenchSample>): BenchReport {
-    const ok: Array<BenchSample> = samples.filter((s: BenchSample) => s.ok);
-    const paused: ArmStats = NetworkContentionBench.statsFor(ok, BenchArm.UPLOADS_PAUSED);
-    const active: ArmStats = NetworkContentionBench.statsFor(ok, BenchArm.UPLOADS_ACTIVE);
-    return {
-      paused,
-      active,
-      deltaPercentMean: NetworkContentionBench.delta(paused.meanMs, active.meanMs),
-      deltaPercentP95: NetworkContentionBench.delta(paused.p95Ms, active.p95Ms),
-      failures: samples.length - ok.length
-    };
-  }
-
-  private static statsFor(samples: Array<BenchSample>, arm: BenchArm): ArmStats {
+  static summarize(samples: Array<BenchSample>): BenchStats {
     const values: Array<number> = samples
-      .filter((s: BenchSample) => s.arm === arm)
+      .filter((s: BenchSample) => s.ok)
       .map((s: BenchSample) => s.durationMs)
       .sort((a: number, b: number) => a - b);
+    const failures: number = samples.length - values.length;
     if (values.length === 0) {
-      return { arm, count: 0, meanMs: 0, p50Ms: 0, p95Ms: 0 };
+      return { count: 0, meanMs: 0, p50Ms: 0, p95Ms: 0, failures };
     }
     let sum: number = 0;
     for (const v of values) {
       sum += v;
     }
     return {
-      arm,
       count: values.length,
       meanMs: Math.round(sum / values.length),
       p50Ms: NetworkContentionBench.percentile(values, 50),
-      p95Ms: NetworkContentionBench.percentile(values, 95)
+      p95Ms: NetworkContentionBench.percentile(values, 95),
+      failures
     };
   }
 
@@ -174,21 +151,5 @@ export class NetworkContentionBench {
     const rank: number = Math.ceil((p / 100) * sorted.length);
     const index: number = rank < 1 ? 0 : (rank > sorted.length ? sorted.length : rank) - 1;
     return sorted[index];
-  }
-
-  private static delta(baseline: number, treatment: number): number {
-    if (baseline === 0) {
-      return 0;
-    }
-    return Math.round(((treatment - baseline) / baseline) * 1000) / 10;
-  }
-
-  /** Tab-separated dump for pasting into the report. */
-  static toTsv(samples: Array<BenchSample>): string {
-    let out: string = 'round\tarm\tduration_ms\tok\n';
-    for (const s of samples) {
-      out += `${s.round}\t${s.arm}\t${s.durationMs}\t${s.ok}\n`;
-    }
-    return out;
   }
 }

@@ -11,7 +11,7 @@ import testNapi from 'libentry.so';
 import { DemoSdk } from '../common/DemoSdk';
 import { SpikeMode, SpikeModeStore } from '../common/SpikeMode';
 import {
-  BenchReport, BenchSample, NetworkContentionBench
+  BenchSample, BenchStats, NetworkContentionBench
 } from '../common/NetworkContentionBench';
 import axios, { AxiosInstance, AxiosResponse } from '@ohos/axios';
 import { trackAxios } from '@flashcatcloud/axios';
@@ -118,39 +118,36 @@ struct Index {
   }
 
   /**
-   * Network-contention A/B. Results go to HiLog under NETBENCH so a run is
-   * driven and collected entirely over hdc — no tapping, and reproducible from
-   * a script on every SDK version.
+   * Network-contention measurement, one group per app run. `netbench_pacing`
+   * selects the group: 'off' is the baseline (SDK present but silent), while
+   * 'default' and 'low' generate load under their respective pacing settings.
    *
-   * Pacing (UploadFrequency / BatchSize / BatchProcessingLevel) is fixed at
-   * initialize, so comparing pacing settings means one app run per setting.
-   * Within a run only the upload on/off state alternates.
+   * Results go to HiLog under NETBENCH so a run is driven and collected over
+   * hdc alone — no tapping, reproducible from a script on any SDK version.
    */
   private async runNetBench(url: string): Promise<void> {
     const rounds: number = Number.parseInt(AppStorage.get<string>('netbenchRounds') ?? '20', 10);
-    const events: number = Number.parseInt(AppStorage.get<string>('netbenchEvents') ?? '200', 10);
     const bodyBytes: number = Number.parseInt(AppStorage.get<string>('netbenchBodyBytes') ?? '16384', 10);
-    hilog.info(0x0000, 'NETBENCH', 'start url=%{public}s rounds=%{public}d events=%{public}d body=%{public}d',
-      url, rounds, events, bodyBytes);
+    const perTick: number = Number.parseInt(AppStorage.get<string>('netbenchEvents') ?? '10', 10);
+    const pacing: string = AppStorage.get<string>('netbenchPacing') ?? 'off';
+    const uploading: boolean = pacing !== 'off';
+    hilog.info(0x0000, 'NETBENCH', 'group=%{public}s rounds=%{public}d body=%{public}d perTick=%{public}d',
+      pacing, rounds, bodyBytes, perTick);
     try {
-      const samples: Array<BenchSample> = await NetworkContentionBench.run(
-        url, rounds, events, bodyBytes,
+      const samples: Array<BenchSample> = await NetworkContentionBench.runGroup(
+        url, rounds, bodyBytes, perTick, uploading,
         (done: number, total: number): void => {
           hilog.info(0x0000, 'NETBENCH', 'progress %{public}d/%{public}d', done, total);
         });
-      const report: BenchReport = NetworkContentionBench.summarize(samples);
-      hilog.info(0x0000, 'NETBENCH', 'paused n=%{public}d mean=%{public}d p50=%{public}d p95=%{public}d',
-        report.paused.count, report.paused.meanMs, report.paused.p50Ms, report.paused.p95Ms);
-      hilog.info(0x0000, 'NETBENCH', 'active n=%{public}d mean=%{public}d p50=%{public}d p95=%{public}d',
-        report.active.count, report.active.meanMs, report.active.p50Ms, report.active.p95Ms);
-      hilog.info(0x0000, 'NETBENCH', 'delta mean=%{public}s%% p95=%{public}s%% failures=%{public}d',
-        `${report.deltaPercentMean}`, `${report.deltaPercentP95}`, report.failures);
+      const stats: BenchStats = NetworkContentionBench.summarize(samples);
+      hilog.info(0x0000, 'NETBENCH', 'result group=%{public}s n=%{public}d mean=%{public}d p50=%{public}d p95=%{public}d failures=%{public}d',
+        pacing, stats.count, stats.meanMs, stats.p50Ms, stats.p95Ms, stats.failures);
       for (const sample of samples) {
-        hilog.info(0x0000, 'NETBENCH', 'sample %{public}d %{public}s %{public}d %{public}s',
-          sample.round, sample.arm, sample.durationMs, `${sample.ok}`);
+        hilog.info(0x0000, 'NETBENCH', 'sample %{public}d %{public}d %{public}s',
+          sample.round, sample.durationMs, `${sample.ok}`);
       }
       hilog.info(0x0000, 'NETBENCH', 'done');
-      this.append(`netbench: mean ${report.deltaPercentMean}% p95 ${report.deltaPercentP95}%`);
+      this.append(`netbench ${pacing}: mean ${stats.meanMs}ms p95 ${stats.p95Ms}ms`);
     } catch (e) {
       hilog.error(0x0000, 'NETBENCH', 'failed: %{public}s',
         e instanceof Error ? e.message : `${e}`);
