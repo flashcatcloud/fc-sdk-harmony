@@ -3,6 +3,7 @@
 
 export { Flashcat } from './src/main/ets/Flashcat';
 export { Configuration, ConfigurationBuilder } from './src/main/ets/config/Configuration';
+export { UploadFrequency, BatchSize, BatchProcessingLevel } from './src/main/ets/config/Batching';
 export { FlashcatSite } from './src/main/ets/FlashcatSite';
 export { TrackingConsent } from './src/main/ets/privacy/TrackingConsent';
 export { SdkCore } from './src/main/ets/api/SdkCore';
