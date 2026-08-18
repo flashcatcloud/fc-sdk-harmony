@@ -25,10 +25,18 @@ const UPLOADING_RECOVERY_AGE_MS: number = 10 * 60 * 1000;
 // (appended without any cross-process lock). Owners never append to a file older
 // than their roll window (shouldRoll opens a new one), so a foreign batch becomes
 // safe to claim once it is past the roll age plus slack for an in-flight append.
-// This is why both processes must be built from the SAME Configuration: the guard
-// is derived from THIS instance's window, so a shorter one here would let this
-// process claim a batch the other one is still appending to.
+//
+// The window is per-process configuration, and the main process and the deferred
+// upload extension build their Configuration independently — nothing makes the
+// two agree. Deriving the guard from THIS instance's window therefore loses data
+// whenever they diverge: a main process on LARGE is still appending to a batch an
+// extension on SMALL already considers claimable, and the claim renames the file
+// out from under it. So the guard uses the LARGEST window any process could have
+// been configured with, which is safe for every combination. Only cross-process
+// claims wait this long; a process always claims its own batches on its own
+// window.
 const FOREIGN_CLAIM_SLACK_MS: number = 2000;
+const FOREIGN_CLAIM_MIN_AGE_MS: number = BatchSize.LARGE;
 const PENDING_DIR: string = 'pending';
 const PENDING_FILE: string = 'pending.ndjson';
 // The pre-consent buffer is a single append-only file; without a cap an app that
@@ -382,8 +390,10 @@ export class FilePersistenceStrategy implements UploadPersistence {
       // Never claim what may be the OTHER process's active file — its owner
       // appends with no cross-process lock, and claiming it silently loses
       // acknowledged writes (or clobbers them on a later restore).
+      const foreignClaimAgeMs: number = (this.batchAgeMs > FOREIGN_CLAIM_MIN_AGE_MS
+        ? this.batchAgeMs : FOREIGN_CLAIM_MIN_AGE_MS) + FOREIGN_CLAIM_SLACK_MS;
       if (!this.ownNames.has(originalName)
-        && createdMs > 0 && (now - createdMs) <= this.batchAgeMs + FOREIGN_CLAIM_SLACK_MS) {
+        && createdMs > 0 && (now - createdMs) <= foreignClaimAgeMs) {
         continue;
       }
       // The claim carries its own timestamp so stale-claim recovery is keyed on

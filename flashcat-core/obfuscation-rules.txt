@@ -6,6 +6,9 @@
   ConfigurationBuilder
   TrackingConsent
   FlashcatSite
+  UploadFrequency
+  BatchSize
+  BatchProcessingLevel
 -keep-property-name
   initialize
   initializeForDeferredUpload
@@ -17,3 +20,6 @@
   flush
   flushAndWait
   stopInstance
+  setUploadFrequency
+  setBatchSize
+  setBatchProcessingLevel

@@ -288,11 +288,24 @@ export class FlashcatCore implements SdkCore {
     }
     this.features.forEach((r: RegisteredFeature) => {
       r.persistence.rollActive();
-      r.scheduler.triggerNow();
+      // Waive the cycle budget. On backgrounding there is no foreground request
+      // left to share the uplink with, and once the process is frozen the timer
+      // the budget would impose never fires — at LOW that loses the session's
+      // last batch on nearly every background transition. A manual
+      // Flashcat.flush() takes the same path: the app explicitly asked to ship
+      // now, so it is opting out of its own protection. The retry backoff is
+      // NOT waived on either path.
+      r.scheduler.triggerNow(true);
     });
   }
 
-  async flushAndWait(maxBatchesPerFeature: number = 20): Promise<void> {
+  /**
+   * @param maxBatchesPerFeature defaults to the configured BatchProcessingLevel.
+   *   Hard-coding a bound here broke it in both directions: LOW could not damp a
+   *   burst, and HIGH could not drain one — a backlog bigger than the constant
+   *   never caught up between background windows and aged out of retention.
+   */
+  async flushAndWait(maxBatchesPerFeature?: number): Promise<void> {
     if (this.consent === TrackingConsent.NOT_GRANTED) {
       return;
     }
@@ -300,6 +313,8 @@ export class FlashcatCore implements SdkCore {
     if (this.consent !== TrackingConsent.GRANTED) {
       return;
     }
+    // Omitted → each scheduler falls back to its configured BatchProcessingLevel,
+    // so the default lives in one place rather than being restated here.
     const drains: Array<Promise<void>> = [];
     this.features.forEach((r: RegisteredFeature) => {
       r.persistence.rollActive();
@@ -337,9 +352,9 @@ export class FlashcatCore implements SdkCore {
         if (!isDir) {
           continue;
         }
-        // Same batchSize as the main process: the foreign-batch claim guard is
-        // derived from it, so a default window here would let this process claim
-        // a batch the main one is still appending to.
+        // The configured batchSize is passed for consistency, but claim safety
+        // no longer depends on the two processes agreeing: the foreign-batch
+        // claim guard floors at the largest supported window.
         const persistence: FilePersistenceStrategy =
           new FilePersistenceStrategy(this.context, name, this.configuration.batchSize);
         const uploader: DataUploader = new DataUploader(

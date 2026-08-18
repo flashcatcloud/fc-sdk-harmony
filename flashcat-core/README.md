@@ -83,10 +83,10 @@ Reduce events at the source with `RumConfigurationBuilder`'s
 `setEventMapper` returning `null` (drops individual events before they reach
 disk).
 
-> `setBatchSize` must match in the deferred-upload process. The cross-process
-> claim guard is derived from it, so a shorter window in one process would let it
-> claim a batch the other is still appending to. Build the configuration once and
-> share it — see below.
+> The cross-process claim guard waits out the largest supported batch window
+> before touching a batch another process created, so a configuration mismatch
+> between the two processes cannot lose data. Building the configuration once
+> and sharing it is still the recommended shape — see below.
 
 ## Deferred upload (optional, background delivery)
 

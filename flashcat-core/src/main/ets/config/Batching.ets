@@ -30,9 +30,10 @@ export enum UploadFrequency {
  * same events cost fewer bytes on the wire. The cost is latency: an event can
  * wait this long before it is eligible to ship.
  *
- * Cross-process note: this also gates when the deferred-upload process may claim
- * a batch it did not create, so both processes must be built from the same
- * Configuration. See `Flashcat.initializeForDeferredUpload`.
+ * Cross-process note: a batch created by another process may only be claimed
+ * once it is older than the LARGEST window here (plus slack), so the deferred
+ * upload process stays safe even when the two processes were built with
+ * different Configurations. See `FilePersistenceStrategy`.
  */
 export enum BatchSize {
   /** Prefer small batches. */
