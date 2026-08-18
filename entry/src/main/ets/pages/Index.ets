@@ -104,7 +104,7 @@ struct Index {
 
   private initSdkE2e(trackErrors: boolean): void {
     try {
-      const pacing: string = AppStorage.get<string>('netbenchPacing') ?? 'demo';
+      const pacing: string = AppStorage.get<string>('netbenchPacing') ?? 'demo'; // SDK init only
       DemoSdk.init(this.context, this.useProd, this.customEndpoint, false, trackErrors, pacing);
     } catch (e) {
       this.append(e instanceof Error ? e.message : 'SDK initialization failed');

@@ -89,6 +89,14 @@ export default class EntryAbility extends UIAbility {
    * scenario without UI interaction. Handled in BOTH onCreate and onNewWant so
    * a relaunch onto a live singleton ability still updates the scenario.
    */
+  /** Copies a want parameter into AppStorage only when it was supplied. */
+  private static forwardParam(params: Record<string, Object>, key: string, storageKey: string): void {
+    const value: Object | undefined = params[key];
+    if (typeof value === 'string' && value.length > 0) {
+      AppStorage.setOrCreate(storageKey, value);
+    }
+  }
+
   private captureE2eParams(want: Want, from: string): void {
     const params: Record<string, Object> = (want.parameters ?? {}) as Record<string, Object>;
     const e2eEndpoint: Object | undefined = params['e2e_endpoint'];
@@ -99,16 +107,14 @@ export default class EntryAbility extends UIAbility {
       AppStorage.setOrCreate('e2eScenario', scenario);
       AppStorage.setOrCreate('e2eRunSeq', (AppStorage.get<number>('e2eRunSeq') ?? 0) + 1);
       // netbench knobs, so a run's shape is set from the command line rather
-      // than baked into the build.
-      const rounds: Object | undefined = params['netbench_rounds'];
-      const events: Object | undefined = params['netbench_events'];
-      AppStorage.setOrCreate('netbenchRounds', typeof rounds === 'string' ? rounds : '20');
-      AppStorage.setOrCreate('netbenchEvents', typeof events === 'string' ? events : '200');
-      const pacing: Object | undefined = params['netbench_pacing'];
-      AppStorage.setOrCreate('netbenchPacing', typeof pacing === 'string' ? pacing : 'demo');
-      const bodyBytes: Object | undefined = params['netbench_body_bytes'];
-      AppStorage.setOrCreate('netbenchBodyBytes',
-        typeof bodyBytes === 'string' ? bodyBytes : '16384');
+      // than baked into the build. Only forwarded when actually supplied: the
+      // defaults belong to the one place that reads them, and duplicating them
+      // here let the two copies drift apart — an omitted parameter silently
+      // selected a different experiment than the reader assumed.
+      EntryAbility.forwardParam(params, 'netbench_rounds', 'netbenchRounds');
+      EntryAbility.forwardParam(params, 'netbench_events', 'netbenchEvents');
+      EntryAbility.forwardParam(params, 'netbench_pacing', 'netbenchPacing');
+      EntryAbility.forwardParam(params, 'netbench_body_bytes', 'netbenchBodyBytes');
       hilog.info(DOMAIN, TAG, 'e2e params from %{public}s: endpoint=%{public}s scenario=%{public}s',
         from, e2eEndpoint, scenario);
     } else {
