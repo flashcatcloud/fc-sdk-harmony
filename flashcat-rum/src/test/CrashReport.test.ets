@@ -48,7 +48,7 @@ export default function crashReportTests(): void {
       expect(attrs['build_id']).assertUndefined();
       expect(attrs['error.meta.code_type']).assertUndefined();
       expect(attrs['error.source_type']).assertEqual('harmony');
-      expect(attrs['error.category']).assertEqual('App Hang');
+      expect(attrs['error.category']).assertEqual('ANR');
     });
 
     it('formatsUnhandledErrorObjectsWithStack', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {

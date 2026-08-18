@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- App freezes (`APP_FREEZE`) are now reported with `error.category: "ANR"`
+  instead of `"App Hang"`. HarmonyOS freezes are the system watchdog's
+  application-not-responding verdict — the same mechanism family as Android
+  ANRs — so they now share that category for consistent cross-platform
+  aggregation.
+
 ## 0.5.0
 
 - Version bump to keep the SDK packages in lockstep (see `@flashcatcloud/core`
