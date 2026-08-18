@@ -37,33 +37,38 @@ Declare in your app's `module.json5` (`requestPermissions`):
 ## Upload pacing
 
 Event uploads share the uplink with the app's own requests. On a narrow
-connection that competition is measurable, so three knobs control how much
-airtime the SDK takes:
+connection that competition is measurable, so three settings control how much
+airtime the SDK takes. They are the same three the Android, iOS, and Flutter
+SDKs expose, with the same names and the same values — tuning advice transfers
+between platforms unchanged.
 
 ```ts
+import { UploadFrequency, BatchSize, BatchProcessingLevel } from '@flashcatcloud/core';
+
 const config = new ConfigurationBuilder('<client-token>', 'prod')
-  .setBatchUploadFrequencyMs(5000)  // interval between upload cycles (default 5 s)
-  .setBatchWindowMs(35000)          // how long a batch stays open    (default 5 s)
-  .setMaxBatchesPerCycle(1)         // batches per cycle              (default 10)
+  .setUploadFrequency(UploadFrequency.RARE)              // default AVERAGE
+  .setBatchSize(BatchSize.LARGE)                         // default MEDIUM
+  .setBatchProcessingLevel(BatchProcessingLevel.LOW)     // default MEDIUM
   .build();
 ```
 
-- **`setBatchWindowMs`** — how long the active batch collects events before it
-  is rolled and becomes drainable. Larger packs more events into each request
-  and compresses better, so the same events cost fewer bytes. The cost is
-  latency: an event can wait this long before it is eligible to ship
-  (`Flashcat.flush()` and backgrounding still roll it early). Clamped to
-  [1 s, 60 s].
-- **`setMaxBatchesPerCycle`** — how many batches ship back-to-back before the
-  cycle yields for one interval. This is what bounds a burst: without it a
-  backlog built up while offline drains in one uninterrupted run. Floored at 1.
+| Setting | Cases | Default |
+|---|---|---|
+| `setUploadFrequency` | `FREQUENT` 500 ms · `AVERAGE` 2 s · `RARE` 5 s | `AVERAGE` |
+| `setBatchSize` | `SMALL` 3 s · `MEDIUM` 10 s · `LARGE` 35 s | `MEDIUM` |
+| `setBatchProcessingLevel` | `LOW` 1 · `MEDIUM` 20 · `HIGH` 100 batches per cycle | `MEDIUM` |
 
-These mirror Android's `BatchSize` and `BatchProcessingLevel` as continuous
-values; the default of 10 batches per cycle matches
-`BatchProcessingLevel.MEDIUM`.
+- **`setBatchSize`** is how long the active batch collects events before it is
+  rolled and becomes drainable. Larger packs more events into each request and
+  compresses better, so the same events cost fewer bytes. The cost is latency: an
+  event can wait this long before it is eligible to ship (`Flashcat.flush()` and
+  backgrounding still roll it early).
+- **`setBatchProcessingLevel`** is how many batches ship back-to-back before the
+  cycle yields for one interval. This is what bounds a burst: at `HIGH`, a
+  backlog built up while offline drains in one near-uninterrupted run.
 
 **If the app has latency-sensitive requests on a narrow uplink**, set
-`setMaxBatchesPerCycle(1)` and raise `setBatchWindowMs` to 30–35 s.
+`BatchProcessingLevel.LOW` and `BatchSize.LARGE`.
 
 **If uploads must not overlap one specific operation at all**, pacing is not
 enough — a cycle already in flight cannot be recalled. Gate uploads instead:
@@ -78,10 +83,10 @@ Reduce events at the source with `RumConfigurationBuilder`'s
 `setEventMapper` returning `null` (drops individual events before they reach
 disk).
 
-> `setBatchWindowMs` must be identical in the deferred-upload process. The
-> cross-process claim guard is derived from it, so a shorter window in one
-> process would let it claim a batch the other is still appending to. Build the
-> configuration once and share it — see below.
+> `setBatchSize` must match in the deferred-upload process. The cross-process
+> claim guard is derived from it, so a shorter window in one process would let it
+> claim a batch the other is still appending to. Build the configuration once and
+> share it — see below.
 
 ## Deferred upload (optional, background delivery)
 

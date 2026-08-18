@@ -1,11 +1,13 @@
 import { UploadPersistence, Batch } from '../persistence/FilePersistenceStrategy';
 import { BatchUploader, UploadStatus } from './DataUploader';
 import { FlashcatLog } from '../FlashcatLog';
+import { BatchProcessingLevel } from '../../config/Batching';
 
-// Matches Android's BatchProcessingLevel.MEDIUM. Draining without a bound empties
-// a backlog in one uninterrupted burst, which is what starves an app's own
+// Fallback for direct construction (tests / internal callers); the configured
+// value comes from BatchProcessingLevel. Draining without a bound empties a
+// backlog in one uninterrupted burst, which is what starves an app's own
 // latency-sensitive requests on a narrow uplink.
-const DEFAULT_MAX_BATCHES_PER_CYCLE: number = 10;
+const DEFAULT_MAX_BATCHES_PER_CYCLE: number = BatchProcessingLevel.MEDIUM;
 
 /**
  * Drains persisted batches to the uploader on a cadence, with exponential backoff
@@ -18,7 +20,7 @@ export class UploadScheduler {
   private readonly persistence: UploadPersistence;
   private readonly uploader: BatchUploader;
   private readonly baseDelayMs: number;
-  /** Batches shipped back-to-back before the cycle yields; see Configuration.maxBatchesPerCycle. */
+  /** Batches shipped back-to-back before the cycle yields; see Configuration.batchProcessingLevel. */
   private readonly maxBatchesPerCycle: number;
   private currentDelayMs: number;
   /** Batches already shipped in the current cycle. Reset when a cycle ends. */

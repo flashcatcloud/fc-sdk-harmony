@@ -1,4 +1,5 @@
 import { FlashcatSite } from '../FlashcatSite';
+import { BatchProcessingLevel, BatchSize, UploadFrequency } from './Batching';
 
 /**
  * Immutable core SDK configuration. Built via {@link ConfigurationBuilder}.
@@ -10,32 +11,12 @@ export class Configuration {
   readonly variant: string;
   readonly service: string | undefined;
   readonly site: FlashcatSite;
-  readonly batchUploadFrequencyMs: number;
-  /**
-   * How long the active batch file stays open before it is rolled (closed) and
-   * becomes drainable. Larger windows pack more events per request, which both
-   * cuts the number of uploads and compresses better (gzip has more to work
-   * with) — the two things that reduce contention with the app's own traffic.
-   *
-   * Mirrors Android's `BatchSize` (SMALL/MEDIUM/LARGE), as a continuous value.
-   *
-   * Cross-process note: this also gates when the deferred-upload process may
-   * claim a batch it did not create (a foreign batch is only safe to claim once
-   * past the roll window). Both processes MUST be built from the same
-   * Configuration — see `Flashcat.initializeForDeferredUpload`.
-   */
-  readonly batchWindowMs: number;
-  /**
-   * Upper bound on how many batches one upload cycle ships back-to-back before
-   * waiting {@link batchUploadFrequencyMs} again. Without a bound, a backlog is
-   * drained in one uninterrupted burst that starves the app's own requests of
-   * upstream bandwidth.
-   *
-   * Mirrors Android's `BatchProcessingLevel` (LOW=1 / MEDIUM=10 / HIGH=100), as
-   * a continuous value. Does not apply to the deferred-upload (WorkScheduler)
-   * drain, which the system already schedules off the critical path.
-   */
-  readonly maxBatchesPerCycle: number;
+  /** How often an upload cycle starts. */
+  readonly uploadFrequency: UploadFrequency;
+  /** How long the active batch stays open before it is rolled. */
+  readonly batchSize: BatchSize;
+  /** How many batches one cycle ships back-to-back before yielding. */
+  readonly batchProcessingLevel: BatchProcessingLevel;
   readonly deferredUploadAbilityName: string;
   readonly deferredUploadWorkId: number;
   readonly uploadOnWifiOnly: boolean;
@@ -55,9 +36,9 @@ export class Configuration {
     variant: string,
     service: string | undefined,
     site: FlashcatSite,
-    batchUploadFrequencyMs: number,
-    batchWindowMs: number,
-    maxBatchesPerCycle: number,
+    uploadFrequency: UploadFrequency,
+    batchSize: BatchSize,
+    batchProcessingLevel: BatchProcessingLevel,
     deferredUploadAbilityName: string,
     deferredUploadWorkId: number,
     uploadOnWifiOnly: boolean,
@@ -70,9 +51,9 @@ export class Configuration {
     this.variant = variant;
     this.service = service;
     this.site = site;
-    this.batchUploadFrequencyMs = batchUploadFrequencyMs;
-    this.batchWindowMs = batchWindowMs;
-    this.maxBatchesPerCycle = maxBatchesPerCycle;
+    this.uploadFrequency = uploadFrequency;
+    this.batchSize = batchSize;
+    this.batchProcessingLevel = batchProcessingLevel;
     this.deferredUploadAbilityName = deferredUploadAbilityName;
     this.deferredUploadWorkId = deferredUploadWorkId;
     this.uploadOnWifiOnly = uploadOnWifiOnly;
@@ -88,9 +69,9 @@ export class ConfigurationBuilder {
   private variant: string = '';
   private service: string | undefined = undefined;
   private site: FlashcatSite = FlashcatSite.CN;
-  private batchUploadFrequencyMs: number = 5000;
-  private batchWindowMs: number = 5000;
-  private maxBatchesPerCycle: number = 10;
+  private uploadFrequency: UploadFrequency = UploadFrequency.AVERAGE;
+  private batchSize: BatchSize = BatchSize.MEDIUM;
+  private batchProcessingLevel: BatchProcessingLevel = BatchProcessingLevel.MEDIUM;
   private deferredUploadAbilityName: string = '';
   private deferredUploadWorkId: number = 71001;
   private uploadOnWifiOnly: boolean = false;
@@ -118,46 +99,40 @@ export class ConfigurationBuilder {
     return this;
   }
 
-  setBatchUploadFrequencyMs(frequencyMs: number): ConfigurationBuilder {
-    // Floor at 1 s: 0 or a negative value would turn the upload scheduler's
-    // idle tick into a setTimeout(0) hot loop (CPU/battery burn, no benefit).
-    this.batchUploadFrequencyMs = Math.max(1000, frequencyMs);
+  /**
+   * How often an upload cycle starts. Default {@link UploadFrequency.AVERAGE}.
+   */
+  setUploadFrequency(frequency: UploadFrequency): ConfigurationBuilder {
+    this.uploadFrequency = frequency;
     return this;
   }
 
   /**
-   * How long the active batch stays open before it is rolled and becomes
-   * drainable. Default 5 s; clamped to [1 s, 60 s].
+   * How long the active batch collects events before it is rolled and becomes
+   * drainable. Default {@link BatchSize.MEDIUM}.
    *
-   * Raise it to pack more events per upload — fewer requests and a better gzip
-   * ratio, so less upstream contention with the app's own traffic. The cost is
-   * latency: an event can sit in the open batch for up to this long before it is
-   * eligible to ship (`Flashcat.flush()` and backgrounding still roll it early).
+   * Larger batches mean fewer, better-compressed requests — less airtime for the
+   * same events — at the cost of delivery latency.
    *
-   * Must be identical in the deferred-upload process — see {@link Configuration#batchWindowMs}.
+   * Must match in the deferred-upload process: the cross-process claim guard is
+   * derived from this window, so a shorter one in either process would let it
+   * claim a batch the other is still appending to.
    */
-  setBatchWindowMs(windowMs: number): ConfigurationBuilder {
-    // Floor at 1 s for the same reason as the upload frequency, and because the
-    // cross-process claim guard is derived from this window — a near-zero window
-    // would let either process claim the other's still-active batch.
-    // Cap at 60 s: past that, events linger long enough that a kill loses more
-    // than the packing saves, and flush latency stops being explainable.
-    this.batchWindowMs = Math.min(60000, Math.max(1000, windowMs));
+  setBatchSize(size: BatchSize): ConfigurationBuilder {
+    this.batchSize = size;
     return this;
   }
 
   /**
-   * Upper bound on batches shipped back-to-back per upload cycle. Default 10
-   * (same as Android's `BatchProcessingLevel.MEDIUM`); floored at 1.
+   * How many batches one upload cycle ships back-to-back before yielding for one
+   * interval. Default {@link BatchProcessingLevel.MEDIUM}.
    *
-   * Lower it to 1 to spread a backlog across cycles instead of emptying it in one
-   * burst — the setting that matters when the app has latency-sensitive requests
-   * of its own competing for a narrow uplink.
+   * Set {@link BatchProcessingLevel.LOW} when the app has latency-sensitive
+   * requests of its own competing for a narrow uplink — it is what stops a
+   * backlog from going out as one uninterrupted burst.
    */
-  setMaxBatchesPerCycle(count: number): ConfigurationBuilder {
-    // A cycle that ships zero batches never drains; floor at 1. Truncate so a
-    // fractional value can't make the scheduler's counter comparison unreachable.
-    this.maxBatchesPerCycle = Math.max(1, Math.floor(count));
+  setBatchProcessingLevel(level: BatchProcessingLevel): ConfigurationBuilder {
+    this.batchProcessingLevel = level;
     return this;
   }
 
@@ -205,9 +180,9 @@ export class ConfigurationBuilder {
       this.variant,
       this.service,
       this.site,
-      this.batchUploadFrequencyMs,
-      this.batchWindowMs,
-      this.maxBatchesPerCycle,
+      this.uploadFrequency,
+      this.batchSize,
+      this.batchProcessingLevel,
       this.deferredUploadAbilityName,
       this.deferredUploadWorkId,
       this.uploadOnWifiOnly,

@@ -129,7 +129,7 @@ export class FlashcatCore implements SdkCore {
       return; // already enabled — ignore the duplicate (avoids leaking a 2nd hook)
     }
     const persistence: FilePersistenceStrategy =
-      new FilePersistenceStrategy(this.context, feature.name, this.configuration.batchWindowMs);
+      new FilePersistenceStrategy(this.context, feature.name, this.configuration.batchSize);
     // Settle a pre-consent buffer left by an EARLIER launch. Without this, an
     // app that persisted the user's consent itself (init with GRANTED on launch
     // 2) leaves the launch-1 buffer orphaned forever — and under NOT_GRANTED
@@ -145,8 +145,8 @@ export class FlashcatCore implements SdkCore {
       () => this.contextProvider.snapshot()
     );
     const scheduler: UploadScheduler =
-      new UploadScheduler(persistence, uploader, this.configuration.batchUploadFrequencyMs,
-        this.configuration.maxBatchesPerCycle);
+      new UploadScheduler(persistence, uploader, this.configuration.uploadFrequency,
+        this.configuration.batchProcessingLevel);
     const scope: CoreFeatureScope = new CoreFeatureScope(
       this.contextProvider, this.bus, feature.name, persistence,
       () => this.consent, () => scheduler.triggerNow());
@@ -337,13 +337,18 @@ export class FlashcatCore implements SdkCore {
         if (!isDir) {
           continue;
         }
-        const persistence: FilePersistenceStrategy = new FilePersistenceStrategy(this.context, name);
+        // Same batchSize as the main process: the foreign-batch claim guard is
+        // derived from it, so a default window here would let this process claim
+        // a batch the main one is still appending to.
+        const persistence: FilePersistenceStrategy =
+          new FilePersistenceStrategy(this.context, name, this.configuration.batchSize);
         const uploader: DataUploader = new DataUploader(
           this.configuration,
           FlashcatCore.trackPathFor(name),
           () => this.contextProvider.snapshot());
         const scheduler: UploadScheduler =
-          new UploadScheduler(persistence, uploader, this.configuration.batchUploadFrequencyMs);
+          new UploadScheduler(persistence, uploader, this.configuration.uploadFrequency,
+            this.configuration.batchProcessingLevel);
         this.uploadPipelines.push({ persistence, scheduler });
         FlashcatLog.d(`deferred: upload pipeline for feature dir "${name}"`);
       }

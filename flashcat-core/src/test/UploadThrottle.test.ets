@@ -1,6 +1,7 @@
 import { describe, expect, it, Level, Size, TestType } from '@ohos/hypium';
 import { common } from '@kit.AbilityKit';
 import { Configuration, ConfigurationBuilder } from '../main/ets/config/Configuration';
+import { BatchProcessingLevel, BatchSize, UploadFrequency } from '../main/ets/config/Batching';
 import { Batch, FilePersistenceStrategy, UploadPersistence } from '../main/ets/internal/persistence/FilePersistenceStrategy';
 import { UploadScheduler } from '../main/ets/internal/upload/UploadScheduler';
 import { BatchUploader, UploadStatus } from '../main/ets/internal/upload/DataUploader';
@@ -79,40 +80,45 @@ class SlowUploader implements BatchUploader {
 
 export default function uploadThrottleTests(): void {
   describe('UploadThrottleConfig', (): void => {
-    it('defaultsMatchPreviousBehaviourAndAndroidParity',
+    it('enumValuesMatchTheOtherPlatforms',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        // Tuning advice is written once and applied on Android, iOS, Flutter and
+        // HarmonyOS alike, so a case must mean the same quantity everywhere.
+        // These are the values in the Android SDK's UploadFrequency, BatchSize
+        // and BatchProcessingLevel. Drift here silently invalidates that advice.
+        expect(UploadFrequency.FREQUENT as number).assertEqual(500);
+        expect(UploadFrequency.AVERAGE as number).assertEqual(2000);
+        expect(UploadFrequency.RARE as number).assertEqual(5000);
+
+        expect(BatchSize.SMALL as number).assertEqual(3000);
+        expect(BatchSize.MEDIUM as number).assertEqual(10000);
+        expect(BatchSize.LARGE as number).assertEqual(35000);
+
+        expect(BatchProcessingLevel.LOW as number).assertEqual(1);
+        expect(BatchProcessingLevel.MEDIUM as number).assertEqual(20);
+        expect(BatchProcessingLevel.HIGH as number).assertEqual(100);
+      });
+
+    it('defaultsMatchAndroidDefaultCoreConfig',
       TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
         const config: Configuration = new ConfigurationBuilder('token', 'env').build();
 
-        // 5 s window is the value the roll constants shipped with before it
-        // became configurable — defaults must not move under existing apps.
-        expect(config.batchWindowMs).assertEqual(5000);
-        // Android's BatchProcessingLevel.MEDIUM.
-        expect(config.maxBatchesPerCycle).assertEqual(10);
+        expect(config.uploadFrequency).assertEqual(UploadFrequency.AVERAGE);
+        expect(config.batchSize).assertEqual(BatchSize.MEDIUM);
+        expect(config.batchProcessingLevel).assertEqual(BatchProcessingLevel.MEDIUM);
       });
 
-    it('clampsBatchWindowToSupportedRange',
+    it('buildsWithTheSettingsRecommendedForNarrowUplinks',
       TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
-        // A sub-second window would weaken the cross-process claim guard.
-        expect(new ConfigurationBuilder('t', 'e').setBatchWindowMs(0).build().batchWindowMs)
-          .assertEqual(1000);
-        expect(new ConfigurationBuilder('t', 'e').setBatchWindowMs(-1).build().batchWindowMs)
-          .assertEqual(1000);
-        expect(new ConfigurationBuilder('t', 'e').setBatchWindowMs(35000).build().batchWindowMs)
-          .assertEqual(35000);
-        expect(new ConfigurationBuilder('t', 'e').setBatchWindowMs(600000).build().batchWindowMs)
-          .assertEqual(60000);
-      });
+        const config: Configuration = new ConfigurationBuilder('token', 'env')
+          .setUploadFrequency(UploadFrequency.RARE)
+          .setBatchSize(BatchSize.LARGE)
+          .setBatchProcessingLevel(BatchProcessingLevel.LOW)
+          .build();
 
-    it('clampsMaxBatchesPerCycleToWholeNumbersAboveZero',
-      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
-        // 0 would mean a cycle that never drains anything.
-        expect(new ConfigurationBuilder('t', 'e').setMaxBatchesPerCycle(0).build().maxBatchesPerCycle)
-          .assertEqual(1);
-        expect(new ConfigurationBuilder('t', 'e').setMaxBatchesPerCycle(-5).build().maxBatchesPerCycle)
-          .assertEqual(1);
-        // Truncated: a fractional bound can never be reached by an integer counter.
-        expect(new ConfigurationBuilder('t', 'e').setMaxBatchesPerCycle(3.7).build().maxBatchesPerCycle)
-          .assertEqual(3);
+        expect(config.uploadFrequency).assertEqual(UploadFrequency.RARE);
+        expect(config.batchSize).assertEqual(BatchSize.LARGE);
+        expect(config.batchProcessingLevel).assertEqual(BatchProcessingLevel.LOW);
       });
   });
 
@@ -131,9 +137,9 @@ export default function uploadThrottleTests(): void {
 
     it('defaultWindowKeepsActiveBatchOpen',
       TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, async (): Promise<void> => {
-        // Identical write and identical elapsed time under the default 5 s
-        // window: still open. The only difference is the configured window, so
-        // the roll decision provably follows it rather than a constant.
+        // Identical write and identical elapsed time under the default window:
+        // still open. The only difference is the configured window, so the roll
+        // decision provably follows it rather than a constant.
         const persistence: FilePersistenceStrategy =
           new FilePersistenceStrategy(fakeContext(), 'rum');
         persistence.write('{"type":"view","date":1}', false);

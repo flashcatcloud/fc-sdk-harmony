@@ -1,9 +1,13 @@
 import { common } from '@kit.AbilityKit';
 import { fileIo as fs } from '@kit.CoreFileKit';
 import { FlashcatLog } from '../FlashcatLog';
+import { BatchSize } from '../../config/Batching';
 
 const MAX_BATCH_BYTES: number = 512 * 1024;       // roll the active file past this size (UTF-8 bytes)
-const DEFAULT_BATCH_AGE_MS: number = 5000;        // …or this age, so events don't linger (override: Configuration.batchWindowMs)
+// …or this age, so events don't linger. Fallback for direct construction only;
+// every production caller passes Configuration.batchSize. Kept equal to the
+// configured default so an omitted argument cannot silently change behaviour.
+const DEFAULT_BATCH_AGE_MS: number = BatchSize.MEDIUM;
 const MAX_TOTAL_BYTES: number = 4 * 1024 * 1024;  // disk quota per feature (oldest-evicted)
 const MAX_BATCH_COUNT: number = 200;              // file-count quota per feature
 // Batches older than this are deleted instead of uploaded: the intake discards
@@ -62,7 +66,7 @@ export class FilePersistenceStrategy implements UploadPersistence {
   private readonly ownNames: Set<string> = new Set<string>();
   private pendingBytes: number = -1;          // -1 = not yet read from disk
   private seq: number = 0;
-  /** Roll window for the active batch; see Configuration.batchWindowMs. */
+  /** Roll window for the active batch; see Configuration.batchSize. */
   private readonly batchAgeMs: number;
 
   constructor(context: common.Context, featureName: string, batchAgeMs: number = DEFAULT_BATCH_AGE_MS) {
