@@ -555,7 +555,10 @@ export class RumFeature implements Feature, FeatureEventReceiver {
       attributes['error.meta.code_type'] = arch;
     }
     const kind: Object | undefined = event['crash_kind'];
-    attributes['error.category'] = kind === 'freeze' ? 'App Hang' : 'Exception';
+    // APP_FREEZE is the system watchdog's application-not-responding verdict
+    // (delivered on next launch, like Android ANRs) — not a self-sampled hang,
+    // so it is categorized as ANR rather than App Hang.
+    attributes['error.category'] = kind === 'freeze' ? 'ANR' : 'Exception';
     const buildId: Object | undefined = event['build_id'];
     if (typeof buildId === 'string' && buildId.length > 0) {
       attributes['build_id'] = buildId;
