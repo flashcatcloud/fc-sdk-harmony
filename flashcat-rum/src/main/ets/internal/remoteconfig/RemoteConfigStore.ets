@@ -167,7 +167,10 @@ export class RemoteConfigStore {
     );
   }
 
-  private static parseObject(serialized: string): Record<string, Object> | null {
+  /** Reads a JSON object, or null for anything that is not one — including a
+   * body that is not JSON at all. Shared with the controller: the endpoint's
+   * body and this store's own entries need exactly the same tolerance. */
+  static parseObject(serialized: string): Record<string, Object> | null {
     try {
       const value: Object = JSON.parse(serialized) as Object;
       if (typeof value !== 'object' || value === null || Array.isArray(value)) {

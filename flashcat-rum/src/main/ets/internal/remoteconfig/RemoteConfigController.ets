@@ -159,7 +159,7 @@ export class RemoteConfigController {
         if (this.stopped) {
           return;
         }
-        FlashcatLog.d(`rum.remoteconfig: fetch failed (${RemoteConfigController.errorText(e)}); keeping the values already in use`);
+        FlashcatLog.d(`rum.remoteconfig: fetch failed (${e instanceof Error ? e.message : 'network error'}); keeping the values already in use`);
         this.scheduleRetry();
       });
   }
@@ -205,7 +205,7 @@ export class RemoteConfigController {
    * configuration would cut every session in two on every fetch.
    */
   apply(payload: string, etag: string | null): boolean {
-    const json: Record<string, Object> | null = RemoteConfigController.parseObject(payload);
+    const json: Record<string, Object> | null = RemoteConfigStore.parseObject(payload);
     if (json === null) {
       return false;
     }
@@ -276,17 +276,6 @@ export class RemoteConfigController {
     return value as number;
   }
 
-  private static parseObject(payload: string): Record<string, Object> | null {
-    try {
-      const value: Object = JSON.parse(payload) as Object;
-      if (typeof value !== 'object' || value === null || Array.isArray(value)) {
-        return null;
-      }
-      return value as Record<string, Object>;
-    } catch (_e) {
-      return null;
-    }
-  }
 
   private static objectOf(value: Object | undefined): Record<string, Object> | null {
     if (value === undefined || typeof value !== 'object' || value === null || Array.isArray(value)) {
@@ -311,7 +300,4 @@ export class RemoteConfigController {
     return typeof value === 'string' ? value as string : null;
   }
 
-  private static errorText(e: Object): string {
-    return e instanceof Error ? e.message : 'network error';
-  }
 }

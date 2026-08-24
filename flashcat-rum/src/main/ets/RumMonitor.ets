@@ -37,11 +37,6 @@ export interface RumMonitor {
   getCurrentSessionId(callback: (sessionId: string | undefined) => void): void;
 
   /**
-   * End the current session immediately (e.g. on logout). The active view is
-   * closed with its final time_spent; the next tracked event starts a fresh
-   * session and restarts the last view in it.
-   */
-  /**
    * Force the session to be collected regardless of the configured sample
    * rates. Call it when your own code decides a visitor needs debugging (an
    * allow-list, a support flow). A session that was not being collected ends
@@ -60,6 +55,11 @@ export interface RumMonitor {
    */
   getRemoteConfig(): Record<string, Object> | null;
 
+  /**
+   * End the current session immediately (e.g. on logout). The active view is
+   * closed with its final time_spent; the next tracked event starts a fresh
+   * session and restarts the last view in it.
+   */
   stopSession(): void;
 }
 

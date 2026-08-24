@@ -74,7 +74,7 @@ export class FlashcatRum {
         // was initialised with — never a reason to fail enable().
         store = null;
         controller = null;
-        FlashcatLog.e(`rum.remoteconfig: not started (${FlashcatRum.errorText(e)}); init values apply`);
+        FlashcatLog.e(`rum.remoteconfig: not started (${e instanceof Error ? e.message : 'error'}); init values apply`);
       }
     }
 
@@ -93,10 +93,6 @@ export class FlashcatRum {
     }
   }
 
-
-  private static errorText(e: Object): string {
-    return e instanceof Error ? e.message : 'error';
-  }
 
   /**
    * Auto-record a TAP action on `target`. No-op unless RUM is enabled with

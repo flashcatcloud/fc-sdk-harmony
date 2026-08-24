@@ -268,9 +268,9 @@ export class RumFeature implements Feature, FeatureEventReceiver {
       // Back from the background, where an in-process timer may not have run for
       // hours. Whether this is worth a request is the controller's call (the
       // console has to have asked for it, and the values have to be stale).
-      const foregrounded: DefaultRumMonitor | null = this.monitor;
-      if (foregrounded !== null) {
-        foregrounded.refreshRemoteConfig();
+      const m: DefaultRumMonitor | null = this.monitor;
+      if (m !== null) {
+        m.refreshRemoteConfig();
       }
     } else if (type === 'keep_alive') {
       // App backgrounded — refresh the active view so its final time_spent is sent

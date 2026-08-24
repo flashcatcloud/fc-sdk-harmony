@@ -139,12 +139,7 @@ export class DemoSdk {
       return false;
     }
     const entries: Array<Object> = vip as Array<Object>;
-    for (let i: number = 0; i < entries.length; i++) {
-      if (entries[i] === id) {
-        return true;
-      }
-    }
-    return false;
+    return entries.includes(id);
   }
 
   static monitor(): RumMonitor {
