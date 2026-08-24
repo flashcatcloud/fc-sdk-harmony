@@ -11,6 +11,29 @@
  */
 export type RumEventMapper = (event: Record<string, Object>) => Record<string, Object> | null;
 
+/**
+ * What the SDK is about to draw a new session with, handed to
+ * {@link BeforeSamplingCallback}: the rate that would apply (the console's
+ * where it published one, the init value where it did not) and the console's
+ * custom values, decoded.
+ */
+export interface BeforeSamplingContext {
+  /** 0..100. */
+  readonly sessionSampleRate: number;
+  /** The console's custom bag, or null when nothing is published. */
+  readonly custom: Record<string, Object> | null;
+}
+
+/**
+ * The application's last word on session sampling, called synchronously each
+ * time a new session is about to be drawn. Return a rate to override — 100
+ * always collects, 0 never does — or `undefined` to leave the incoming rate
+ * alone. Runs inside session creation, so it must be fast and synchronous; a
+ * throw or an out-of-range value is ignored. A session already under way is
+ * never re-decided.
+ */
+export type BeforeSamplingCallback = (context: BeforeSamplingContext) => number | undefined;
+
 export enum RumActionType {
   TAP = 'tap',
   SCROLL = 'scroll',

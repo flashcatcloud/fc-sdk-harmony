@@ -41,6 +41,25 @@ export interface RumMonitor {
    * closed with its final time_spent; the next tracked event starts a fresh
    * session and restarts the last view in it.
    */
+  /**
+   * Force the session to be collected regardless of the configured sample
+   * rates. Call it when your own code decides a visitor needs debugging (an
+   * allow-list, a support flow). A session that was not being collected ends
+   * and a collected one starts in its place; a session already collected keeps
+   * running, and calling again while the forced session runs does nothing. The
+   * forced state lasts for the process lifetime — decide again on each launch.
+   */
+  setForcedSession(): void;
+
+  /**
+   * Read the custom values published for this application in the console. The
+   * SDK delivers them verbatim and never interprets them — what a value means
+   * is entirely up to your own code (a debug allow-list to pair with
+   * {@link setForcedSession}, a feature toggle). Values are cached across
+   * launches; null when remote configuration is off or nothing is published.
+   */
+  getRemoteConfig(): Record<string, Object> | null;
+
   stopSession(): void;
 }
 
@@ -67,6 +86,10 @@ class NoOpRumMonitor implements RumMonitor {
     callback(undefined);
   }
   stopSession(): void {}
+  setForcedSession(): void {}
+  getRemoteConfig(): Record<string, Object> | null {
+    return null;
+  }
 }
 
 /**

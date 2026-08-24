@@ -4,6 +4,7 @@ import { RumScope, RumRawEvent } from './RumScope';
 import { RumViewScope } from './RumViewScope';
 import { RumEventAssembler } from '../assembly/RumEventAssembler';
 import { writeMapped } from '../RumEventMapperHolder';
+import { DrawnConfiguration } from '../remoteconfig/RemoteConfigStore';
 
 const SESSION_INACTIVITY_MS: number = 15 * 60 * 1000;     // 15 min
 const SESSION_MAX_DURATION_MS: number = 4 * 60 * 60 * 1000; // 4 h
@@ -21,6 +22,8 @@ export class RumSessionScope implements RumScope {
   private readonly applicationId: string;
   private readonly sessionId: string;
   private readonly sampled: boolean;
+  // The settings this session was drawn under, carried onto its view documents.
+  private readonly draw: DrawnConfiguration | null;
   private readonly startedAtMs: number;
   private lastActivityMs: number;
   private lastKeepAliveMs: number = 0;
@@ -48,7 +51,9 @@ export class RumSessionScope implements RumScope {
     core: SdkCore,
     applicationId: string,
     sampleRate: number,
-    startedAtMs: number
+    startedAtMs: number,
+    forced: boolean = false,
+    draw: DrawnConfiguration | null = null
   ) {
     this.featureScope = featureScope;
     this.core = core;
@@ -56,7 +61,10 @@ export class RumSessionScope implements RumScope {
     this.sessionId = util.generateRandomUUID(true);
     this.startedAtMs = startedAtMs;
     this.lastActivityMs = startedAtMs;
-    this.sampled = RumSessionScope.decideSampling(sampleRate);
+    // A forced session skips the draw entirely: the app has said this visitor
+    // must be collected, and a coin flip could still say no.
+    this.sampled = forced || RumSessionScope.decideSampling(sampleRate);
+    this.draw = draw;
     const update: Record<string, Object> = {};
     update['session.id'] = this.sessionId;
     update['session.sampled'] = this.sampled;
@@ -130,7 +138,7 @@ export class RumSessionScope implements RumScope {
       const viewId: string = util.generateRandomUUID(true);
       this.activeView = new RumViewScope(
         this.featureScope, this.core, this.applicationId, this.sessionId,
-        event.key ?? '', event.name ?? '', viewId, event.timestampMs, event.attributes);
+        event.key ?? '', event.name ?? '', viewId, event.timestampMs, event.attributes, this.draw);
       return this;
     }
 

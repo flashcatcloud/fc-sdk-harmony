@@ -1,4 +1,4 @@
-import { RumEventMapper } from './RumTypes';
+import { RumEventMapper, BeforeSamplingCallback } from './RumTypes';
 
 /**
  * RUM feature configuration. Built via {@link RumConfigurationBuilder}.
@@ -13,6 +13,9 @@ export class RumConfiguration {
   readonly trackFrustrations: boolean;
   readonly trackErrors: boolean;            // AUTO error capture (crashes unaffected)
   readonly eventMapper: RumEventMapper | null;  // phase 2 R3: PII scrubbing / drop
+  /** Whether to read the sampling settings the console publishes. Default false. */
+  readonly remoteConfigurationEnabled: boolean;
+  readonly beforeSampling: BeforeSamplingCallback | null;
 
   constructor(
     applicationId: string,
@@ -22,7 +25,9 @@ export class RumConfiguration {
     trackNetworkRequests: boolean,
     trackFrustrations: boolean,
     eventMapper: RumEventMapper | null = null,
-    trackErrors: boolean = true
+    trackErrors: boolean = true,
+    remoteConfigurationEnabled: boolean = false,
+    beforeSampling: BeforeSamplingCallback | null = null
   ) {
     this.applicationId = applicationId;
     this.sessionSampleRate = sessionSampleRate;
@@ -32,6 +37,8 @@ export class RumConfiguration {
     this.trackFrustrations = trackFrustrations;
     this.trackErrors = trackErrors;
     this.eventMapper = eventMapper;
+    this.remoteConfigurationEnabled = remoteConfigurationEnabled;
+    this.beforeSampling = beforeSampling;
   }
 }
 
@@ -47,6 +54,8 @@ export class RumConfigurationBuilder {
   private trackFrustrations: boolean = false;
   private trackErrors: boolean = true;
   private eventMapper: RumEventMapper | null = null;
+  private remoteConfigurationEnabled: boolean = false;
+  private beforeSampling: BeforeSamplingCallback | null = null;
 
   constructor(applicationId: string) {
     this.applicationId = applicationId;
@@ -107,6 +116,34 @@ export class RumConfigurationBuilder {
     return this;
   }
 
+  /**
+   * Read the sampling settings published for this application in the console.
+   * Default false — nothing is fetched, and every rate stays exactly what this
+   * builder was given.
+   *
+   * A published rate applies to the NEXT session drawn, never to the one
+   * running: a session is decided once, at its creation. Values already
+   * fetched survive a restart, so the first session of a launch is drawn under
+   * them; when nothing has ever been fetched, or the console has the feature
+   * switched off, the init values apply.
+   */
+  setRemoteConfigurationEnabled(enabled: boolean): RumConfigurationBuilder {
+    this.remoteConfigurationEnabled = enabled;
+    return this;
+  }
+
+  /**
+   * Have the last word on session sampling. Called synchronously each time a
+   * new session is about to be drawn, with the rate that would apply and the
+   * console's custom values; return a rate to override, or nothing to leave it
+   * alone. Typical use is an allow-list: keep every session of the handful of
+   * users you are debugging while the fleet stays at a low rate.
+   */
+  setBeforeSampling(callback: BeforeSamplingCallback): RumConfigurationBuilder {
+    this.beforeSampling = callback;
+    return this;
+  }
+
   build(): RumConfiguration {
     return new RumConfiguration(
       this.applicationId,
@@ -116,7 +153,9 @@ export class RumConfigurationBuilder {
       this.trackNetworkRequests,
       this.trackFrustrations,
       this.eventMapper,
-      this.trackErrors
+      this.trackErrors,
+      this.remoteConfigurationEnabled,
+      this.beforeSampling
     );
   }
 }

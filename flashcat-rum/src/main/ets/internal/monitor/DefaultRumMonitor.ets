@@ -5,6 +5,8 @@ import { RumConfiguration } from '../../RumConfiguration';
 import { RumActionType, RumErrorSource, RumResourceKind, RumResourceMethod } from '../../RumTypes';
 import { RumApplicationScope } from '../scope/RumApplicationScope';
 import { RumRawEvent } from '../scope/RumScope';
+import { RemoteConfigStore, RemoteConfigValues } from '../remoteconfig/RemoteConfigStore';
+import { RemoteConfigController } from '../remoteconfig/RemoteConfigController';
 
 const MS_TO_NS: number = 1e6;
 // Periodically re-emit the active view so its time_spent (and the session
@@ -42,11 +44,57 @@ export class DefaultRumMonitor implements RumMonitor {
   private readonly globalAttributes: Map<string, Object> = new Map<string, Object>();
   private readonly activeActions: Map<string, ActiveActionRecord> = new Map<string, ActiveActionRecord>();
   private keepAliveTimerId: number = -1;
+  // Null unless the app opted into remote configuration.
+  private readonly remoteConfig: RemoteConfigStore | null;
+  private readonly controller: RemoteConfigController | null;
 
-  constructor(core: SdkCore, featureScope: FeatureScope, configuration: RumConfiguration) {
+  constructor(
+    core: SdkCore,
+    featureScope: FeatureScope,
+    configuration: RumConfiguration,
+    remoteConfig: RemoteConfigStore | null = null,
+    controller: RemoteConfigController | null = null
+  ) {
+    this.remoteConfig = remoteConfig;
+    this.controller = controller;
     this.applicationScope = new RumApplicationScope(
-      featureScope, core, configuration.applicationId, configuration.sessionSampleRate);
+      featureScope, core, configuration.applicationId, configuration.sessionSampleRate,
+      remoteConfig, configuration.beforeSampling,
+      controller === null ? null : (): void => controller.onSessionStarted());
     this.startKeepAlive();
+  }
+
+  /** Refresh the console's configuration if it is stale and the console allows
+   * it — the core tells us the app came back to the foreground. */
+  refreshRemoteConfig(): void {
+    if (this.controller !== null) {
+      this.controller.refreshIfStale();
+    }
+  }
+
+  /** Stop keeping the console's configuration fresh (SDK stop). */
+  stopRemoteConfig(): void {
+    if (this.controller !== null) {
+      this.controller.stop();
+    }
+  }
+
+  setForcedSession(): void {
+    this.applicationScope.forceSession(Date.now());
+  }
+
+  getRemoteConfig(): Record<string, Object> | null {
+    if (this.remoteConfig === null) {
+      return null;
+    }
+    const stored: RemoteConfigValues | null = this.remoteConfig.read();
+    if (stored === null || stored.custom === null) {
+      return null;
+    }
+    // Handed to the host application decoded: every other platform hands back a
+    // dictionary, and leaving one of them to parse a string would make the same
+    // console value cost more on HarmonyOS than anywhere else.
+    return RemoteConfigStore.decodeCustom(stored.custom);
   }
 
   startView(key: string, name: string, attributes?: Record<string, Object>): void {
