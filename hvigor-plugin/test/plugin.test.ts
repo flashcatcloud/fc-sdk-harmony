@@ -65,11 +65,7 @@ test('explicit buildDir wins over the product', () => {
   assert.equal(r.how, 'buildDir option');
 });
 
-test('disabled task and missing api key are no-ops, never throws', async () => {
-  const disabled = fakeNode('/project/entry', 'default');
-  flashcatSymbolUploadPlugin({ ...options, enabled: false }).apply(disabled);
-  await disabled.tasks[0].run();
-
+test('missing api key is a no-op, never throws', async () => {
   const noKey = fakeNode('/project/entry', 'default');
   flashcatSymbolUploadPlugin({ ...options, apiKey: '' }).apply(noKey);
   await noKey.tasks[0].run();

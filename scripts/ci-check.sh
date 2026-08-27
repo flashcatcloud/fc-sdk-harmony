@@ -29,7 +29,7 @@ echo "==> build gate: demo HAP"
 # The endpoint is deliberately unreachable: this gates task registration and
 # build-dir resolution, not the network.
 echo "==> build gate: hvigor plugin task"
-FLASHCAT_UPLOAD=1 FLASHCAT_API_KEY=ci-smoke FLASHCAT_SOURCEMAP_INTAKE_URL=http://127.0.0.1:1 \
+FLASHCAT_API_KEY=ci-smoke FLASHCAT_SOURCEMAP_INTAKE_URL=http://127.0.0.1:1 \
   "$HVIGORW" uploadFlashcatSymbols --no-daemon --mode module -p module=entry@default -p product=default
 
 echo "==> build gate: unit-test compile (type check)"

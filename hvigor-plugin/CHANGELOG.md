@@ -6,6 +6,11 @@
   `dependencies: ['assembleHap','assembleHar']`, but a module has at most one of
   those, so the missing one failed the build. The task now declares no build
   dependencies — run it as its own hvigor invocation after a release build.
+- **Breaking:** remove the `enabled` option. With no build dependencies the task
+  runs only when it is named on the command line, so naming it *is* the switch; a
+  second gate could only ever silently skip an upload that was explicitly asked
+  for. Drop `enabled` (and the `FLASHCAT_UPLOAD` variable that fed it) from
+  `hvigorfile.ts`. Every remaining skip path logs its reason.
 - The build directory now follows the product being built (`-p product=beta` →
   `build/beta`), read from the project's OHOS app context. `buildDir` stays as an
   override for layouts that do not follow that convention; previously it defaulted

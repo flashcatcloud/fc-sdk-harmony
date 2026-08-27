@@ -40,8 +40,6 @@ export interface FlashcatPluginOptions {
    *  the product being built (`-p product=beta` → `build/beta`). Set it only when the
    *  artifacts are somewhere that does not follow that layout. */
   buildDir?: string;
-  /** when false the task is registered but does nothing (e.g. debug builds). Default true. */
-  enabled?: boolean;
   pluginVersion?: string;
 }
 
@@ -98,8 +96,7 @@ export function resolveBuildDir(node: HvigorNode, explicit?: string): { dir: str
  *   system: hapTasks,
  *   plugins: [flashcatSymbolUploadPlugin({
  *     apiKey: process.env.FLASHCAT_API_KEY ?? '',
- *     service: 'my-app', version: '1.0.0',
- *     enabled: process.env.FLASHCAT_UPLOAD === '1'
+ *     service: 'my-app', version: '1.0.0'
  *   })]
  * };
  * ```
@@ -115,9 +112,6 @@ export function flashcatSymbolUploadPlugin(options: FlashcatPluginOptions): Hvig
       node.registerTask({
         name: 'uploadFlashcatSymbols',
         run: async (): Promise<void> => {
-          if (options.enabled === false) {
-            return;
-          }
           if (!options.apiKey) {
             // eslint-disable-next-line no-console
             console.warn('flashcat: FLASHCAT_API_KEY not set — skipping symbol upload.');

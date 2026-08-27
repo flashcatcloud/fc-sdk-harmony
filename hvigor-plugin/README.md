@@ -54,8 +54,7 @@ export default {
       // (scheme + host, no path), or pass endpoint: 'https://rum.example.com'.
       apiKey: process.env.FLASHCAT_API_KEY ?? '',
       service: 'my-app',
-      version: '1.0.0',
-      enabled: process.env.FLASHCAT_UPLOAD === '1'   // upload only when explicitly asked
+      version: '1.0.0'
     })
   ]
 };
@@ -64,7 +63,7 @@ export default {
 Then, after a release build, run the task as its own hvigor invocation:
 
 ```sh
-FLASHCAT_UPLOAD=1 FLASHCAT_API_KEY=*** \
+FLASHCAT_API_KEY=*** \
   hvigorw uploadFlashcatSymbols --no-daemon \
   --mode module -p module=entry@beta -p product=beta
 ```
@@ -74,10 +73,10 @@ variables. hvigor builds through a long-lived daemon process, which copies the
 environment once when it is *created* and afterwards refreshes only a fixed
 allowlist (`DEVECO_SDK_HOME`, `OHOS_BASE_SDK_HOME`, and two incremental-build
 flags). A reused daemon therefore sees the environment of whoever started it — an
-IDE build, or an earlier command — not the one you just typed. The failure is
-silent: `FLASHCAT_UPLOAD` reads as unset and the task quietly does nothing, or a
-stale `version` uploads the symbols under the wrong version number. Values written
-directly into `hvigorfile.ts` are not affected.
+IDE build, or an earlier command — not the one you just typed. The failure is easy
+to miss: `FLASHCAT_API_KEY` reads as unset and the task skips with only a warning,
+or a stale version uploads the symbols under the wrong version number. Values
+written directly into `hvigorfile.ts` are not affected.
 
 Endpoint resolution (first match wins):
 
