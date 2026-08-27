@@ -6,12 +6,21 @@ import { resolveUploadEndpoint, type UploadConfig } from './upload.ts';
 const requirePackageJson = createRequire(__filename);
 const PACKAGE_VERSION: string = (requirePackageJson('../package.json') as { version: string }).version;
 
+/** Plugin id hvigor registers the OHOS app (project-level) context under. */
+const OHOS_APP_PLUGIN_ID = 'com.ohos.app';
+
+/** Product hvigor builds when `-p product=` is omitted. */
+const DEFAULT_PRODUCT = 'default';
+
 // The hvigor plugin API (@ohos/hvigor) is provided by DevEco at build time and is
 // not a build-time dependency of this package. We model only the surface we use so
-// the package type-checks standalone.
+// the package type-checks standalone. `getParentNode`/`getContext` are optional
+// because a caller may hand us a minimal node (tests, non-OHOS hvigor projects).
 export interface HvigorNode {
   getNodePath(): string;
-  registerTask(task: { name: string; run: () => void | Promise<void>; dependencies?: string[]; postDependencies?: string[] }): void;
+  getParentNode?(): HvigorNode | undefined;
+  getContext?(pluginId: string): unknown;
+  registerTask(task: { name: string; run: () => void | Promise<void> }): void;
 }
 export interface HvigorPlugin {
   pluginId: string;
@@ -27,17 +36,57 @@ export interface FlashcatPluginOptions {
   apiKey: string;
   service: string;
   version: string;
-  /** module build dir relative to the module root; default 'build/default'. */
+  /** Module build dir, relative to the module root. Optional — by default it follows
+   *  the product being built (`-p product=beta` → `build/beta`). Set it only when the
+   *  artifacts are somewhere that does not follow that layout. */
   buildDir?: string;
-  /** when false the task is registered but does nothing (e.g. debug builds). Default true. */
-  enabled?: boolean;
   pluginVersion?: string;
 }
 
 /**
- * Registers an `uploadFlashcatSymbols` task on the module. Runs AFTER the module
- * is assembled (`default@PackageHap` / `default@PackageHar` produce the sourcemap
- * and native libs) and uploads ArkTS sourcemaps + native `.so` debug symbols.
+ * The product hvigor is currently building (`-p product=beta`), read from the
+ * project node's OHOS app context. Returns null when that context is not
+ * reachable, so the caller can fall back to the default product and say so.
+ */
+function currentProductName(node: HvigorNode): string | null {
+  try {
+    const context = node.getParentNode?.()?.getContext?.(OHOS_APP_PLUGIN_ID) as
+      | { getCurrentProduct?: () => { getProductName?: () => string } | undefined }
+      | undefined;
+    const name = context?.getCurrentProduct?.()?.getProductName?.();
+    return typeof name === 'string' && name.length > 0 ? name : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Absolute build-artifact dir to scan, plus how it was decided. The `how` string is
+ * logged so a wrong directory is visible in the build output instead of surfacing
+ * later as an unexplained "no sourceMaps.map found".
+ */
+export function resolveBuildDir(node: HvigorNode, explicit?: string): { dir: string; how: string } {
+  const moduleRoot = node.getNodePath();
+  if (explicit !== undefined) {
+    return { dir: `${moduleRoot}/${explicit}`, how: 'buildDir option' };
+  }
+  const product = currentProductName(node);
+  if (product === null) {
+    return {
+      dir: `${moduleRoot}/build/${DEFAULT_PRODUCT}`,
+      how: `product unavailable, assuming '${DEFAULT_PRODUCT}' — pass buildDir if this is wrong`
+    };
+  }
+  return { dir: `${moduleRoot}/build/${product}`, how: `product '${product}'` };
+}
+
+/**
+ * Registers an `uploadFlashcatSymbols` task on the module, which uploads ArkTS
+ * sourcemaps + native `.so` debug symbols for the product being built.
+ *
+ * The task declares no build dependencies: run it after a release build, as its
+ * own hvigor invocation. (Declaring `assembleHap`/`assembleHar` would break every
+ * module that has only one of them.)
  *
  * Wire it into a module's `hvigorfile.ts`:
  * ```ts
@@ -47,12 +96,14 @@ export interface FlashcatPluginOptions {
  *   system: hapTasks,
  *   plugins: [flashcatSymbolUploadPlugin({
  *     apiKey: process.env.FLASHCAT_API_KEY ?? '',
- *     service: 'my-app', version: '1.0.0',
- *     enabled: process.env.FLASHCAT_UPLOAD === '1'
+ *     service: 'my-app', version: '1.0.0'
  *   })]
  * };
  * ```
- * Run with: `hvigorw uploadFlashcatSymbols --mode module -p module=entry@default`.
+ * Run with `--no-daemon`: hvigor's daemon snapshots the environment when it is
+ * first started and does not refresh it, so without that flag a reused daemon can
+ * hand the plugin a stale (or empty) `process.env`.
+ * `hvigorw uploadFlashcatSymbols --no-daemon --mode module -p module=entry@default`.
  */
 export function flashcatSymbolUploadPlugin(options: FlashcatPluginOptions): HvigorPlugin {
   return {
@@ -60,14 +111,7 @@ export function flashcatSymbolUploadPlugin(options: FlashcatPluginOptions): Hvig
     apply(node: HvigorNode): void {
       node.registerTask({
         name: 'uploadFlashcatSymbols',
-        // hvigor semantics: `dependencies` are tasks that run BEFORE this task
-        // (`postDependencies` would schedule this task before them — i.e. before
-        // the build, uploading the previous build's symbols under the new version).
-        dependencies: ['assembleHap', 'assembleHar'],
         run: async (): Promise<void> => {
-          if (options.enabled === false) {
-            return;
-          }
           if (!options.apiKey) {
             // eslint-disable-next-line no-console
             console.warn('flashcat: FLASHCAT_API_KEY not set — skipping symbol upload.');
@@ -90,9 +134,11 @@ export function flashcatSymbolUploadPlugin(options: FlashcatPluginOptions): Hvig
             version: options.version,
             pluginVersion: options.pluginVersion ?? PACKAGE_VERSION
           };
-          const buildDir = `${node.getNodePath()}/${options.buildDir ?? 'build/default'}`;
+          const { dir, how } = resolveBuildDir(node, options.buildDir);
           // eslint-disable-next-line no-console
-          await uploadAll(buildDir, cfg, (m) => console.log(m));
+          console.log(`flashcat: scanning ${dir} (${how})`);
+          // eslint-disable-next-line no-console
+          await uploadAll(dir, cfg, (m) => console.log(m));
         }
       });
     }
