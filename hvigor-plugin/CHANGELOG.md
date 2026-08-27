@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.1.4
+
+- Fix `uploadFlashcatSymbols` breaking task-graph resolution: the task declared
+  `dependencies: ['assembleHap','assembleHar']`, but a module has at most one of
+  those, so the missing one failed the build. The task now declares no build
+  dependencies — run it as its own hvigor invocation after a release build.
+- The build directory now follows the product being built (`-p product=beta` →
+  `build/beta`), read from the project's OHOS app context. `buildDir` stays as an
+  override for layouts that do not follow that convention; previously it defaulted
+  to `build/default` and silently scanned the wrong directory for every other
+  product.
+- Log the directory being scanned and how it was chosen, and name that directory
+  in the "no sourceMaps.map found" message, so a wrong build dir is visible in the
+  build output instead of looking like missing sourcemap output.
+- Run the upload task with `--no-daemon`. hvigor's daemon snapshots the
+  environment when it is first started and refreshes only a fixed allowlist of
+  variables, so a reused daemon can hand the plugin a stale or empty `process.env`
+  — silently skipping the upload, or uploading under the previous version number.
+- First tests for task registration and build-dir resolution (`plugin.ts` had none).
+
 ## 0.1.3
 
 - Default symbol-upload host is now `https://ci.flashcat.cloud` (was

@@ -12,24 +12,30 @@ Zero runtime dependencies (uses Node ≥18 built-in `fetch`/`FormData`).
 
 ## Install
 
-The plugin is published on **npm**, not ohpm. Install it as a devDependency in
-the project root `package.json` (not `oh-package.json5`):
-
-```sh
-npm install -D @flashcatcloud/hvigor-plugin
-```
-
-Alternatively, declare it in `hvigor/hvigor-config.json5` `dependencies` —
-hvigor still fetches it from npm:
+The plugin is published on **npm**, not ohpm. Declare it in
+`hvigor/hvigor-config.json5` — hvigor fetches it from npm itself:
 
 ```json5
 {
   "modelVersion": "5.0.0",
   "dependencies": {
-    "@flashcatcloud/hvigor-plugin": "^0.1.3"
+    "@flashcatcloud/hvigor-plugin": "0.1.4"
   }
 }
 ```
+
+You can install it with npm instead, but a HarmonyOS project has no root
+`package.json`, and `npm install` walks *up* the directory tree looking for one —
+so run `npm init -y` in the project root first, or npm will install into whatever
+unrelated project it finds in a parent directory (often your home directory):
+
+```sh
+npm init -y                                  # only if there is no root package.json
+npm install -D @flashcatcloud/hvigor-plugin
+```
+
+Pin the exact version and commit the lock file: the plugin has zero runtime
+dependencies, so the lock stays a few lines.
 
 ## Usage (hvigor task)
 
@@ -55,12 +61,23 @@ export default {
 };
 ```
 
-Then, after a release build:
+Then, after a release build, run the task as its own hvigor invocation:
 
 ```sh
 FLASHCAT_UPLOAD=1 FLASHCAT_API_KEY=*** \
-  hvigorw uploadFlashcatSymbols --mode module -p module=entry@default -p product=default
+  hvigorw uploadFlashcatSymbols --no-daemon \
+  --mode module -p module=entry@beta -p product=beta
 ```
+
+`--no-daemon` is not optional if you configure the plugin from environment
+variables. hvigor builds through a long-lived daemon process, which copies the
+environment once when it is *created* and afterwards refreshes only a fixed
+allowlist (`DEVECO_SDK_HOME`, `OHOS_BASE_SDK_HOME`, and two incremental-build
+flags). A reused daemon therefore sees the environment of whoever started it — an
+IDE build, or an earlier command — not the one you just typed. The failure is
+silent: `FLASHCAT_UPLOAD` reads as unset and the task quietly does nothing, or a
+stale `version` uploads the symbols under the wrong version number. Values written
+directly into `hvigorfile.ts` are not affected.
 
 Endpoint resolution (first match wins):
 
@@ -71,9 +88,16 @@ Endpoint resolution (first match wins):
 
 Do **not** use `browser.flashcat.cloud` / `jira.flashcat.cloud` for symbol upload — those are RUM ingest hosts only.
 
-The task is registered with `dependencies: ['assembleHap','assembleHar']` (it runs
-after the assemble tasks), so the sourcemap + native libs exist when it runs. A missing artifact or upload
-failure is logged but never fails the build.
+The task declares no build dependencies, so it works on HAP, HAR and HSP modules
+alike — a module has at most one of `assembleHap`/`assembleHar`, and naming both
+breaks task-graph resolution for every module. Build first, then run the upload
+task. A missing artifact or an upload failure is logged but never fails the build,
+so read the log: `flashcat: sourcemap upload OK (200)` is the success line.
+
+The directory scanned follows the product being built (`-p product=beta` →
+`<module>/build/beta`), read from the project's OHOS app context. Pass `buildDir`
+only if your artifacts live somewhere else. Either way the resolved directory is
+logged (`flashcat: scanning <dir> (...)`) so a wrong guess is visible immediately.
 
 ## Programmatic / CI use
 
@@ -81,7 +105,7 @@ failure is logged but never fails the build.
 import { uploadAll } from '@flashcatcloud/hvigor-plugin';
 const result = await uploadAll('entry/build/default', {
   endpoint: process.env.FLASHCAT_SOURCEMAP_INTAKE_URL || 'https://ci.flashcat.cloud',
-  apiKey, service, version, pluginVersion: '0.1.3'
+  apiKey, service, version, pluginVersion: '0.1.4'
 }, console.log);
 ```
 
