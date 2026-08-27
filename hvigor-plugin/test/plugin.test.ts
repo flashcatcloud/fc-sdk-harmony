@@ -65,6 +65,14 @@ test('explicit buildDir wins over the product', () => {
   assert.equal(r.how, 'buildDir option');
 });
 
+test('an empty buildDir counts as unset, not as the module root', () => {
+  // An unassigned FLASHCAT_BUILD_DIR= reaches the option as ''. Scanning the module
+  // root would collect every product's sourcemap and upload an arbitrary one.
+  const r = resolveBuildDir(fakeNode('/project/entry', 'beta'), '');
+  assert.equal(r.dir, '/project/entry/build/beta');
+  assert.match(r.how, /beta/);
+});
+
 test('missing api key is a no-op, never throws', async () => {
   const noKey = fakeNode('/project/entry', 'default');
   flashcatSymbolUploadPlugin({ ...options, apiKey: '' }).apply(noKey);

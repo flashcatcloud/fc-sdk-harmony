@@ -38,7 +38,9 @@ export interface FlashcatPluginOptions {
   version: string;
   /** Module build dir, relative to the module root. Optional — by default it follows
    *  the product being built (`-p product=beta` → `build/beta`). Set it only when the
-   *  artifacts are somewhere that does not follow that layout. */
+   *  artifacts are somewhere that does not follow that layout. An empty string counts
+   *  as unset: an unassigned `FLASHCAT_BUILD_DIR=` in CI must not turn into a scan of
+   *  the whole module root, which would collect another product's sourcemap. */
   buildDir?: string;
   pluginVersion?: string;
 }
@@ -67,7 +69,7 @@ function currentProductName(node: HvigorNode): string | null {
  */
 export function resolveBuildDir(node: HvigorNode, explicit?: string): { dir: string; how: string } {
   const moduleRoot = node.getNodePath();
-  if (explicit !== undefined) {
+  if (explicit !== undefined && explicit !== '') {
     return { dir: `${moduleRoot}/${explicit}`, how: 'buildDir option' };
   }
   const product = currentProductName(node);
@@ -114,7 +116,10 @@ export function flashcatSymbolUploadPlugin(options: FlashcatPluginOptions): Hvig
         run: async (): Promise<void> => {
           if (!options.apiKey) {
             // eslint-disable-next-line no-console
-            console.warn('flashcat: FLASHCAT_API_KEY not set — skipping symbol upload.');
+            console.warn(
+              'flashcat: apiKey is empty — skipping symbol upload. Set FLASHCAT_API_KEY, ' +
+                'and pass --no-daemon so hvigor does not hand the plugin a cached environment.'
+            );
             return;
           }
           const resolved = resolveUploadEndpoint(options.endpoint);
