@@ -9,7 +9,35 @@ const JITTER_FRACTION: number = 0.2;
 const MAX_RATE: number = 100;
 const MS_PER_SECOND: number = 1000;
 const HTTP_NOT_MODIFIED: number = 304;
+/**
+ * The contract this SDK reads. Not the SDK version and not the settings version: it names the
+ * SHAPE of the body, and the server bumps it only when a body would be misread by a reader
+ * written against the previous shape.
+ */
+const SUPPORTED_SCHEMA_VERSION: number = 1;
 
+/**
+ * What reading one response body came to. Only UNREADABLE is worth asking again for: the other
+ * two are answers, whether or not this SDK can act on them.
+ */
+export enum ApplyOutcome {
+  /** The body was read and its values are now stored. */
+  APPLIED = 'applied',
+  /**
+   * The body was not a configuration at all — not JSON, or truncated. A captive portal answering
+   * 200 with a login page looks exactly like this, so it is treated as a request that did not
+   * arrive rather than as a configuration saying nothing.
+   */
+  UNREADABLE = 'unreadable',
+  /**
+   * The body is a configuration written to a contract this SDK does not know. Refused whole: a
+   * payload shaped for a newer reader can be misread field by field while every individual field
+   * still parses, and half-understood sampling settings are worse than none.
+   */
+  UNSUPPORTED_SCHEMA = 'unsupported_schema'
+}
+
+const FIELD_SCHEMA_VERSION: string = 'schema_version';
 const FIELD_VERSION: string = 'version';
 const FIELD_TTL: string = 'ttl';
 const FIELD_ENABLED: string = 'enabled';
@@ -150,7 +178,10 @@ export class RemoteConfigController {
           this.scheduleRetry();
           return;
         }
-        if (!this.apply(response.body, response.etag)) {
+        // An unreadable body is the only outcome worth asking again for. A body we understood —
+        // even one we must refuse because its schema is newer than this SDK — is an answered
+        // question, and repeating it would just be the same refusal twice.
+        if (this.apply(response.body, response.etag) === ApplyOutcome.UNREADABLE) {
           this.scheduleRetry();
         }
       })
@@ -197,17 +228,27 @@ export class RemoteConfigController {
   /**
    * Stores what the response carried and, when the console asked for it,
    * restarts the session so the new values take hold now instead of at the
-   * visitor's next one. Returns false when the body could not be read at all —
-   * that is a failed ask, not an empty configuration.
+   * visitor's next one.
    *
    * The session is only restarted when the values THIS client will draw with
    * really changed. Without that check, a console resending an unchanged
    * configuration would cut every session in two on every fetch.
    */
-  apply(payload: string, etag: string | null): boolean {
+  apply(payload: string, etag: string | null): ApplyOutcome {
     const json: Record<string, Object> | null = RemoteConfigStore.parseObject(payload);
     if (json === null) {
-      return false;
+      FlashcatLog.d('rum.remoteconfig: response was not readable; keeping the values already in use');
+      return ApplyOutcome.UNREADABLE;
+    }
+    // Checked before anything is read out of the body. The server states the shape it wrote, and
+    // a reader that guesses instead of checking is exactly what this field exists to prevent —
+    // which is why it has to be honoured by the first SDK that ships, not by a later one: only
+    // code already on the device can refuse.
+    const schema: number | null = RemoteConfigController.positiveIntOf(json[FIELD_SCHEMA_VERSION]);
+    if (schema !== SUPPORTED_SCHEMA_VERSION) {
+      FlashcatLog.e(`rum.remoteconfig: ignoring a configuration written to schema version ${schema ?? 'none'}; `
+        + `this SDK reads version ${SUPPORTED_SCHEMA_VERSION}. Update the SDK to take the console's settings again`);
+      return ApplyOutcome.UNSUPPORTED_SCHEMA;
     }
     const enabled: boolean = json[FIELD_ENABLED] === true;
     const activation: string = RemoteConfigController.stringOf(json[FIELD_ACTIVATION]) ?? '';
@@ -231,7 +272,7 @@ export class RemoteConfigController {
     // keeps the ttl the server last asked for instead of falling back to ours.
     const ttl: number | null = RemoteConfigController.positiveIntOf(json[FIELD_TTL]);
     this.ttlSeconds = ttl ?? DEFAULT_TTL_SECONDS;
-    return true;
+    return ApplyOutcome.APPLIED;
   }
 
   private storedRate(): number | null {

@@ -6,7 +6,7 @@ import {
 import { RumApplicationScope } from '../main/ets/internal/scope/RumApplicationScope';
 import { RumRawEvent } from '../main/ets/internal/scope/RumScope';
 import { RemoteConfigStore, RemoteConfigValues } from '../main/ets/internal/remoteconfig/RemoteConfigStore';
-import { RemoteConfigController } from '../main/ets/internal/remoteconfig/RemoteConfigController';
+import { RemoteConfigController, ApplyOutcome } from '../main/ets/internal/remoteconfig/RemoteConfigController';
 import { RemoteConfigFetcher, RemoteConfigResponse, buildConfigUrl } from '../main/ets/internal/remoteconfig/RemoteConfigFetcher';
 import { BeforeSamplingContext } from '../main/ets/RumTypes';
 
@@ -155,8 +155,12 @@ function configurationOf(event: Record<string, Object>): Record<string, Object> 
 
 /** Body the engine sends: rates live under `rum`, the app's bag under `custom`. */
 function body(version: number, enabled: boolean, rate: number | null,
-  activation: string = 'next_session', custom: string = ''): string {
-  const parts: string[] = [`"version":${version}`, `"ttl":600`, `"enabled":${enabled}`, `"activation":"${activation}"`];
+  activation: string = 'next_session', custom: string = '', schemaVersion: number | null = 1): string {
+  const parts: string[] = [];
+  if (schemaVersion !== null) {
+    parts.push(`"schema_version":${schemaVersion}`);
+  }
+  parts.push(`"version":${version}`, `"ttl":600`, `"enabled":${enabled}`, `"activation":"${activation}"`);
   parts.push(rate === null ? '"rum":{}' : `"rum":{"sessionSampleRate":${rate}}`);
   if (custom.length > 0) {
     parts.push(`"custom":${custom}`);
@@ -225,7 +229,8 @@ export default function remoteConfigTests(): void {
       const controller: RemoteConfigController = new RemoteConfigController(
         store, new FakeFetcher(), 'https://x/config?client_token=t', 100, (): void => { restarts++; });
 
-      expect(controller.apply(body(9, true, 25, 'next_session', '{"vip":["u1"]}'), '"e9"')).assertTrue();
+      expect(controller.apply(body(9, true, 25, 'next_session', '{"vip":["u1"]}'), '"e9"'))
+        .assertEqual(ApplyOutcome.APPLIED);
 
       const read: RemoteConfigValues = store.read() as RemoteConfigValues;
       expect(read.sessionSampleRate).assertEqual(25);
@@ -266,8 +271,31 @@ export default function remoteConfigTests(): void {
       const controller: RemoteConfigController = new RemoteConfigController(
         store, new FakeFetcher(), 'https://x/config', 100, (): void => {});
       controller.apply(body(3, true, 30), null);
-      expect(controller.apply('<html>gateway error</html>', null)).assertFalse();
+      expect(controller.apply('<html>gateway error</html>', null)).assertEqual(ApplyOutcome.UNREADABLE);
       expect((store.read() as RemoteConfigValues).sessionSampleRate).assertEqual(30);
+    });
+
+    it('refusesASchemaItDoesNotRead', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+      const core: FakeCore = new FakeCore();
+      const store: RemoteConfigStore = newStore(core);
+      const controller: RemoteConfigController = new RemoteConfigController(
+        store, new FakeFetcher(), 'https://x/config', 100, (): void => {});
+
+      // Nothing of a body we cannot vouch for reaches storage, not even the fields that parsed.
+      expect(controller.apply(body(3, true, 30, 'next_session', '', 99), null))
+        .assertEqual(ApplyOutcome.UNSUPPORTED_SCHEMA);
+      expect(store.read() === null).assertTrue();
+    });
+
+    it('refusesABodyWithNoSchemaAtAll', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+      const core: FakeCore = new FakeCore();
+      const store: RemoteConfigStore = newStore(core);
+      const controller: RemoteConfigController = new RemoteConfigController(
+        store, new FakeFetcher(), 'https://x/config', 100, (): void => {});
+
+      expect(controller.apply(body(3, true, 30, 'next_session', '', null), null))
+        .assertEqual(ApplyOutcome.UNSUPPORTED_SCHEMA);
+      expect(store.read() === null).assertTrue();
     });
 
     it('immediateActivationOnlyCutsSessionsWhenThisClientsRateChanged',
