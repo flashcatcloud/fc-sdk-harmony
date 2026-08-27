@@ -266,12 +266,9 @@ export class RumApplicationScope implements RumScope {
    * ends now so a collected one starts in its place.
    */
   forceSession(nowMs: number): void {
-    if (this.forced && this.session !== null && this.session.isSampled()) {
-      return; // already forced and collecting — nothing to do
-    }
     this.forced = true;
     if (this.session !== null && this.session.isSampled()) {
-      return;
+      return; // already collecting — nothing to end
     }
     this.stopCurrentSession(nowMs);
   }
