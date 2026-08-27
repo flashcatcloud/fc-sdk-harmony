@@ -30,7 +30,7 @@ export async function uploadAll(buildDir: string, cfg: UploadConfig, log: Logger
 
   const sm = collectArktsSourcemap(buildDir);
   if (!sm) {
-    result.sourcemap.reason = 'no sourceMaps.map found (is obfuscation/sourcemap output enabled?)';
+    result.sourcemap.reason = `no sourceMaps.map found under ${buildDir} (wrong build dir, or sourcemap output disabled?)`;
     log(`flashcat: ${result.sourcemap.reason}`);
   } else {
     try {
