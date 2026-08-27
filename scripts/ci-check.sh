@@ -16,7 +16,7 @@ node scripts/unit-node/run.mjs
 # entry/hvigorfile.ts imports the plugin's build output, so this must run before
 # any hvigor invocation.
 echo "==> hvigor plugin: build"
-(cd hvigor-plugin && npm install --no-audit --no-fund --silent && npm run build)
+(cd hvigor-plugin && npm ci --silent && npm run build)
 
 echo "==> build gate: HARs"
 "$HVIGORW" --mode module -p module="$MODULES" assembleHar --no-daemon
