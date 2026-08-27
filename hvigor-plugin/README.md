@@ -19,7 +19,7 @@ The plugin is published on **npm**, not ohpm. Declare it in
 {
   "modelVersion": "5.0.0",
   "dependencies": {
-    "@flashcatcloud/hvigor-plugin": "0.1.4"
+    "@flashcatcloud/hvigor-plugin": "0.2.0"
   }
 }
 ```
@@ -104,7 +104,7 @@ logged (`flashcat: scanning <dir> (...)`) so a wrong guess is visible immediatel
 import { uploadAll } from '@flashcatcloud/hvigor-plugin';
 const result = await uploadAll('entry/build/default', {
   endpoint: process.env.FLASHCAT_SOURCEMAP_INTAKE_URL || 'https://ci.flashcat.cloud',
-  apiKey, service, version, pluginVersion: '0.1.4'
+  apiKey, service, version, pluginVersion: '0.2.0'
 }, console.log);
 ```
 

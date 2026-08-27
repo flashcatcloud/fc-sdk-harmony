@@ -1,6 +1,11 @@
 # Changelog
 
-## 0.1.4
+## 0.2.0
+
+Carries the changes first published as 0.1.4, which was withdrawn: removing an
+option in a patch release meant everyone on the `^0.1.3` range picked it up on
+their next install. Same changes, correct version — `^0.1.3` stays on 0.1.x, and
+moving to 0.2.0 is a deliberate step.
 
 - Fix `uploadFlashcatSymbols` breaking task-graph resolution: the task declared
   `dependencies: ['assembleHap','assembleHar']`, but a module has at most one of
@@ -23,6 +28,13 @@
   environment when it is first started and refreshes only a fixed allowlist of
   variables, so a reused daemon can hand the plugin a stale or empty `process.env`
   — silently skipping the upload, or uploading under the previous version number.
+- An empty `buildDir` now counts as unset instead of resolving to the module root.
+  An unassigned `FLASHCAT_BUILD_DIR=` in CI reaches the option as `''`, and scanning
+  the module root collects every product's sourcemap — uploading an arbitrary one
+  under the current version, the same class of bug the product-aware default fixes.
+- The "skipping symbol upload" warning now names the `apiKey` option rather than only
+  the environment variable, and points at `--no-daemon` — the likeliest reason the
+  value arrived empty.
 - First tests for task registration and build-dir resolution (`plugin.ts` had none).
 
 ## 0.1.3
