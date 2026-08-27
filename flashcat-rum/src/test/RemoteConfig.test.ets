@@ -287,15 +287,18 @@ export default function remoteConfigTests(): void {
       expect(store.read() === null).assertTrue();
     });
 
-    it('refusesABodyWithNoSchemaAtAll', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+    it('readsABodyWithNoSchemaStampAtAll', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+      // A body with no stamp is, by construction, the shape that existed before the stamp did —
+      // the shape this reader was written against. Refusing it would switch remote configuration
+      // silently off against a server that merely predates the field, with nothing to say so.
       const core: FakeCore = new FakeCore();
       const store: RemoteConfigStore = newStore(core);
       const controller: RemoteConfigController = new RemoteConfigController(
         store, new FakeFetcher(), 'https://x/config', 100, (): void => {});
 
       expect(controller.apply(body(3, true, 30, 'next_session', '', null), null))
-        .assertEqual(ApplyOutcome.UNSUPPORTED_SCHEMA);
-      expect(store.read() === null).assertTrue();
+        .assertEqual(ApplyOutcome.APPLIED);
+      expect(store.read()?.sessionSampleRate).assertEqual(30);
     });
 
     it('immediateActivationOnlyCutsSessionsWhenThisClientsRateChanged',

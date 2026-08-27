@@ -244,8 +244,13 @@ export class RemoteConfigController {
     // a reader that guesses instead of checking is exactly what this field exists to prevent —
     // which is why it has to be honoured by the first SDK that ships, not by a later one: only
     // code already on the device can refuse.
+    // No stamp at all is not a refusal: a body without one is, by construction, the shape that
+    // existed before the stamp did, which is the shape this reader was written against. Refusing it
+    // would switch remote configuration silently off against a server that merely predates the
+    // field. Only a stamp we can see and do not recognise is a reason to refuse.
+    const stamped: boolean = json[FIELD_SCHEMA_VERSION] !== undefined && json[FIELD_SCHEMA_VERSION] !== null;
     const schema: number | null = RemoteConfigController.positiveIntOf(json[FIELD_SCHEMA_VERSION]);
-    if (schema !== SUPPORTED_SCHEMA_VERSION) {
+    if (stamped && schema !== SUPPORTED_SCHEMA_VERSION) {
       FlashcatLog.e(`rum.remoteconfig: ignoring a configuration written to schema version ${schema ?? 'none'}; `
         + `this SDK reads version ${SUPPORTED_SCHEMA_VERSION}. Update the SDK to take the console's settings again`);
       return ApplyOutcome.UNSUPPORTED_SCHEMA;
