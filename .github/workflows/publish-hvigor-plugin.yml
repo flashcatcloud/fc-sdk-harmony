@@ -91,3 +91,94 @@ jobs:
         run: npm publish --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+  # Mirrors the notification jobs in publish-ohpm.yml. ignoreError keeps a broken
+  # webhook from marking a release that already reached npm as failed.
+  notify-success:
+    needs: publish
+    runs-on: ubuntu-latest
+    if: success()
+    steps:
+      - name: Prepare notification
+        run: |
+          set -euo pipefail
+
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" && "${{ inputs.dry_run }}" == "true" ]]; then
+            echo "PUBLISH_MODE=Dry run" >> "$GITHUB_ENV"
+          else
+            echo "PUBLISH_MODE=Publish" >> "$GITHUB_ENV"
+          fi
+
+          # On a tag the version is exact: the publish job fails unless the tag
+          # matches hvigor-plugin/package.json.
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            echo "PACKAGE_LIST=@flashcatcloud/hvigor-plugin@${GITHUB_REF_NAME#hvigor-plugin-v}" >> "$GITHUB_ENV"
+          else
+            echo "PACKAGE_LIST=@flashcatcloud/hvigor-plugin" >> "$GITHUB_ENV"
+          fi
+
+      - name: Notify DingTalk on success
+        uses: zcong1993/actions-ding@master
+        with:
+          ignoreError: "true"
+          dingToken: ${{ secrets.DING_TALK_TOKEN }}
+          secret: ${{ secrets.DING_TALK_SECRET }}
+          body: |
+            {
+              "msgtype": "markdown",
+              "markdown": {
+                "title": "fc-sdk-harmony hvigor-plugin npm 发布通知",
+                "text": "### ✅ hvigor-plugin npm 发布成功\n\n---\n\n 🔖 分支/标签: ${{ github.ref }}\n\n 📦 类型: ${{ env.PUBLISH_MODE }}\n\n 📚 包名: ${{ env.PACKAGE_LIST }}\n\n 👨‍💻 触发人: ${{ github.actor }}\n\n 🚀 [查看详情](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})"
+              }
+            }
+
+      - name: Notify secondary DingTalk group on success
+        uses: zcong1993/actions-ding@master
+        with:
+          ignoreError: "true"
+          dingToken: ${{ secrets.DING_TALK_TOKEN_2 }}
+          secret: ${{ secrets.DING_TALK_SECRET_2 }}
+          body: |
+            {
+              "msgtype": "markdown",
+              "markdown": {
+                "title": "fc-sdk-harmony hvigor-plugin npm 发布通知",
+                "text": "### ✅ hvigor-plugin npm 发布成功\n\n---\n\n 🔖 分支/标签: ${{ github.ref }}\n\n 📦 类型: ${{ env.PUBLISH_MODE }}\n\n 📚 包名: ${{ env.PACKAGE_LIST }}\n\n 👨‍💻 触发人: ${{ github.actor }}\n\n 🚀 [查看详情](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})"
+              }
+            }
+
+  notify-failure:
+    needs: publish
+    runs-on: ubuntu-latest
+    if: failure()
+    steps:
+      - name: Prepare notification
+        run: |
+          set -euo pipefail
+
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" && "${{ inputs.dry_run }}" == "true" ]]; then
+            echo "PUBLISH_MODE=Dry run" >> "$GITHUB_ENV"
+          else
+            echo "PUBLISH_MODE=Publish" >> "$GITHUB_ENV"
+          fi
+
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            echo "PACKAGE_LIST=@flashcatcloud/hvigor-plugin@${GITHUB_REF_NAME#hvigor-plugin-v}" >> "$GITHUB_ENV"
+          else
+            echo "PACKAGE_LIST=@flashcatcloud/hvigor-plugin" >> "$GITHUB_ENV"
+          fi
+
+      - name: Notify DingTalk on failure
+        uses: zcong1993/actions-ding@master
+        with:
+          ignoreError: "true"
+          dingToken: ${{ secrets.DING_TALK_TOKEN }}
+          secret: ${{ secrets.DING_TALK_SECRET }}
+          body: |
+            {
+              "msgtype": "markdown",
+              "markdown": {
+                "title": "fc-sdk-harmony hvigor-plugin npm 发布通知",
+                "text": "### ❌ hvigor-plugin npm 发布失败\n\n---\n\n 🔖 分支/标签: ${{ github.ref }}\n\n 📦 类型: ${{ env.PUBLISH_MODE }}\n\n 📚 包名: ${{ env.PACKAGE_LIST }}\n\n 👨‍💻 触发人: ${{ github.actor }}\n\n 🚀 [查看详情](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})"
+              }
+            }
