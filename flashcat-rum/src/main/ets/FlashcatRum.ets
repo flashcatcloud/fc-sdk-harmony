@@ -1,4 +1,5 @@
-import { Flashcat, SdkCore, FeatureScope, RUM_FEATURE_NAME, FlashcatLog } from '@flashcatcloud/core';
+import { Flashcat, SdkCore, FeatureScope, FlashcatContext, IntakeTarget,
+  RUM_FEATURE_NAME, FlashcatLog } from '@flashcatcloud/core';
 import { RumConfiguration } from './RumConfiguration';
 import { GlobalRumMonitor } from './RumMonitor';
 import { RumFeature } from './internal/RumFeature';
@@ -6,6 +7,9 @@ import { DefaultRumMonitor } from './internal/monitor/DefaultRumMonitor';
 import { RumAutoInstrumentation } from './internal/RumAutoInstrumentation';
 import { RumNavigationTracker, NavContext } from './internal/RumNavigationTracker';
 import { RumEventMapperHolder } from './internal/RumEventMapperHolder';
+import { RemoteConfigStore } from './internal/remoteconfig/RemoteConfigStore';
+import { RemoteConfigController } from './internal/remoteconfig/RemoteConfigController';
+import { HttpRemoteConfigFetcher, buildConfigUrl } from './internal/remoteconfig/RemoteConfigFetcher';
 
 /**
  * Enables Real User Monitoring. Call after `Flashcat.initialize`.
@@ -43,14 +47,52 @@ export class FlashcatRum {
     // monitor: attachMonitor synchronously triggers the pending-crash replay,
     // and a replayed crash error must pass through the mapper like any event.
     RumEventMapperHolder.configure(configuration.eventMapper);
-    const monitor: DefaultRumMonitor = new DefaultRumMonitor(core, scope, configuration);
+
+    // Remote configuration is off unless the app asked for it, and everything
+    // about it is best-effort: whatever fails here, RUM still collects with the
+    // values this configuration was built with.
+    let store: RemoteConfigStore | null = null;
+    let controller: RemoteConfigController | null = null;
+    if (configuration.remoteConfigurationEnabled) {
+      try {
+        const intake: IntakeTarget = core.getIntakeTarget();
+        const context: FlashcatContext = core.getContext();
+        store = new RemoteConfigStore(
+          core, RemoteConfigStore.buildStoreKey(context, intake.host, configuration.applicationId));
+        controller = new RemoteConfigController(
+          store,
+          new HttpRemoteConfigFetcher(`flashcat-sdk-harmony/${context.sdkVersion}`),
+          buildConfigUrl(intake.host, intake.clientToken, context),
+          configuration.sessionSampleRate,
+          // Looked up when it fires rather than captured now: the monitor is
+          // registered after this is built, and by the time a response comes
+          // back it is there.
+          (): void => GlobalRumMonitor.get().stopSession()
+        );
+      } catch (e) {
+        // Whatever went wrong here, the app keeps collecting with the values it
+        // was initialised with — never a reason to fail enable().
+        store = null;
+        controller = null;
+        FlashcatLog.e(`rum.remoteconfig: not started (${e instanceof Error ? e.message : 'error'}); init values apply`);
+      }
+    }
+
+    const monitor: DefaultRumMonitor = new DefaultRumMonitor(core, scope, configuration, store, controller);
     feature.attachMonitor(monitor);
     GlobalRumMonitor.register(monitor);
 
     // Phase 2: make the auto-instrumentation toggles consultable by the tap /
     // navigation trackers. Inert unless the corresponding flag is enabled.
     RumAutoInstrumentation.configure(configuration);
+
+    // Started only after the monitor is registered: the response may ask for the
+    // session to be restarted, and that goes through the global monitor.
+    if (controller !== null) {
+      controller.start();
+    }
   }
+
 
   /**
    * Auto-record a TAP action on `target`. No-op unless RUM is enabled with

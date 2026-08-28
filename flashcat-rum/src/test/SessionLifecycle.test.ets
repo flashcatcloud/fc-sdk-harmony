@@ -1,7 +1,7 @@
 import { describe, expect, it, Level, Size, TestType } from '@ohos/hypium';
 import {
   FlashcatContext, FeatureScope, EventWriter, SdkCore, TrackingConsent,
-  Feature, FeatureEventReceiver, UserInfo
+  Feature, FeatureEventReceiver, UserInfo, IntakeTarget
 } from '@flashcatcloud/core';
 import { RumApplicationScope } from '../main/ets/internal/scope/RumApplicationScope';
 import { RumRawEvent } from '../main/ets/internal/scope/RumScope';
@@ -54,6 +54,7 @@ class CapturingScope implements FeatureScope {
 class FakeCore implements SdkCore {
   readonly name: string = 'test';
   readonly featureContext: Record<string, Object> = {};
+  private readonly settings: Map<string, string> = new Map<string, string>();
 
   registerFeature(_feature: Feature): void {}
   getFeature(_featureName: string): FeatureScope | null {
@@ -77,6 +78,20 @@ class FakeCore implements SdkCore {
   }
   setUserInfo(_user: UserInfo): void {}
   clearUserInfo(): void {}
+  getIntakeTarget(): IntakeTarget {
+    return { host: 'https://intake.example.com', clientToken: 'token' };
+  }
+  readSetting(key: string): string | null {
+    const value: string | undefined = this.settings.get(key);
+    return value === undefined ? null : value;
+  }
+  writeSetting(key: string, value: string | null): void {
+    if (value === null) {
+      this.settings.delete(key);
+    } else {
+      this.settings.set(key, value);
+    }
+  }
 }
 
 function raw(kind: string, timestampMs: number, key?: string): RumRawEvent {

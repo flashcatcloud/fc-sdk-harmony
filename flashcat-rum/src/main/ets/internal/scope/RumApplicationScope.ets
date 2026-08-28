@@ -1,6 +1,8 @@
 import { FeatureScope, SdkCore, FlashcatLog } from '@flashcatcloud/core';
 import { RumScope, RumRawEvent } from './RumScope';
 import { RumSessionScope } from './RumSessionScope';
+import { RemoteConfigStore, RemoteConfigValues, DrawnConfiguration } from '../remoteconfig/RemoteConfigStore';
+import { BeforeSamplingCallback, BeforeSamplingContext } from '../../RumTypes';
 
 /**
  * Root of the RUM scope tree. Creates and replaces sessions as they expire.
@@ -24,12 +26,33 @@ export class RumApplicationScope implements RumScope {
   // renewal) used to discard every in-flight scope — a request 2 s old that
   // merely spanned the renewal boundary was lost.
   private drainingSession: RumSessionScope | null = null;
+  // Null unless the app opted into remote configuration; then it is where the
+  // rates the console published are read from at every draw.
+  private readonly remoteConfig: RemoteConfigStore | null;
+  private readonly beforeSampling: BeforeSamplingCallback | null;
+  // Told after every draw, so the configuration is refreshed at the rhythm of
+  // the sessions that read it.
+  private readonly onSessionStarted: (() => void) | null;
+  // Set through RumMonitor.setForcedSession, read at every draw from then on.
+  // Process-lifetime, like the debugging decision it represents.
+  private forced: boolean = false;
 
-  constructor(featureScope: FeatureScope, core: SdkCore, applicationId: string, sampleRate: number) {
+  constructor(
+    featureScope: FeatureScope,
+    core: SdkCore,
+    applicationId: string,
+    sampleRate: number,
+    remoteConfig: RemoteConfigStore | null = null,
+    beforeSampling: BeforeSamplingCallback | null = null,
+    onSessionStarted: (() => void) | null = null
+  ) {
     this.featureScope = featureScope;
     this.core = core;
     this.applicationId = applicationId;
     this.sampleRate = sampleRate;
+    this.remoteConfig = remoteConfig;
+    this.beforeSampling = beforeSampling;
+    this.onSessionStarted = onSessionStarted;
   }
 
   handleEvent(event: RumRawEvent): RumScope | null {
@@ -183,7 +206,71 @@ export class RumApplicationScope implements RumScope {
     return this.session?.getSessionId();
   }
 
+  /**
+   * Draws a new session under the settings that apply RIGHT NOW: what the
+   * console published if anything, the init value otherwise, and finally
+   * whatever the app's own hook says. Order matters — the hook is the last
+   * word precisely so an allow-list can keep collecting a visitor the console's
+   * rate would drop.
+   */
   private startNewSession(nowMs: number): RumSessionScope {
-    return new RumSessionScope(this.featureScope, this.core, this.applicationId, this.sampleRate, nowMs);
+    const stored: RemoteConfigValues | null = this.remoteConfig !== null ? this.remoteConfig.read() : null;
+    const publishedRate: number | null = stored !== null ? stored.sessionSampleRate : null;
+    const baseRate: number = publishedRate !== null ? publishedRate : this.sampleRate;
+    const rate: number = this.askBeforeSampling(baseRate, stored);
+    const version: number = stored !== null && stored.version !== null ? stored.version : 0;
+    // Only meaningful when remote configuration is on: without it the rate on
+    // the event would just repeat what the app was built with, and every event
+    // would grow a field carrying no information.
+    const draw: DrawnConfiguration | null =
+      this.remoteConfig !== null ? new DrawnConfiguration(version, rate) : null;
+    const session: RumSessionScope = new RumSessionScope(
+      this.featureScope, this.core, this.applicationId, rate, nowMs, this.forced, draw);
+    if (this.onSessionStarted !== null) {
+      this.onSessionStarted();
+    }
+    return session;
   }
+
+  /**
+   * Asks the app's hook for the rate to draw with. Anything unusable — a throw,
+   * a non-number, a rate outside 0..100 — leaves the incoming rate alone: a
+   * mistake in the host application must never take a customer's collection
+   * down with it.
+   */
+  private askBeforeSampling(rate: number, stored: RemoteConfigValues | null): number {
+    const hook: BeforeSamplingCallback | null = this.beforeSampling;
+    if (hook === null) {
+      return rate;
+    }
+    try {
+      const custom: Record<string, Object> | null =
+        stored !== null ? RemoteConfigStore.decodeCustom(stored.custom) : null;
+      const context: BeforeSamplingContext = { sessionSampleRate: rate, custom: custom };
+      const override: number | undefined = hook(context);
+      if (override === undefined || typeof override !== 'number'
+        || Number.isNaN(override) || override < 0 || override > 100) {
+        return rate;
+      }
+      return override as number;
+    } catch (e) {
+      FlashcatLog.e(`rum.app: beforeSampling threw, keeping ${rate}: ${e instanceof Error ? e.message : 'error'}`);
+      return rate;
+    }
+  }
+
+  /**
+   * RumMonitor.setForcedSession: from here on every draw keeps the session. A
+   * session already being collected keeps running — RUM cannot retro-collect
+   * what a running session already dropped — while one that was not collected
+   * ends now so a collected one starts in its place.
+   */
+  forceSession(nowMs: number): void {
+    this.forced = true;
+    if (this.session !== null && this.session.isSampled()) {
+      return; // already collecting — nothing to end
+    }
+    this.stopCurrentSession(nowMs);
+  }
+
 }

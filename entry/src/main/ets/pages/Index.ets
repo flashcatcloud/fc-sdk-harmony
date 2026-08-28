@@ -3,7 +3,8 @@ import { taskpool } from '@kit.ArkTS';
 import { router } from '@kit.ArkUI';
 import { hiAppEvent, hilog } from '@kit.PerformanceAnalysisKit';
 import { rcp } from '@kit.RemoteCommunicationKit';
-import { FlashcatRum, RumActionType, RumErrorSource, RumResourceKind, RumResourceMethod } from '@flashcatcloud/rum';
+import { FlashcatRum, RumActionType, RumErrorSource, RumResourceKind, RumResourceMethod,
+  RumMonitor } from '@flashcatcloud/rum';
 import { FlashcatTrace, FlashcatHttp } from '@flashcatcloud/trace';
 import { http } from '@kit.NetworkKit';
 import { TrackingConsent } from '@flashcatcloud/core';
@@ -105,7 +106,10 @@ struct Index {
   private initSdkE2e(trackErrors: boolean): void {
     try {
       const pacing: string = AppStorage.get<string>('netbenchPacing') ?? 'demo'; // SDK init only
-      DemoSdk.init(this.context, this.useProd, this.customEndpoint, false, trackErrors, pacing);
+      const rcMode: string = AppStorage.get<string>('rcMode') ?? '';
+      const rcInitRate: number = Number.parseInt(AppStorage.get<string>('rcInitRate') ?? '100', 10);
+      DemoSdk.init(this.context, this.useProd, this.customEndpoint, false, trackErrors, pacing,
+        rcMode, rcInitRate);
     } catch (e) {
       this.append(e instanceof Error ? e.message : 'SDK initialization failed');
       return;
@@ -182,12 +186,50 @@ struct Index {
       const endpoint: string = AppStorage.get<string>('e2eEndpoint') ?? '';
       this.append('e2e: netbench started');
       this.runNetBench(`${endpoint}/e2e/echo`);
+    } else if (name === 'remoteconfig') {
+      this.runRemoteConfigScenario();
     } else if (name === 'crash') {
       this.append('e2e: crashing in 800ms');
       setTimeout(() => {
         throw new Error('E2E crash marker');
       }, 800);
     }
+  }
+
+  /**
+   * Remote-configuration end-to-end run, driven entirely from the command line.
+   *
+   * Two sessions on purpose: the first is drawn under whatever the console
+   * published (and may well be dropped — that is the point), the second is
+   * taken by force. Comparing the two in the backend is what shows the console
+   * rate actually reached the draw instead of the value this build shipped
+   * with, and every step is logged under FCRC so a run can be read back from
+   * hilog alone.
+   */
+  private runRemoteConfigScenario(): void {
+    const monitor: RumMonitor = DemoSdk.monitor();
+    const custom: Record<string, Object> | null = monitor.getRemoteConfig();
+    hilog.info(0x0000, 'FCRC', 'custom=%{public}s', custom === null ? 'null' : JSON.stringify(custom));
+
+    monitor.startView('rc-drawn', 'RcDrawn');
+    monitor.addAction(RumActionType.TAP, 'rc-drawn-tap');
+    monitor.getCurrentSessionId((sessionId: string | undefined): void => {
+      hilog.info(0x0000, 'FCRC', 'drawn session=%{public}s', sessionId ?? 'none');
+    });
+    this.append('e2e: remoteconfig — drawn session emitted');
+
+    setTimeout(() => {
+      monitor.setForcedSession();
+      monitor.startView('rc-forced', 'RcForced');
+      monitor.addAction(RumActionType.TAP, 'rc-forced-tap');
+      monitor.getCurrentSessionId((sessionId: string | undefined): void => {
+        hilog.info(0x0000, 'FCRC', 'forced session=%{public}s', sessionId ?? 'none');
+      });
+      const after: Record<string, Object> | null = monitor.getRemoteConfig();
+      hilog.info(0x0000, 'FCRC', 'custom after force=%{public}s',
+        after === null ? 'null' : JSON.stringify(after));
+      this.append('e2e: remoteconfig — forced session emitted');
+    }, 3000);
   }
 
   aboutToDisappear(): void {

@@ -1,9 +1,11 @@
 import { common } from '@kit.AbilityKit';
+import { hilog } from '@kit.PerformanceAnalysisKit';
 import {
   Flashcat, Configuration, ConfigurationBuilder, FlashcatSite, TrackingConsent, UserInfo,
   UploadFrequency, BatchSize, BatchProcessingLevel
 } from '@flashcatcloud/core';
-import { FlashcatRum, RumConfigurationBuilder, GlobalRumMonitor, RumMonitor } from '@flashcatcloud/rum';
+import { FlashcatRum, RumConfigurationBuilder, GlobalRumMonitor, RumMonitor,
+  BeforeSamplingContext } from '@flashcatcloud/rum';
 import { FlashcatTrace, TraceConfigurationBuilder } from '@flashcatcloud/trace';
 import { FlashcatCrash, CrashConfigurationBuilder, JsCrashPolicy } from '@flashcatcloud/crash';
 import { DemoConfig, DemoConfigLoader } from './DemoConfig';
@@ -43,8 +45,17 @@ export class DemoSdk {
    *   comparing settings means one app run per setting — hence a launch
    *   parameter rather than a runtime toggle.
    */
+  /**
+   * @param remoteConfig '' → off (init values rule); 'on' → read the console's
+   *   configuration; 'vip' → same, plus a beforeSampling allow-list that keeps
+   *   this device's sessions when the console's `custom.vip` names it.
+   * @param initSampleRate the rate this build ships with. Deliberately not 100
+   *   for the remote-configuration runs: the event reports the rate actually
+   *   drawn with, so a distinctive init value is what proves which one won.
+   */
   static init(context: common.Context, prod: boolean, customEndpoint: string,
-    recover: boolean = false, trackErrors: boolean = true, pacing: string = 'demo'): void {
+    recover: boolean = false, trackErrors: boolean = true, pacing: string = 'demo',
+    remoteConfig: string = '', initSampleRate: number = 100): void {
     if (DemoSdk.initialized) {
       return;
     }
@@ -76,14 +87,20 @@ export class DemoSdk {
     }
     Flashcat.initialize(context, builder.build(), TrackingConsent.GRANTED);
 
-    FlashcatRum.enable(new RumConfigurationBuilder(demoConfig.applicationId)
-      .setSessionSampleRate(100)
+    const rumBuilder: RumConfigurationBuilder = new RumConfigurationBuilder(demoConfig.applicationId)
+      .setSessionSampleRate(initSampleRate)
       .setTrackUserInteractions(true) // phase 2: auto TAP actions (A3)
       .setTrackNavigation(true)       // phase 2: auto View events on router push/pop (A1)
       .setTrackNetworkRequests(true)  // phase 2: auto Resource via FlashcatHttp wrapper (A2)
       .setTrackErrors(trackErrors)    // false → crash-only reporting (auto errors suppressed)
-      .setEventMapper(DemoSdk.demoEventMapper) // phase 2 R3: PII scrubbing / drop
-      .build());
+      .setEventMapper(DemoSdk.demoEventMapper); // phase 2 R3: PII scrubbing / drop
+    if (remoteConfig.length > 0) {
+      rumBuilder.setRemoteConfigurationEnabled(true);
+    }
+    if (remoteConfig === 'vip') {
+      rumBuilder.setBeforeSampling(DemoSdk.vipAllowList);
+    }
+    FlashcatRum.enable(rumBuilder.build());
     FlashcatTrace.enable(new TraceConfigurationBuilder().setSampleRate(100).build());
     const crashBuilder: CrashConfigurationBuilder = new CrashConfigurationBuilder();
     if (recover) {
@@ -95,6 +112,34 @@ export class DemoSdk {
     const host: string = customEndpoint.length > 0 ? customEndpoint : (prod ? 'browser.flashcat.cloud' : 'jira.flashcat.cloud');
     DemoSdk.envLabel = `${prod ? 'prod' : 'staging'} · ${host}` +
       (recover ? ' · crash recovery' : '');
+  }
+
+  /** Identifies this device to the console's allow-list. */
+  static readonly DEMO_USER_ID: string = 'harmony-e2e';
+
+  /**
+   * Demo beforeSampling hook: keep every session of a device the console named
+   * in `custom.vip`, whatever rate the fleet is on. This is the shape a support
+   * team uses — the console publishes the list, no app release involved.
+   */
+  static vipAllowList(context: BeforeSamplingContext): number | undefined {
+    const custom: Record<string, Object> | null = context.custom;
+    const listed: boolean = DemoSdk.isListed(custom, DemoSdk.DEMO_USER_ID);
+    hilog.info(0x0000, 'FCRC', 'beforeSampling rate=%{public}s vipListed=%{public}s',
+      `${context.sessionSampleRate}`, `${listed}`);
+    return listed ? 100 : undefined;
+  }
+
+  private static isListed(custom: Record<string, Object> | null, id: string): boolean {
+    if (custom === null) {
+      return false;
+    }
+    const vip: Object | undefined = custom['vip'];
+    if (!Array.isArray(vip)) {
+      return false;
+    }
+    const entries: Array<Object> = vip as Array<Object>;
+    return entries.includes(id);
   }
 
   static monitor(): RumMonitor {

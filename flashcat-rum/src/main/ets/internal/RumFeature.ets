@@ -227,6 +227,7 @@ export class RumFeature implements Feature, FeatureEventReceiver {
     this.activeJsCrashPolicy = null;
     if (this.monitor !== null) {
       this.monitor.stopKeepAlive(); // stop the keep-alive timer so it doesn't leak
+      this.monitor.stopRemoteConfig(); // and the configuration refresh with it
     }
     RumNavigationTracker.detach(); // remove the router observer
     RumAutoInstrumentation.reset(); // make tap/nav trackers inert after stop
@@ -263,6 +264,14 @@ export class RumFeature implements Feature, FeatureEventReceiver {
       const policy: string = RumFeature.asString(event['policy']);
       this.activeJsCrashPolicy = policy.length > 0 ? policy : null;
       FlashcatLog.d(`rum.error: crash policy owner enabled policy=${policy}`);
+    } else if (type === 'app_foreground') {
+      // Back from the background, where an in-process timer may not have run for
+      // hours. Whether this is worth a request is the controller's call (the
+      // console has to have asked for it, and the values have to be stale).
+      const m: DefaultRumMonitor | null = this.monitor;
+      if (m !== null) {
+        m.refreshRemoteConfig();
+      }
     } else if (type === 'keep_alive') {
       // App backgrounded — refresh the active view so its final time_spent is sent
       // before the batch is flushed (published by the core on background).
