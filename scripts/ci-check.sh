@@ -27,10 +27,18 @@ echo "==> build gate: demo HAP"
 # The only place the hvigor plugin runs against a real task graph — hosted Linux
 # CI cannot run hvigor, so a regression here is invisible to every other check.
 # The endpoint is deliberately unreachable: this gates task registration and
-# build-dir resolution, not the network.
+# build-dir resolution, not the network. Asserting the "(product '...')" suffix is
+# what makes this a gate: the probe's fallback lands on the same build/default
+# directory and an upload failure never fails the build, so without the assertion
+# the step stays green even when the product probe is broken.
 echo "==> build gate: hvigor plugin task"
-FLASHCAT_API_KEY=ci-smoke FLASHCAT_SOURCEMAP_INTAKE_URL=http://127.0.0.1:1 \
-  "$HVIGORW" uploadFlashcatSymbols --no-daemon --mode module -p module=entry@default -p product=default
+gate_out=$(FLASHCAT_UPLOAD=1 FLASHCAT_API_KEY=ci-smoke FLASHCAT_SOURCEMAP_INTAKE_URL=http://127.0.0.1:1 \
+  "$HVIGORW" uploadFlashcatSymbols --no-daemon --mode module -p module=entry@default -p product=default 2>&1)
+echo "$gate_out"
+if ! echo "$gate_out" | grep -q "flashcat: scanning .*(product 'default')"; then
+  echo "FAILED: the plugin did not read the product from the hvigor context" >&2
+  exit 1
+fi
 
 echo "==> build gate: unit-test compile (type check)"
 "$HVIGORW" --mode module -p module="$MODULES" UnitTestBuild --no-daemon
