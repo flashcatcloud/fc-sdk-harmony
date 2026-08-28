@@ -73,7 +73,11 @@ test('an empty buildDir counts as unset, not as the module root', () => {
   assert.match(r.how, /beta/);
 });
 
-test('missing api key is a no-op, never throws', async () => {
+test('a disabled task and a missing api key are no-ops, never throw', async () => {
+  const disabled = fakeNode('/project/entry', 'default');
+  flashcatSymbolUploadPlugin({ ...options, enabled: false }).apply(disabled);
+  await disabled.tasks[0].run();
+
   const noKey = fakeNode('/project/entry', 'default');
   flashcatSymbolUploadPlugin({ ...options, apiKey: '' }).apply(noKey);
   await noKey.tasks[0].run();

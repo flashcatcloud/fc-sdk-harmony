@@ -19,7 +19,7 @@ The plugin is published on **npm**, not ohpm. Declare it in
 {
   "modelVersion": "5.0.0",
   "dependencies": {
-    "@flashcatcloud/hvigor-plugin": "0.2.0"
+    "@flashcatcloud/hvigor-plugin": "0.1.5"
   }
 }
 ```
@@ -54,7 +54,8 @@ export default {
       // (scheme + host, no path), or pass endpoint: 'https://rum.example.com'.
       apiKey: process.env.FLASHCAT_API_KEY ?? '',
       service: 'my-app',
-      version: '1.0.0'
+      version: '1.0.0',
+      enabled: process.env.FLASHCAT_UPLOAD === '1'   // upload only when asked
     })
   ]
 };
@@ -63,7 +64,7 @@ export default {
 Then, after a release build, run the task as its own hvigor invocation:
 
 ```sh
-FLASHCAT_API_KEY=*** \
+FLASHCAT_UPLOAD=1 FLASHCAT_API_KEY=*** \
   hvigorw uploadFlashcatSymbols --no-daemon \
   --mode module -p module=entry@beta -p product=beta
 ```
@@ -74,9 +75,9 @@ environment once when it is *created* and afterwards refreshes only a fixed
 allowlist (`DEVECO_SDK_HOME`, `OHOS_BASE_SDK_HOME`, and two incremental-build
 flags). A reused daemon therefore sees the environment of whoever started it — an
 IDE build, or an earlier command — not the one you just typed. The failure is easy
-to miss: `FLASHCAT_API_KEY` reads as unset and the task skips with only a warning,
-or a stale version uploads the symbols under the wrong version number. Values
-written directly into `hvigorfile.ts` are not affected.
+to miss: `FLASHCAT_UPLOAD` or `FLASHCAT_API_KEY` reads as unset and the task skips
+with only a warning, or a stale version uploads the symbols under the wrong version
+number. Values written directly into `hvigorfile.ts` are not affected.
 
 Endpoint resolution (first match wins):
 
@@ -104,7 +105,7 @@ logged (`flashcat: scanning <dir> (...)`) so a wrong guess is visible immediatel
 import { uploadAll } from '@flashcatcloud/hvigor-plugin';
 const result = await uploadAll('entry/build/default', {
   endpoint: process.env.FLASHCAT_SOURCEMAP_INTAKE_URL || 'https://ci.flashcat.cloud',
-  apiKey, service, version, pluginVersion: '0.2.0'
+  apiKey, service, version, pluginVersion: '0.1.5'
 }, console.log);
 ```
 

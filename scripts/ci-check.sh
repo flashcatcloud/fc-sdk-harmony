@@ -32,7 +32,7 @@ echo "==> build gate: demo HAP"
 # directory and an upload failure never fails the build, so without the assertion
 # the step stays green even when the product probe is broken.
 echo "==> build gate: hvigor plugin task"
-gate_out=$(FLASHCAT_API_KEY=ci-smoke FLASHCAT_SOURCEMAP_INTAKE_URL=http://127.0.0.1:1 \
+gate_out=$(FLASHCAT_UPLOAD=1 FLASHCAT_API_KEY=ci-smoke FLASHCAT_SOURCEMAP_INTAKE_URL=http://127.0.0.1:1 \
   "$HVIGORW" uploadFlashcatSymbols --no-daemon --mode module -p module=entry@default -p product=default 2>&1)
 echo "$gate_out"
 if ! echo "$gate_out" | grep -q "flashcat: scanning .*(product 'default')"; then

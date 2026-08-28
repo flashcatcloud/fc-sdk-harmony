@@ -20,7 +20,15 @@ export interface HvigorNode {
   getNodePath(): string;
   getParentNode?(): HvigorNode | undefined;
   getContext?(pluginId: string): unknown;
-  registerTask(task: { name: string; run: () => void | Promise<void> }): void;
+  // `dependencies`/`postDependencies` are part of hvigor's own registerTask API. This
+  // plugin does not use them (see below), but the interface must not describe less
+  // than hvigor offers, or it breaks anyone else typing a node against it.
+  registerTask(task: {
+    name: string;
+    run: () => void | Promise<void>;
+    dependencies?: string[];
+    postDependencies?: string[];
+  }): void;
 }
 export interface HvigorPlugin {
   pluginId: string;
@@ -42,6 +50,10 @@ export interface FlashcatPluginOptions {
    *  as unset: an unassigned `FLASHCAT_BUILD_DIR=` in CI must not turn into a scan of
    *  the whole module root, which would collect another product's sourcemap. */
   buildDir?: string;
+  /** When false the task is registered but does nothing, and says so. Default true.
+   *  Kept as an option because a pipeline variable is cheaper to flip than an edit to
+   *  the build command — the same switch consumers otherwise hand-roll. */
+  enabled?: boolean;
   pluginVersion?: string;
 }
 
@@ -98,7 +110,8 @@ export function resolveBuildDir(node: HvigorNode, explicit?: string): { dir: str
  *   system: hapTasks,
  *   plugins: [flashcatSymbolUploadPlugin({
  *     apiKey: process.env.FLASHCAT_API_KEY ?? '',
- *     service: 'my-app', version: '1.0.0'
+ *     service: 'my-app', version: '1.0.0',
+ *     enabled: process.env.FLASHCAT_UPLOAD === '1'
  *   })]
  * };
  * ```
@@ -114,6 +127,13 @@ export function flashcatSymbolUploadPlugin(options: FlashcatPluginOptions): Hvig
       node.registerTask({
         name: 'uploadFlashcatSymbols',
         run: async (): Promise<void> => {
+          if (options.enabled === false) {
+            // Never return silently: in a build log, a deliberate skip and a
+            // successful upload would otherwise look exactly the same.
+            // eslint-disable-next-line no-console
+            console.warn('flashcat: upload disabled (enabled: false) — skipping symbol upload.');
+            return;
+          }
           if (!options.apiKey) {
             // eslint-disable-next-line no-console
             console.warn(
