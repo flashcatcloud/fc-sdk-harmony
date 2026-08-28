@@ -1,16 +1,14 @@
 # Changelog
 
-## 0.1.4
+## 0.1.5
 
 - Fix `uploadFlashcatSymbols` breaking task-graph resolution: the task declared
   `dependencies: ['assembleHap','assembleHar']`, but a module has at most one of
   those, so the missing one failed the build. The task now declares no build
   dependencies — run it as its own hvigor invocation after a release build.
-- **Breaking:** remove the `enabled` option. With no build dependencies the task
-  runs only when it is named on the command line, so naming it *is* the switch; a
-  second gate could only ever silently skip an upload that was explicitly asked
-  for. Drop `enabled` (and the `FLASHCAT_UPLOAD` variable that fed it) from
-  `hvigorfile.ts`. Every remaining skip path logs its reason.
+- A disabled task now says so. `enabled: false` used to return without a word, which
+  in a build log is indistinguishable from a successful upload. Every path that skips
+  the upload now states its reason.
 - The build directory now follows the product being built (`-p product=beta` →
   `build/beta`), read from the project's OHOS app context. `buildDir` stays as an
   override for layouts that do not follow that convention; previously it defaulted
@@ -23,6 +21,13 @@
   environment when it is first started and refreshes only a fixed allowlist of
   variables, so a reused daemon can hand the plugin a stale or empty `process.env`
   — silently skipping the upload, or uploading under the previous version number.
+- An empty `buildDir` now counts as unset instead of resolving to the module root.
+  An unassigned `FLASHCAT_BUILD_DIR=` in CI reaches the option as `''`, and scanning
+  the module root collects every product's sourcemap — uploading an arbitrary one
+  under the current version, the same class of bug the product-aware default fixes.
+- The "skipping symbol upload" warning now names the `apiKey` option rather than only
+  the environment variable, and points at `--no-daemon` — the likeliest reason the
+  value arrived empty.
 - First tests for task registration and build-dir resolution (`plugin.ts` had none).
 
 ## 0.1.3

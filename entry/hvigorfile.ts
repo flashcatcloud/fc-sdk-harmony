@@ -6,8 +6,11 @@ export default {
   plugins: [
     flashcatSymbolUploadPlugin({
       apiKey: process.env.FLASHCAT_API_KEY ?? '',
-      service: 'fc-sdk-harmony-demo',
-      version: '0.1.0'
+      // Must match what the demo reports at runtime, or symbolication cannot find
+      // these files: service is DemoConfig's default, version is AppScope versionName.
+      service: 'flashcat-harmony-demo',
+      version: '0.1.1',
+      enabled: process.env.FLASHCAT_UPLOAD === '1'
     })
   ]
 };

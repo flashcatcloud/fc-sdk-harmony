@@ -23,11 +23,20 @@ Verified working on the local emulator (2026-06-13): `upload: POST /api/v2/rum -
 
 ## One-time setup
 
-1. Open the repo root in **DevEco Studio**.
-2. Configure automatic signing: `File → Project Structure → Signing Configs →
+1. Build the hvigor plugin once. `entry/hvigorfile.ts` imports it from
+   `hvigor-plugin/dist/`, which is not checked in, and hvigor evaluates that file on
+   every invocation — DevEco project sync included, so skipping this fails the sync
+   with a module-not-found error:
+
+   ```sh
+   (cd hvigor-plugin && npm ci && npm run build)
+   ```
+
+2. Open the repo root in **DevEco Studio**.
+3. Configure automatic signing: `File → Project Structure → Signing Configs →
    Automatically generate signature` (a free Huawei account works). The CLI build
    produces an **unsigned** HAP; running on a device needs a signature.
-3. Edit `entry/src/main/resources/rawfile/demo_config.json`:
+4. Edit `entry/src/main/resources/rawfile/demo_config.json`:
    - `clientToken` — your FlashCat client token
    - `applicationId` — your RUM application id
    - `service` — optional service name; defaults to `flashcat-harmony-demo`

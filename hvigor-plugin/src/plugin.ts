@@ -20,7 +20,15 @@ export interface HvigorNode {
   getNodePath(): string;
   getParentNode?(): HvigorNode | undefined;
   getContext?(pluginId: string): unknown;
-  registerTask(task: { name: string; run: () => void | Promise<void> }): void;
+  // `dependencies`/`postDependencies` are part of hvigor's own registerTask API. This
+  // plugin does not use them (see below), but the interface must not describe less
+  // than hvigor offers, or it breaks anyone else typing a node against it.
+  registerTask(task: {
+    name: string;
+    run: () => void | Promise<void>;
+    dependencies?: string[];
+    postDependencies?: string[];
+  }): void;
 }
 export interface HvigorPlugin {
   pluginId: string;
@@ -38,8 +46,14 @@ export interface FlashcatPluginOptions {
   version: string;
   /** Module build dir, relative to the module root. Optional — by default it follows
    *  the product being built (`-p product=beta` → `build/beta`). Set it only when the
-   *  artifacts are somewhere that does not follow that layout. */
+   *  artifacts are somewhere that does not follow that layout. An empty string counts
+   *  as unset: an unassigned `FLASHCAT_BUILD_DIR=` in CI must not turn into a scan of
+   *  the whole module root, which would collect another product's sourcemap. */
   buildDir?: string;
+  /** When false the task is registered but does nothing, and says so. Default true.
+   *  Kept as an option because a pipeline variable is cheaper to flip than an edit to
+   *  the build command — the same switch consumers otherwise hand-roll. */
+  enabled?: boolean;
   pluginVersion?: string;
 }
 
@@ -67,7 +81,7 @@ function currentProductName(node: HvigorNode): string | null {
  */
 export function resolveBuildDir(node: HvigorNode, explicit?: string): { dir: string; how: string } {
   const moduleRoot = node.getNodePath();
-  if (explicit !== undefined) {
+  if (explicit !== undefined && explicit !== '') {
     return { dir: `${moduleRoot}/${explicit}`, how: 'buildDir option' };
   }
   const product = currentProductName(node);
@@ -96,7 +110,8 @@ export function resolveBuildDir(node: HvigorNode, explicit?: string): { dir: str
  *   system: hapTasks,
  *   plugins: [flashcatSymbolUploadPlugin({
  *     apiKey: process.env.FLASHCAT_API_KEY ?? '',
- *     service: 'my-app', version: '1.0.0'
+ *     service: 'my-app', version: '1.0.0',
+ *     enabled: process.env.FLASHCAT_UPLOAD === '1'
  *   })]
  * };
  * ```
@@ -112,9 +127,19 @@ export function flashcatSymbolUploadPlugin(options: FlashcatPluginOptions): Hvig
       node.registerTask({
         name: 'uploadFlashcatSymbols',
         run: async (): Promise<void> => {
+          if (options.enabled === false) {
+            // Never return silently: in a build log, a deliberate skip and a
+            // successful upload would otherwise look exactly the same.
+            // eslint-disable-next-line no-console
+            console.warn('flashcat: upload disabled (enabled: false) — skipping symbol upload.');
+            return;
+          }
           if (!options.apiKey) {
             // eslint-disable-next-line no-console
-            console.warn('flashcat: FLASHCAT_API_KEY not set — skipping symbol upload.');
+            console.warn(
+              'flashcat: apiKey is empty — skipping symbol upload. Set FLASHCAT_API_KEY, ' +
+                'and pass --no-daemon so hvigor does not hand the plugin a cached environment.'
+            );
             return;
           }
           const resolved = resolveUploadEndpoint(options.endpoint);
