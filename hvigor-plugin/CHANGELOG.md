@@ -2,10 +2,8 @@
 
 ## 0.2.0
 
-Carries the changes first published as 0.1.4, which was withdrawn: removing an
-option in a patch release meant everyone on the `^0.1.3` range picked it up on
-their next install. Same changes, correct version — `^0.1.3` stays on 0.1.x, and
-moving to 0.2.0 is a deliberate step.
+A minor bump rather than a patch: this release removes an option, so it must not
+reach `^0.1.3` installs on its own. Upgrading is a deliberate step.
 
 - Fix `uploadFlashcatSymbols` breaking task-graph resolution: the task declared
   `dependencies: ['assembleHap','assembleHar']`, but a module has at most one of
