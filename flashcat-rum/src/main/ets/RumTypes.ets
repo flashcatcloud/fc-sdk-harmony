@@ -28,9 +28,10 @@ export interface BeforeSamplingContext {
  * The application's last word on session sampling, called synchronously each
  * time a new session is about to be drawn. Return a rate to override — 100
  * always collects, 0 never does — or `undefined` to leave the incoming rate
- * alone. Runs inside session creation, so it must be fast and synchronous; a
- * throw or an out-of-range value is ignored. A session already under way is
- * never re-decided.
+ * alone. Also called when configuration arrives to decide whether to end the
+ * current session. It must be fast, synchronous, free of side effects, and
+ * return the same result for the same input. A throw or an out-of-range value
+ * is ignored. Sampling never changes within an existing session.
  */
 export type BeforeSamplingCallback = (context: BeforeSamplingContext) => number | undefined;
 

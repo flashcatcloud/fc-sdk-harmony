@@ -285,6 +285,59 @@ export default function remoteConfigTests(): void {
       expect(read.version).assertEqual(5); // still traceable to the change that switched it off
     });
 
+    it('rejectsMalformedEnvelopesWithoutChangingStoredValuesOrRefreshPermission',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        const invalid: string[] = [
+          '{"schema_version":1,"version":999999}',
+          '{"version":999999,"enabled":"false"}',
+          '{"version":999999,"enabled":null}',
+          '{"enabled":true}',
+          '{"version":-1,"enabled":true}',
+          '{"version":6.5,"enabled":true}',
+          '{"version":1e309,"enabled":true}',
+          '{"version":9007199254740992,"enabled":true}',
+          '{"version":999999,"enabled":true,"rum":[]}',
+          '{"version":999999,"enabled":true,"rum":"invalid"}',
+          '{"version":999999,"enabled":true,"rum":null}'
+        ];
+        for (const payload of invalid) {
+          const core: FakeCore = new FakeCore();
+          const store: RemoteConfigStore = newStore(core);
+          const fetcher: FakeFetcher = new FakeFetcher();
+          let announcements: number = 0;
+          const controller: RemoteConfigController = new RemoteConfigController(
+            store, fetcher, 'https://x/config',
+            (_a: string, _b: number | null, _c: number | null): void => { announcements++; });
+          controller.apply(body(5, true, 0, 'next_session', '{"vip":["u1"]}'), '"e5"');
+          const malformed: string = payload.replace('}', ',"refresh_on_foreground":true,"ttl":1}');
+          expect(controller.apply(malformed, '"invalid"')).assertEqual(ApplyOutcome.UNREADABLE);
+          const stored: RemoteConfigValues = store.read() as RemoteConfigValues;
+          expect(stored.version).assertEqual(5);
+          expect(stored.sessionSampleRate).assertEqual(0);
+          expect(stored.custom).assertEqual('{"vip":["u1"]}');
+          expect(stored.etag).assertEqual('"e5"');
+          expect(announcements).assertEqual(1);
+          controller.refreshIfStale();
+          expect(fetcher.urls.length).assertEqual(0);
+          expect(controller.apply(body(6, false, null), '"e6"')).assertEqual(ApplyOutcome.APPLIED);
+          expect(store.read()?.version).assertEqual(6);
+          expect(store.read()?.sessionSampleRate).assertNull();
+          controller.stop();
+        }
+      });
+
+    it('acceptsVersionZeroBeforeAnyConfigurationWasPublished',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        const store: RemoteConfigStore = newStore(new FakeCore());
+        const controller: RemoteConfigController = new RemoteConfigController(
+          store, new FakeFetcher(), 'https://x/config', ignoreChanges);
+        expect(controller.apply('{"schema_version":1,"version":0,"enabled":false}', '"empty"'))
+          .assertEqual(ApplyOutcome.APPLIED);
+        expect(store.read()?.sessionSampleRate).assertNull();
+        expect(controller.apply(body(1, true, 25), '"e1"')).assertEqual(ApplyOutcome.APPLIED);
+        expect(store.read()?.sessionSampleRate).assertEqual(25);
+      });
+
     it('unreadableBodyIsAFailedAskNotAnEmptyConfiguration', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
       const core: FakeCore = new FakeCore();
       const store: RemoteConfigStore = newStore(core);
@@ -382,11 +435,10 @@ export default function remoteConfigTests(): void {
           store, new FakeFetcher(), 'https://x/config', ignoreChanges);
         controller.apply(body(3, true, 10), null);
 
-        // Version 0 and a missing version both read as "no version": after a
-        // real one has been applied, only a lagging node answers that way.
+        // Version 0 is an older answer; a missing version is not a configuration.
         expect(controller.apply(body(0, true, 90), null)).assertEqual(ApplyOutcome.STALE_VERSION);
         expect(controller.apply('{"schema_version":1,"enabled":true,"rum":{"sessionSampleRate":90}}', null))
-          .assertEqual(ApplyOutcome.STALE_VERSION);
+          .assertEqual(ApplyOutcome.UNREADABLE);
         expect((store.read() as RemoteConfigValues).sessionSampleRate).assertEqual(10);
       });
 
@@ -555,6 +607,74 @@ export default function remoteConfigTests(): void {
 
         expect(store.read()).assertNull();
         expect(announcements).assertEqual(0);
+      });
+
+    it('restoresForegroundRefreshAndTtlBeforeAnUnchangedStartupResponse',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, async (): Promise<void> => {
+        const core: FakeCore = new FakeCore();
+        const store: RemoteConfigStore = newStore(core);
+        const first: RemoteConfigController = new RemoteConfigController(
+          store, new FakeFetcher(), 'https://x/config', ignoreChanges);
+        first.apply('{"version":1,"enabled":true,"ttl":1,"refresh_on_foreground":true,"rum":{}}', '"e1"');
+        first.stop();
+        const fetcher: FakeFetcher = new FakeFetcher();
+        fetcher.answer(304, '');
+        const restarted: RemoteConfigController = new RemoteConfigController(
+          newStore(core), fetcher, 'https://x/config', ignoreChanges);
+        try {
+          restarted.start();
+          await sleep(20);
+          expect(fetcher.validators[0]).assertEqual('"e1"');
+          restarted.refreshIfStale();
+          expect(fetcher.urls.length).assertEqual(1);
+          await sleep(1100);
+          restarted.refreshIfStale();
+          expect(fetcher.urls.length).assertEqual(2);
+        } finally {
+          restarted.stop();
+        }
+      });
+
+    it('keepsForegroundRefreshOffAcrossAnUnchangedStartupResponse',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, async (): Promise<void> => {
+        const core: FakeCore = new FakeCore();
+        const store: RemoteConfigStore = newStore(core);
+        const first: RemoteConfigController = new RemoteConfigController(
+          store, new FakeFetcher(), 'https://x/config', ignoreChanges);
+        first.apply('{"version":1,"enabled":true,"ttl":1,"refresh_on_foreground":false}', '"e1"');
+        first.stop();
+        const fetcher: FakeFetcher = new FakeFetcher();
+        fetcher.answer(304, '');
+        const restarted: RemoteConfigController = new RemoteConfigController(
+          newStore(core), fetcher, 'https://x/config', ignoreChanges);
+        try {
+          restarted.start();
+          await sleep(1100);
+          restarted.refreshIfStale();
+          expect(fetcher.urls.length).assertEqual(1);
+        } finally {
+          restarted.stop();
+        }
+      });
+
+    it('fetchesAFullResponseWhenCachedRefreshSettingsAreMissing',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, async (): Promise<void> => {
+        const core: FakeCore = new FakeCore();
+        const store: RemoteConfigStore = newStore(core);
+        store.write(new RemoteConfigValues(25, 1, null, '"e1"'));
+        core.settings.forEach((_value: string, key: string): void => {
+          core.settings.set(key, JSON.stringify({ rate: 25, version: 1, etag: 'e1' }));
+        });
+        const fetcher: FakeFetcher = new FakeFetcher();
+        fetcher.answer(200, body(1, true, 25), '"e1"');
+        const controller: RemoteConfigController = new RemoteConfigController(
+          store, fetcher, 'https://x/config', ignoreChanges);
+        expect(store.read()?.sessionSampleRate).assertEqual(25);
+        controller.start();
+        await sleep(20);
+        controller.stop();
+        expect(fetcher.validators[0]).assertNull();
+        expect(store.read()?.sessionSampleRate).assertEqual(25);
       });
 
     it('followsTheServerTtlWhenDecidingWhatIsStale',
@@ -964,6 +1084,73 @@ export default function remoteConfigTests(): void {
         startView(app, now + 2000);
         expect(scope.written.length > 0).assertTrue();
         expect(app.getCurrentSessionId() === dark).assertFalse();
+      });
+
+    it('activatesCustomOnlyAllowListChangesInBothDirections',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        const activations: string[] = ['next_session', 'immediate'];
+        for (const activation of activations) {
+          const core: FakeCore = new FakeCore();
+          const scope: CapturingScope = new CapturingScope();
+          const store: RemoteConfigStore = newStore(core);
+          const hook: BeforeSamplingCallback = (context: BeforeSamplingContext): number | undefined =>
+            context.custom !== null && context.custom['allowed'] === true ? 100 : 0;
+          const app: RumApplicationScope = new RumApplicationScope(scope, core, 'app-1', 0, store, hook);
+          const controller: RemoteConfigController = new RemoteConfigController(
+            store, new FakeFetcher(), 'https://x/config',
+            (mode: string, before: number | null, after: number | null): void => {
+              app.onConfigurationChanged(mode, before, after, Date.now());
+            });
+          controller.apply(body(1, true, 0, activation, '{"allowed":false}'), null);
+          startView(app, Date.now());
+          expect(scope.written.length).assertEqual(0);
+          controller.apply(body(2, true, 0, activation, '{"allowed":true}'), null);
+          expect(app.getCurrentSessionId()).assertUndefined();
+          app.handleEvent(raw('addAction', Date.now()));
+          expect(scope.written.length > 0).assertTrue();
+          const kept: string = app.getCurrentSessionId() as string;
+          controller.apply(body(3, true, 0, activation, '{"allowed":true,"label":"changed"}'), null);
+          expect(app.getCurrentSessionId()).assertEqual(kept);
+          controller.apply(body(4, true, 0, activation, '{"allowed":false}'), null);
+          expect(app.getCurrentSessionId()).assertUndefined();
+          const count: number = scope.written.length;
+          app.handleEvent(raw('addAction', Date.now()));
+          expect(scope.written.length).assertEqual(count);
+          controller.stop();
+        }
+      });
+
+    it('doesNotRedrawWhenTheHookKeepsTheSameEffectiveRate',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        const store: RemoteConfigStore = newStore(new FakeCore());
+        const app: RumApplicationScope = new RumApplicationScope(
+          new CapturingScope(), new FakeCore(), 'app-1', 100, store,
+          (_context: BeforeSamplingContext): number | undefined => 100);
+        store.write(new RemoteConfigValues(0, 1));
+        startView(app, Date.now());
+        const kept: string = app.getCurrentSessionId() as string;
+        store.write(new RemoteConfigValues(20, 2));
+        app.onConfigurationChanged('immediate', 0, 20, Date.now());
+        expect(app.getCurrentSessionId()).assertEqual(kept);
+      });
+
+    it('doesNotRedrawAnUnchangedRateAfterADeferredChange',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        const core: FakeCore = new FakeCore();
+        const store: RemoteConfigStore = newStore(core);
+        const app: RumApplicationScope = new RumApplicationScope(new CapturingScope(), core, 'app-1', 100, store);
+        store.write(new RemoteConfigValues(100, 1));
+        startView(app, Date.now());
+        const kept: string = app.getCurrentSessionId() as string;
+        store.write(new RemoteConfigValues(50, 2));
+        app.onConfigurationChanged('next_session', 100, 50, Date.now());
+        expect(app.getCurrentSessionId()).assertEqual(kept);
+        store.write(new RemoteConfigValues(50, 3));
+        app.onConfigurationChanged('immediate', 50, 50, Date.now());
+        expect(app.getCurrentSessionId()).assertEqual(kept);
+        store.write(new RemoteConfigValues(25, 4));
+        app.onConfigurationChanged('immediate', 50, 25, Date.now());
+        expect(app.getCurrentSessionId()).assertUndefined();
       });
 
     it('republishingTheSameRateCutsNothing', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {

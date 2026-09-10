@@ -1,8 +1,7 @@
 import { FlashcatLog } from '@flashcatcloud/core';
-import { RemoteConfigStore, RemoteConfigValues } from './RemoteConfigStore';
+import { RemoteConfigStore, RemoteConfigValues, DEFAULT_TTL_SECONDS } from './RemoteConfigStore';
 import { RemoteConfigFetcher, RemoteConfigResponse } from './RemoteConfigFetcher';
 
-const DEFAULT_TTL_SECONDS: number = 300;
 const RETRY_DELAYS_SECONDS: number[] = [5, 60];
 const JITTER_FRACTION: number = 0.2;
 const MAX_RATE: number = 100;
@@ -43,7 +42,7 @@ export enum ApplyOutcome {
    */
   STALE_VERSION = 'stale_version',
   /**
-   * The body was not a configuration at all — not JSON, or truncated. A captive portal answering
+   * The body was not a configuration: invalid JSON or an invalid envelope. A captive portal answering
    * 200 with a login page looks exactly like this, so it is treated as a request that did not
    * arrive rather than as a configuration saying nothing.
    */
@@ -116,6 +115,9 @@ export class RemoteConfigController {
     this.configUrl = configUrl;
     this.onConfigurationChanged = onConfigurationChanged;
     this.retryDelaysSeconds = retryDelaysSeconds;
+    const stored: RemoteConfigValues | null = store.read();
+    this.ttlSeconds = stored?.ttlSeconds ?? DEFAULT_TTL_SECONDS;
+    this.refreshOnForeground = stored?.refreshOnForeground ?? false;
   }
 
   start(): void {
@@ -281,11 +283,18 @@ export class RemoteConfigController {
         + `this SDK reads version ${SUPPORTED_SCHEMA_VERSION}. Update the SDK to take the console's settings again`);
       return ApplyOutcome.UNSUPPORTED_SCHEMA;
     }
-    // Read next, and acted on before anything else in the body is: a body older than the one in
-    // force must leave no trace at all, and a permission or a ttl read out of it ahead of this
-    // check would outlive the values we refuse. The version is the only thing worth reading from
-    // a body we may not keep.
-    const version: number | null = RemoteConfigController.positiveIntOf(json[FIELD_VERSION]);
+    // Validate the envelope before changing any state: valid JSON alone is
+    // not proof that the response is a configuration. Then reject older
+    // versions before applying their values, permissions, or refresh cadence.
+    const rawVersion: Object | undefined = json[FIELD_VERSION];
+    const rum: Object | undefined = json[FIELD_RUM];
+    if (typeof rawVersion !== 'number' || !Number.isSafeInteger(rawVersion) || rawVersion < 0
+      || typeof json[FIELD_ENABLED] !== 'boolean'
+      || (rum !== undefined && RemoteConfigController.objectOf(rum) === null)) {
+      FlashcatLog.d('rum.remoteconfig: invalid response envelope; keeping the values already in use');
+      return ApplyOutcome.UNREADABLE;
+    }
+    const version: number = rawVersion as number;
     const applied: number | null = this.store.appliedVersion();
     if ((version ?? 0) < (applied ?? 0)) {
       FlashcatLog.d(`rum.remoteconfig: ignoring version ${version ?? 'none'}; `
@@ -295,7 +304,7 @@ export class RemoteConfigController {
 
     const enabled: boolean = json[FIELD_ENABLED] === true;
     const activation: string = RemoteConfigController.stringOf(json[FIELD_ACTIVATION]) ?? '';
-    this.refreshOnForeground = json[FIELD_REFRESH_ON_FOREGROUND] === true;
+    const refreshOnForeground: boolean = json[FIELD_REFRESH_ON_FOREGROUND] === true;
 
     const before: number | null = this.storedRate();
     const rate: number | null = enabled
@@ -304,16 +313,15 @@ export class RemoteConfigController {
     // Stored as the raw string: delivery is the platform's job, the meaning
     // belongs to the host application.
     const custom: string | null = enabled ? RemoteConfigController.rawObjectOf(json[FIELD_CUSTOM]) : null;
-    this.store.write(new RemoteConfigValues(rate, version, custom, etag));
+    const ttl: number = RemoteConfigController.positiveIntOf(json[FIELD_TTL]) ?? DEFAULT_TTL_SECONDS;
+    this.store.write(new RemoteConfigValues(rate, version, custom, etag, ttl, refreshOnForeground));
+    this.ttlSeconds = ttl;
+    this.refreshOnForeground = refreshOnForeground;
 
     // Announced after the write, so the scope's hook sees the values that are
     // now in force rather than the ones they replaced.
     this.onConfigurationChanged(activation, before, rate);
 
-    // Remembered here rather than around the request, so a fetch that fails
-    // keeps the ttl the server last asked for instead of falling back to ours.
-    const ttl: number | null = RemoteConfigController.positiveIntOf(json[FIELD_TTL]);
-    this.ttlSeconds = ttl ?? DEFAULT_TTL_SECONDS;
     return ApplyOutcome.APPLIED;
   }
 
@@ -369,10 +377,10 @@ export class RemoteConfigController {
   }
 
   private static positiveIntOf(value: Object | undefined): number | null {
-    if (typeof value !== 'number' || Number.isNaN(value) || (value as number) <= 0) {
+    if (typeof value !== 'number' || !Number.isSafeInteger(value) || value <= 0) {
       return null;
     }
-    return Math.trunc(value as number);
+    return value as number;
   }
 
   private static stringOf(value: Object | undefined): string | null {

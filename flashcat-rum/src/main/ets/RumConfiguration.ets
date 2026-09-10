@@ -121,8 +121,9 @@ export class RumConfigurationBuilder {
    * Default false — nothing is fetched, and every rate stays exactly what this
    * builder was given.
    *
-   * A published rate applies to the NEXT session drawn, never to the one
-   * running: a session is decided once, at its creation. Values already
+   * A published rate applies to the next session drawn. A decisive change
+   * through zero or an immediate activation may end the current session;
+   * sampling never changes within a session. Values already
    * fetched survive a restart, so the first session of a launch is drawn under
    * them; when nothing has ever been fetched, or the console has the feature
    * switched off, the init values apply.
@@ -134,9 +135,10 @@ export class RumConfigurationBuilder {
 
   /**
    * Have the last word on session sampling. Called synchronously each time a
-   * new session is about to be drawn, with the rate that would apply and the
-   * console's custom values; return a rate to override, or nothing to leave it
-   * alone. Typical use is an allow-list: keep every session of the handful of
+   * new session is about to be drawn and when configuration arrives, with the
+   * rate that would apply and the console's custom values. Keep the callback
+   * free of side effects and deterministic. Return a rate to override, or
+   * nothing to leave it alone. Typical use is an allow-list: keep every session of the handful of
    * users you are debugging while the fleet stays at a low rate.
    */
   setBeforeSampling(callback: BeforeSamplingCallback): RumConfigurationBuilder {

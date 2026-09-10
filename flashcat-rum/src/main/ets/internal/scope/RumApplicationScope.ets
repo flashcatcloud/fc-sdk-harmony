@@ -41,6 +41,9 @@ export class RumApplicationScope implements RumScope {
   // Set through RumMonitor.setForcedSession, read at every draw from then on.
   // Process-lifetime, like the debugging decision it represents.
   private forced: boolean = false;
+  // A deferred change need not match the running session's draw. Remember the
+  // last resolved rate so republishing it cannot turn a deferral into a redraw.
+  private lastResolvedRate: number | null = null;
 
   constructor(
     featureScope: FeatureScope,
@@ -223,6 +226,7 @@ export class RumApplicationScope implements RumScope {
     const publishedRate: number | null = stored !== null ? stored.sessionSampleRate : null;
     const baseRate: number = publishedRate !== null ? publishedRate : this.sampleRate;
     const rate: number = this.askBeforeSampling(baseRate, stored);
+    this.lastResolvedRate = rate;
     const version: number = stored !== null && stored.version !== null ? stored.version : 0;
     // Carried on every session, whether or not the app opted into remote
     // configuration: the backend weights a session by the rate it reports, and
@@ -293,7 +297,7 @@ export class RumApplicationScope implements RumScope {
    * then a replacement that still cannot collect anything is not worth the
    * view it costs, so a dark session is left alone when the new rate is zero.
    */
-  onConfigurationChanged(activation: string, before: number | null, after: number | null, nowMs: number): void {
+  onConfigurationChanged(activation: string, _before: number | null, after: number | null, nowMs: number): void {
     if (this.session === null) {
       return; // the next event mints one, and it will draw under what just arrived
     }
@@ -302,16 +306,17 @@ export class RumApplicationScope implements RumScope {
       // session back and costs the view the visitor is on.
       return;
     }
-    const previousRate: number = before ?? this.sampleRate;
     const nextRate: number = after ?? this.sampleRate;
-    if (previousRate === nextRate) {
-      return; // the console re-publishing what this client already holds
-    }
     // The hook has the last word on the rate that would apply, exactly as it
     // does at a draw, so an allow-list answers this question too. Asked only
     // here, and only once: this is an announcement, not a draw.
     const stored: RemoteConfigValues | null = this.remoteConfig !== null ? this.remoteConfig.read() : null;
     const resolvedRate: number = this.askBeforeSampling(nextRate, stored);
+    const previousResolvedRate: number | null = this.lastResolvedRate;
+    this.lastResolvedRate = resolvedRate;
+    if (resolvedRate === previousResolvedRate || resolvedRate === this.session.getDrawnRate()) {
+      return; // unchanged effective settings must not cause another draw
+    }
     if (RumApplicationScope.shouldEndSession(
       this.session.isSampled(), this.session.getDrawnRate(), resolvedRate, activation)) {
       this.stopCurrentSession(nowMs);

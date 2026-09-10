@@ -1,5 +1,7 @@
 import { SdkCore, FlashcatContext } from '@flashcatcloud/core';
 
+export const DEFAULT_TTL_SECONDS: number = 300;
+
 /**
  * The values one configuration response carried. `null` means the console did
  * not set that knob, so whatever was passed to init keeps applying — an absent
@@ -13,17 +15,23 @@ export class RemoteConfigValues {
   readonly custom: string | null;
   /** Validator echoed back as If-None-Match, quoted exactly as the server sent it. */
   readonly etag: string | null;
+  readonly ttlSeconds: number;
+  readonly refreshOnForeground: boolean;
 
   constructor(
     sessionSampleRate: number | null,
     version: number | null = null,
     custom: string | null = null,
-    etag: string | null = null
+    etag: string | null = null,
+    ttlSeconds: number = DEFAULT_TTL_SECONDS,
+    refreshOnForeground: boolean = false
   ) {
     this.sessionSampleRate = sessionSampleRate;
     this.version = version;
     this.custom = custom;
     this.etag = etag;
+    this.ttlSeconds = ttlSeconds;
+    this.refreshOnForeground = refreshOnForeground;
   }
 }
 
@@ -50,6 +58,8 @@ const FIELD_RATE: string = 'rate';
 const FIELD_VERSION: string = 'version';
 const FIELD_CUSTOM: string = 'custom';
 const FIELD_ETAG: string = 'etag';
+const FIELD_TTL: string = 'ttl';
+const FIELD_REFRESH_ON_FOREGROUND: string = 'refresh_on_foreground';
 const MAX_RATE: number = 100;
 
 /**
@@ -100,6 +110,8 @@ export class RemoteConfigStore {
     if (values.etag !== null) {
       record[FIELD_ETAG] = values.etag;
     }
+    record[FIELD_TTL] = values.ttlSeconds;
+    record[FIELD_REFRESH_ON_FOREGROUND] = values.refreshOnForeground;
     this.core.writeSetting(this.valuesKey(), JSON.stringify(record));
   }
 
@@ -160,11 +172,18 @@ export class RemoteConfigStore {
     if (record === null) {
       return null;
     }
+    const ttl: number | null = RemoteConfigStore.intOf(record[FIELD_TTL]);
+    const hasRefreshSettings: boolean = ttl !== null && ttl > 0
+      && typeof record[FIELD_REFRESH_ON_FOREGROUND] === 'boolean';
+    // A validator can only be reused with the whole state it validates. If
+    // refresh settings are missing, keep the rates but ask for a full body.
     return new RemoteConfigValues(
       RemoteConfigStore.rateOf(record[FIELD_RATE]),
       RemoteConfigStore.intOf(record[FIELD_VERSION]),
       RemoteConfigStore.stringOf(record[FIELD_CUSTOM]),
-      RemoteConfigStore.stringOf(record[FIELD_ETAG])
+      hasRefreshSettings ? RemoteConfigStore.stringOf(record[FIELD_ETAG]) : null,
+      ttl !== null && ttl > 0 ? ttl : DEFAULT_TTL_SECONDS,
+      record[FIELD_REFRESH_ON_FOREGROUND] === true
     );
   }
 
@@ -193,10 +212,10 @@ export class RemoteConfigStore {
   }
 
   private static intOf(value: Object | undefined): number | null {
-    if (typeof value !== 'number' || Number.isNaN(value)) {
+    if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) {
       return null;
     }
-    return Math.trunc(value as number);
+    return value as number;
   }
 
   private static stringOf(value: Object | undefined): string | null {
