@@ -79,6 +79,15 @@ export class DefaultRumMonitor implements RumMonitor {
     }
   }
 
+  /**
+   * A configuration reached storage. Handed to the scope, which is the only
+   * part that knows whether the session running right now is being collected,
+   * whether the application forced it, and what its hook says.
+   */
+  onRemoteConfigurationChanged(activation: string, before: number | null, after: number | null): void {
+    this.applicationScope.onConfigurationChanged(activation, before, after, Date.now());
+  }
+
   setForcedSession(): void {
     this.applicationScope.forceSession(Date.now());
   }

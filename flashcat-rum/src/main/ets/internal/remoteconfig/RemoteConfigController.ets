@@ -3,7 +3,6 @@ import { RemoteConfigStore, RemoteConfigValues } from './RemoteConfigStore';
 import { RemoteConfigFetcher, RemoteConfigResponse } from './RemoteConfigFetcher';
 
 const DEFAULT_TTL_SECONDS: number = 300;
-const ACTIVATION_IMMEDIATE: string = 'immediate';
 const RETRY_DELAYS_SECONDS: number[] = [5, 60];
 const JITTER_FRACTION: number = 0.2;
 const MAX_RATE: number = 100;
@@ -17,12 +16,32 @@ const HTTP_NOT_MODIFIED: number = 304;
 const SUPPORTED_SCHEMA_VERSION: number = 1;
 
 /**
- * What reading one response body came to. Only UNREADABLE is worth asking again for: the other
- * two are answers, whether or not this SDK can act on them.
+ * Told after every configuration that reached storage: which activation the console asked for,
+ * the published rate this client held before it, and the one it holds now (`null` on either side
+ * means "nothing published, the init value applies").
+ *
+ * It is an announcement, not an instruction. Whether a running session is worth ending is a
+ * question only the scope can answer — it is the one that knows whether that session is being
+ * collected, whether the host application forced it, and what the application's own hook says
+ * about the rate that would apply next.
+ */
+export type RemoteConfigChangeListener =
+  (activation: string, before: number | null, after: number | null) => void;
+
+/**
+ * What reading one response body came to. Only UNREADABLE is worth asking again for: the rest are
+ * answers, whether or not this SDK can act on them.
  */
 export enum ApplyOutcome {
   /** The body was read and its values are now stored. */
   APPLIED = 'applied',
+  /**
+   * The body is older than the configuration already in force. Rollbacks are published as a new
+   * version, so an older one can only come from a replica that has not caught up or an
+   * intermediary replaying something it held: it must not replace the stored values, their
+   * validator, or the rhythm the current body asked for.
+   */
+  STALE_VERSION = 'stale_version',
   /**
    * The body was not a configuration at all — not JSON, or truncated. A captive portal answering
    * 200 with a login page looks exactly like this, so it is treated as a request that did not
@@ -67,8 +86,8 @@ export class RemoteConfigController {
   private readonly store: RemoteConfigStore;
   private readonly fetcher: RemoteConfigFetcher;
   private readonly configUrl: string;
-  private readonly initialSessionSampleRate: number;
-  private readonly restartSession: () => void;
+  private readonly onConfigurationChanged: RemoteConfigChangeListener;
+  private readonly retryDelaysSeconds: number[];
 
   private lastFetchAtMs: number = 0;
   private ttlSeconds: number = DEFAULT_TTL_SECONDS;
@@ -78,18 +97,25 @@ export class RemoteConfigController {
   private pendingRetryId: number = -1;
   private stopped: boolean = false;
 
+  /**
+   * `retryDelaysSeconds` is the schedule an outage is retried on. It is a
+   * parameter for the same reason the fetcher is one: the retry rules are the
+   * half of this feature that must not be got wrong, and a test that had to
+   * wait out the real minute-long delay would never be written. Production
+   * always takes the default.
+   */
   constructor(
     store: RemoteConfigStore,
     fetcher: RemoteConfigFetcher,
     configUrl: string,
-    initialSessionSampleRate: number,
-    restartSession: () => void
+    onConfigurationChanged: RemoteConfigChangeListener,
+    retryDelaysSeconds: number[] = RETRY_DELAYS_SECONDS
   ) {
     this.store = store;
     this.fetcher = fetcher;
     this.configUrl = configUrl;
-    this.initialSessionSampleRate = initialSessionSampleRate;
-    this.restartSession = restartSession;
+    this.onConfigurationChanged = onConfigurationChanged;
+    this.retryDelaysSeconds = retryDelaysSeconds;
   }
 
   start(): void {
@@ -202,11 +228,11 @@ export class RemoteConfigController {
    * can never turn an endpoint incident into a storm.
    */
   private scheduleRetry(): void {
-    if (this.stopped || this.failedAttempts >= RETRY_DELAYS_SECONDS.length) {
+    if (this.stopped || this.failedAttempts >= this.retryDelaysSeconds.length) {
       return;
     }
     const delaySeconds: number =
-      RemoteConfigController.jittered(RETRY_DELAYS_SECONDS[this.failedAttempts], Math.random());
+      RemoteConfigController.jittered(this.retryDelaysSeconds[this.failedAttempts], Math.random());
     this.failedAttempts++;
     this.pendingRetryId = setTimeout(() => {
       this.pendingRetryId = -1;
@@ -226,13 +252,13 @@ export class RemoteConfigController {
   }
 
   /**
-   * Stores what the response carried and, when the console asked for it,
-   * restarts the session so the new values take hold now instead of at the
-   * visitor's next one.
+   * Stores what the response carried and announces what changed for this
+   * client, so the scope can decide whether the session already running is
+   * worth ending.
    *
-   * The session is only restarted when the values THIS client will draw with
-   * really changed. Without that check, a console resending an unchanged
-   * configuration would cut every session in two on every fetch.
+   * Everything a body says is refused together or kept together: a response
+   * this SDK will not read must not leave its ttl or its foreground permission
+   * behind.
    */
   apply(payload: string, etag: string | null): ApplyOutcome {
     const json: Record<string, Object> | null = RemoteConfigStore.parseObject(payload);
@@ -255,12 +281,23 @@ export class RemoteConfigController {
         + `this SDK reads version ${SUPPORTED_SCHEMA_VERSION}. Update the SDK to take the console's settings again`);
       return ApplyOutcome.UNSUPPORTED_SCHEMA;
     }
+    // Read next, and acted on before anything else in the body is: a body older than the one in
+    // force must leave no trace at all, and a permission or a ttl read out of it ahead of this
+    // check would outlive the values we refuse. The version is the only thing worth reading from
+    // a body we may not keep.
+    const version: number | null = RemoteConfigController.positiveIntOf(json[FIELD_VERSION]);
+    const applied: number | null = this.store.appliedVersion();
+    if ((version ?? 0) < (applied ?? 0)) {
+      FlashcatLog.d(`rum.remoteconfig: ignoring version ${version ?? 'none'}; `
+        + `version ${applied} is already in force`);
+      return ApplyOutcome.STALE_VERSION;
+    }
+
     const enabled: boolean = json[FIELD_ENABLED] === true;
     const activation: string = RemoteConfigController.stringOf(json[FIELD_ACTIVATION]) ?? '';
     this.refreshOnForeground = json[FIELD_REFRESH_ON_FOREGROUND] === true;
 
     const before: number | null = this.storedRate();
-    const version: number | null = RemoteConfigController.positiveIntOf(json[FIELD_VERSION]);
     const rate: number | null = enabled
       ? RemoteConfigController.readRate(RemoteConfigController.objectOf(json[FIELD_RUM]))
       : null;
@@ -269,9 +306,9 @@ export class RemoteConfigController {
     const custom: string | null = enabled ? RemoteConfigController.rawObjectOf(json[FIELD_CUSTOM]) : null;
     this.store.write(new RemoteConfigValues(rate, version, custom, etag));
 
-    if (activation === ACTIVATION_IMMEDIATE && this.changesThisClient(before, rate)) {
-      this.restartSession();
-    }
+    // Announced after the write, so the scope's hook sees the values that are
+    // now in force rather than the ones they replaced.
+    this.onConfigurationChanged(activation, before, rate);
 
     // Remembered here rather than around the request, so a fetch that fails
     // keeps the ttl the server last asked for instead of falling back to ours.
@@ -283,10 +320,6 @@ export class RemoteConfigController {
   private storedRate(): number | null {
     const stored: RemoteConfigValues | null = this.store.read();
     return stored === null ? null : stored.sessionSampleRate;
-  }
-
-  private changesThisClient(before: number | null, after: number | null): boolean {
-    return (before ?? this.initialSessionSampleRate) !== (after ?? this.initialSessionSampleRate);
   }
 
   /**

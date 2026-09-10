@@ -4,6 +4,11 @@ import { RumSessionScope } from './RumSessionScope';
 import { RemoteConfigStore, RemoteConfigValues, DrawnConfiguration } from '../remoteconfig/RemoteConfigStore';
 import { BeforeSamplingCallback, BeforeSamplingContext } from '../../RumTypes';
 
+/** What a forced session reports: it is kept whatever the rates say, so it stands for itself. */
+const FORCED_SAMPLE_RATE: number = 100;
+/** The console asking for a change to reach the session that is already running. */
+const ACTIVATION_IMMEDIATE: string = 'immediate';
+
 /**
  * Root of the RUM scope tree. Creates and replaces sessions as they expire.
  * Equivalent to Android's RumApplicationScope.
@@ -219,11 +224,18 @@ export class RumApplicationScope implements RumScope {
     const baseRate: number = publishedRate !== null ? publishedRate : this.sampleRate;
     const rate: number = this.askBeforeSampling(baseRate, stored);
     const version: number = stored !== null && stored.version !== null ? stored.version : 0;
-    // Only meaningful when remote configuration is on: without it the rate on
-    // the event would just repeat what the app was built with, and every event
-    // would grow a field carrying no information.
-    const draw: DrawnConfiguration | null =
-      this.remoteConfig !== null ? new DrawnConfiguration(version, rate) : null;
+    // Carried on every session, whether or not the app opted into remote
+    // configuration: the backend weights a session by the rate it reports, and
+    // a session that reports none is counted once — the same as an SDK too old
+    // to say. The version is the part that is only meaningful when a
+    // configuration decided the rate, and it is omitted when none did.
+    //
+    // A forced session reports neither the rate that would have dropped it nor
+    // the version it ignored: it was not drawn by them. Reporting 3 there would
+    // have the console weight one debugging visitor as thirty-three sessions.
+    const draw: DrawnConfiguration = this.forced
+      ? new DrawnConfiguration(0, FORCED_SAMPLE_RATE)
+      : new DrawnConfiguration(version, rate);
     const session: RumSessionScope = new RumSessionScope(
       this.featureScope, this.core, this.applicationId, rate, nowMs, this.forced, draw);
     if (this.onSessionStarted !== null) {
@@ -257,6 +269,70 @@ export class RumApplicationScope implements RumScope {
       FlashcatLog.e(`rum.app: beforeSampling threw, keeping ${rate}: ${e instanceof Error ? e.message : 'error'}`);
       return rate;
     }
+  }
+
+  /**
+   * A configuration reached storage. The rates it carries apply to the NEXT
+   * session drawn — a session already under way is never re-judged on a rate
+   * that merely moved. It was drawn by a fair coin, and re-drawing it on every
+   * publish would bias collection upward.
+   *
+   * Three changes do reach the running session. Two are about zero, and hold
+   * whatever activation the console asked for:
+   *
+   * - Collection was off and is now on. Without this, an operator who has just
+   *   switched a fleet on sees nothing at all from anyone already using the
+   *   app, for as long as their sessions last: up to four hours, and nothing
+   *   at all is indistinguishable from broken.
+   * - Collection was on and is now off. That is an emergency stop, and an
+   *   emergency stop that waits four hours is not one.
+   *
+   * The third is the console asking for `immediate`, which is a request to
+   * re-decide the running session on any rate that really changed — the one
+   * case where a move between two non-zero rates is worth a new draw. Even
+   * then a replacement that still cannot collect anything is not worth the
+   * view it costs, so a dark session is left alone when the new rate is zero.
+   */
+  onConfigurationChanged(activation: string, before: number | null, after: number | null, nowMs: number): void {
+    if (this.session === null) {
+      return; // the next event mints one, and it will draw under what just arrived
+    }
+    if (this.forced) {
+      // Every replacement would be forced too, so ending this one buys the same
+      // session back and costs the view the visitor is on.
+      return;
+    }
+    const previousRate: number = before ?? this.sampleRate;
+    const nextRate: number = after ?? this.sampleRate;
+    if (previousRate === nextRate) {
+      return; // the console re-publishing what this client already holds
+    }
+    // The hook has the last word on the rate that would apply, exactly as it
+    // does at a draw, so an allow-list answers this question too. Asked only
+    // here, and only once: this is an announcement, not a draw.
+    const stored: RemoteConfigValues | null = this.remoteConfig !== null ? this.remoteConfig.read() : null;
+    const resolvedRate: number = this.askBeforeSampling(nextRate, stored);
+    if (RumApplicationScope.shouldEndSession(
+      this.session.isSampled(), this.session.getDrawnRate(), resolvedRate, activation)) {
+      this.stopCurrentSession(nowMs);
+    }
+  }
+
+  /**
+   * Whether a change decides anything for the session running right now.
+   *
+   * `drawnRate` is what that session was actually drawn with, which is the only
+   * way to tell a session that could never have been collected from one that
+   * lost a fair draw: only the first is owed another chance when collection is
+   * switched back on.
+   */
+  static shouldEndSession(sampled: boolean, drawnRate: number, nextRate: number, activation: string): boolean {
+    if (sampled) {
+      return nextRate === 0 || activation === ACTIVATION_IMMEDIATE;
+    }
+    // A dark session is worth replacing only by one that can collect something;
+    // otherwise the replacement is just as dark and the visitor lost a view.
+    return nextRate > 0 && (drawnRate === 0 || activation === ACTIVATION_IMMEDIATE);
   }
 
   /**

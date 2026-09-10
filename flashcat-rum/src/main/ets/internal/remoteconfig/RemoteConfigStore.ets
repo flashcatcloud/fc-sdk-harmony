@@ -116,9 +116,10 @@ export class RemoteConfigStore {
   }
 
   /** Which version the stored values came from, or null before the first answer.
-   * Reported back on the next request so the console can say how far a change
-   * has reached — a question events cannot answer, because a session that was
-   * not kept sends none, and the miss rate is set by the very rate being changed. */
+   * Sent on the next request as `applied_version`. Nothing reads it today — the
+   * console works out how far a change has reached from the `rc_version` the
+   * sessions themselves carry — but it costs one query parameter and it is the
+   * only signal a client that never draws a kept session could ever send. */
   appliedVersion(): number | null {
     const values: RemoteConfigValues | null = this.read();
     return values === null ? null : values.version;

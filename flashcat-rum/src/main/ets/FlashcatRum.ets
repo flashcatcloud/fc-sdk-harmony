@@ -53,6 +53,10 @@ export class FlashcatRum {
     // values this configuration was built with.
     let store: RemoteConfigStore | null = null;
     let controller: RemoteConfigController | null = null;
+    // Assigned a few lines below, and only ever read when a response comes
+    // back — by which time it is there. The controller has to exist first
+    // because the monitor owns it.
+    let monitorRef: DefaultRumMonitor | null = null;
     if (configuration.remoteConfigurationEnabled) {
       try {
         const intake: IntakeTarget = core.getIntakeTarget();
@@ -63,11 +67,11 @@ export class FlashcatRum {
           store,
           new HttpRemoteConfigFetcher(`flashcat-sdk-harmony/${context.sdkVersion}`),
           buildConfigUrl(intake.host, intake.clientToken, context),
-          configuration.sessionSampleRate,
-          // Looked up when it fires rather than captured now: the monitor is
-          // registered after this is built, and by the time a response comes
-          // back it is there.
-          (): void => GlobalRumMonitor.get().stopSession()
+          (activation: string, before: number | null, after: number | null): void => {
+            if (monitorRef !== null) {
+              monitorRef.onRemoteConfigurationChanged(activation, before, after);
+            }
+          }
         );
       } catch (e) {
         // Whatever went wrong here, the app keeps collecting with the values it
@@ -79,6 +83,7 @@ export class FlashcatRum {
     }
 
     const monitor: DefaultRumMonitor = new DefaultRumMonitor(core, scope, configuration, store, controller);
+    monitorRef = monitor;
     feature.attachMonitor(monitor);
     GlobalRumMonitor.register(monitor);
 

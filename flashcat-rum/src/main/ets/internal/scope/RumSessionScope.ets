@@ -23,7 +23,7 @@ export class RumSessionScope implements RumScope {
   private readonly sessionId: string;
   private readonly sampled: boolean;
   // The settings this session was drawn under, carried onto its view documents.
-  private readonly draw: DrawnConfiguration | null;
+  private readonly draw: DrawnConfiguration;
   private readonly startedAtMs: number;
   private lastActivityMs: number;
   private lastKeepAliveMs: number = 0;
@@ -53,7 +53,7 @@ export class RumSessionScope implements RumScope {
     sampleRate: number,
     startedAtMs: number,
     forced: boolean = false,
-    draw: DrawnConfiguration | null = null
+    draw: DrawnConfiguration = new DrawnConfiguration(0, sampleRate)
   ) {
     this.featureScope = featureScope;
     this.core = core;
@@ -272,6 +272,12 @@ export class RumSessionScope implements RumScope {
 
   getLastViewAttributes(): Record<string, Object> {
     return this.lastViewAttributes;
+  }
+
+  /** The rate this session was actually drawn with — the console's, the init
+   * value, or whatever the application's hook returned. */
+  getDrawnRate(): number {
+    return this.draw.sessionSampleRate;
   }
 
   isSampled(): boolean {
