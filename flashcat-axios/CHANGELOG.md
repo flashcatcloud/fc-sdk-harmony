@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.6.0
+
+- Version bump to keep the SDK packages in lockstep (see `@flashcatcloud/rum`
+  0.6.0: remote configuration).
+
 ## 0.5.1
 
 - Version bump to keep the SDK packages in lockstep (see `@flashcatcloud/rum`

@@ -32,7 +32,7 @@ function testContext(appVersion: string = '1.0.0'): FlashcatContext {
     version: appVersion,
     bundleId: 'com.example.demo',
     source: 'harmony',
-    sdkVersion: '0.5.1',
+    sdkVersion: '0.6.0',
     device: {
       brand: 'HUAWEI', model: 'Pura', osName: 'HarmonyOS', osVersion: 'NEXT',
       apiVersion: 18, deviceType: 'phone'
@@ -686,7 +686,7 @@ export default function remoteConfigTests(): void {
     it('buildsTheConfigUrlTheEngineAnswers', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
       const url: string = buildConfigUrl('https://intake.example.com/', 'ct 123', testContext('2.3.4'));
       expect(url).assertEqual(
-        'https://intake.example.com/api/v2/rum/config?client_token=ct%20123&sdk=harmony&env=prod&app_version=2.3.4&sdk_version=0.5.1');
+        'https://intake.example.com/api/v2/rum/config?client_token=ct%20123&sdk=harmony&env=prod&app_version=2.3.4&sdk_version=0.6.0');
     });
   });
 
