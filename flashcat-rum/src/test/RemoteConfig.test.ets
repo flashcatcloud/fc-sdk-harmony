@@ -1246,6 +1246,35 @@ export default function remoteConfigTests(): void {
         expect(app.getCurrentSessionId() === dark).assertFalse();
       });
 
+    it('endingAnIdleSessionDoesNotCreditTheIdleGapToItsView',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        const idleGapsMs: number[] = [60 * 1000, 3 * 60 * 60 * 1000];
+        const expectedTimeSpentNs: number[] = [60 * 1000 * 1000000, 0];
+        for (let i: number = 0; i < idleGapsMs.length; i++) {
+          const core: FakeCore = new FakeCore();
+          const scope: CapturingScope = new CapturingScope();
+          const store: RemoteConfigStore = newStore(core);
+          store.write(new RemoteConfigValues(100, 1, null, null));
+          const app: RumApplicationScope = new RumApplicationScope(scope, core, 'app-1', 100, store);
+          const now: number = Date.now();
+          startView(app, now);
+
+          // Collection switched off while the app sat in the background; the
+          // response lands on the return to foreground, before any event.
+          store.write(new RemoteConfigValues(0, 2, null, null));
+          app.onConfigurationChanged('next_session', 100, 0, now + idleGapsMs[i]);
+          expect(app.getCurrentSessionId()).assertUndefined();
+
+          const views: Array<Record<string, Object>> =
+            scope.written.filter((e: Record<string, Object>) => e['type'] === 'view');
+          const closing: Record<string, Object> = views[views.length - 1]['view'] as Record<string, Object>;
+          expect(closing['is_active'] as boolean).assertFalse();
+          // A live session closes when it is told to; one that already expired
+          // closes when it was last seen alive, not hours later.
+          expect(closing['time_spent'] as number).assertEqual(expectedTimeSpentNs[i]);
+        }
+      });
+
     it('activatesCustomOnlyAllowListChangesInBothDirections',
       TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
         const activations: string[] = ['next_session', 'immediate'];

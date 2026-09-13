@@ -79,7 +79,7 @@ export class RumSessionScope implements RumScope {
       // later, and stamping it would credit the whole idle gap to the view
       // (a 5-min visit reads as 4 h of time_spent).
       if (this.activeView !== null) {
-        const closeAtMs: number = Math.max(this.lastActivityMs, this.lastKeepAliveMs);
+        const closeAtMs: number = this.lastAliveMs();
         // A crash that itself detects the expiry belongs to THIS session (the
         // incident snapshot already carries this session/view id): count it in
         // the final document, not in a phantom replacement session.
@@ -212,13 +212,17 @@ export class RumSessionScope implements RumScope {
   }
 
   /**
-   * Explicit end (RumMonitor.stopSession, e.g. logout): close the active view
-   * at the caller's timestamp (a real user action, unlike lazy expiry) and
-   * un-publish the session identity.
+   * Explicit end (RumMonitor.stopSession, e.g. logout, or a remote configuration
+   * that decides the running session): close the active view and un-publish the
+   * session identity. A live session closes at the caller's timestamp. One that
+   * has already expired closes at its last observed-alive time, as the next event
+   * would have closed it: expiry is only noticed by that event, nothing arrives
+   * while the app is in the background, and a configuration response landing on
+   * the return to foreground would otherwise credit the whole idle gap to the view.
    */
   end(nowMs: number): void {
     if (this.activeView !== null) {
-      this.activeView.forceStop(nowMs);
+      this.activeView.forceStop(this.isExpired(nowMs) ? this.lastAliveMs() : nowMs);
       this.retireView(this.activeView); // keep in-flight resources drainable
       this.activeView = null;
     }
@@ -292,6 +296,10 @@ export class RumSessionScope implements RumScope {
         raw.isCrash ?? false, raw.errorHandling ?? 'handled', raw.timestampMs, raw.attributes);
       writeMapped(writer, event, true);
     });
+  }
+
+  private lastAliveMs(): number {
+    return Math.max(this.lastActivityMs, this.lastKeepAliveMs);
   }
 
   private isExpired(nowMs: number): boolean {

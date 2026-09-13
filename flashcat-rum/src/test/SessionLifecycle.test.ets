@@ -211,6 +211,23 @@ export default function sessionLifecycleTests(): void {
           scope.ofType('view')[scope.ofType('view').length - 1];
         expect(sessionIdOf(latest) === sessionA).assertFalse();
       });
+
+    it('stopSessionAfterExpiryClosesViewAtLastActivity',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        const scope: CapturingScope = new CapturingScope();
+        const app: RumApplicationScope = new RumApplicationScope(scope, new FakeCore(), 'app-1', 100);
+        const t0: number = Date.now();
+        const start: RumRawEvent = raw('startView', t0, 'home');
+        start.name = 'Home';
+        app.handleEvent(start);
+        app.handleEvent(raw('keepAlive', t0 + 5 * 60 * 1000));
+
+        app.stopCurrentSession(t0 + 3 * MIN_15);
+        const views: Array<Record<string, Object>> = scope.ofType('view');
+        const closing: Record<string, Object> = views[views.length - 1]['view'] as Record<string, Object>;
+        // Closed at the last keep-alive, the latest moment the session was seen alive.
+        expect(closing['time_spent'] as number).assertEqual(5 * 60 * 1000 * 1000000);
+      });
   });
 
   describe('RumConfigTrackErrors', (): void => {
