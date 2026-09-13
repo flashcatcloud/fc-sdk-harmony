@@ -31,7 +31,8 @@ export interface BeforeSamplingContext {
  * alone. Also called when configuration arrives to decide whether to end the
  * current session. It must be fast, synchronous, free of side effects, and
  * return the same result for the same input. A throw or an out-of-range value
- * is ignored. Sampling never changes within an existing session.
+ * is ignored. Reentrant RUM events and session operations are ignored while
+ * the callback runs. Sampling never changes within an existing session.
  */
 export type BeforeSamplingCallback = (context: BeforeSamplingContext) => number | undefined;
 

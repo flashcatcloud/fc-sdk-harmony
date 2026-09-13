@@ -44,6 +44,7 @@ export class RumApplicationScope implements RumScope {
   // A deferred change need not match the running session's draw. Remember the
   // last resolved rate so republishing it cannot turn a deferral into a redraw.
   private lastResolvedRate: number | null = null;
+  private invokingBeforeSampling: boolean = false;
 
   constructor(
     featureScope: FeatureScope,
@@ -64,6 +65,9 @@ export class RumApplicationScope implements RumScope {
   }
 
   handleEvent(event: RumRawEvent): RumScope | null {
+    if (this.invokingBeforeSampling) {
+      return this;
+    }
     // Late completions owned by an already-ended session settle into it.
     if ((event.kind === 'stopResource' || event.kind === 'stopResourceWithError')
       && this.drainingSession !== null
@@ -195,7 +199,7 @@ export class RumApplicationScope implements RumScope {
    * restarts it there (same recovery path as inactivity expiry).
    */
   stopCurrentSession(nowMs: number): void {
-    if (this.session === null) {
+    if (this.invokingBeforeSampling || this.session === null) {
       return;
     }
     this.rememberExpiredView(this.session);
@@ -259,6 +263,10 @@ export class RumApplicationScope implements RumScope {
     if (hook === null) {
       return rate;
     }
+    // A hook may accidentally report a RUM event before the new session has
+    // been assigned. Ignore reentrant events and session mutations until it
+    // returns, rather than recursively drawing more sessions.
+    this.invokingBeforeSampling = true;
     try {
       const custom: Record<string, Object> | null =
         stored !== null ? RemoteConfigStore.decodeCustom(stored.custom) : null;
@@ -272,6 +280,8 @@ export class RumApplicationScope implements RumScope {
     } catch (e) {
       FlashcatLog.e(`rum.app: beforeSampling threw, keeping ${rate}: ${e instanceof Error ? e.message : 'error'}`);
       return rate;
+    } finally {
+      this.invokingBeforeSampling = false;
     }
   }
 
@@ -298,7 +308,7 @@ export class RumApplicationScope implements RumScope {
    * view it costs, so a dark session is left alone when the new rate is zero.
    */
   onConfigurationChanged(activation: string, _before: number | null, after: number | null, nowMs: number): void {
-    if (this.session === null) {
+    if (this.invokingBeforeSampling || this.session === null) {
       return; // the next event mints one, and it will draw under what just arrived
     }
     if (this.forced) {
@@ -347,6 +357,9 @@ export class RumApplicationScope implements RumScope {
    * ends now so a collected one starts in its place.
    */
   forceSession(nowMs: number): void {
+    if (this.invokingBeforeSampling) {
+      return;
+    }
     this.forced = true;
     if (this.session !== null && this.session.isSampled()) {
       return; // already collecting — nothing to end

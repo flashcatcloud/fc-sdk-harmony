@@ -314,7 +314,10 @@ export class RemoteConfigController {
     // belongs to the host application.
     const custom: string | null = enabled ? RemoteConfigController.rawObjectOf(json[FIELD_CUSTOM]) : null;
     const ttl: number = RemoteConfigController.positiveIntOf(json[FIELD_TTL]) ?? DEFAULT_TTL_SECONDS;
-    this.store.write(new RemoteConfigValues(rate, version, custom, etag, ttl, refreshOnForeground));
+    if (!this.store.write(new RemoteConfigValues(rate, version, custom, etag, ttl, refreshOnForeground))) {
+      FlashcatLog.d('rum.remoteconfig: configuration exceeds the storage budget; keeping the values already in use');
+      return ApplyOutcome.UNREADABLE;
+    }
     this.ttlSeconds = ttl;
     this.refreshOnForeground = refreshOnForeground;
 

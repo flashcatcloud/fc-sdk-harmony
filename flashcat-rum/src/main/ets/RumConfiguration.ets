@@ -137,8 +137,10 @@ export class RumConfigurationBuilder {
    * Have the last word on session sampling. Called synchronously each time a
    * new session is about to be drawn and when configuration arrives, with the
    * rate that would apply and the console's custom values. Keep the callback
-   * free of side effects and deterministic. Return a rate to override, or
-   * nothing to leave it alone. Typical use is an allow-list: keep every session of the handful of
+   * lightweight, free of side effects and deterministic: it runs on the caller's
+   * thread. Do not perform I/O or report RUM events from it. Reentrant events
+   * and session operations are ignored until the callback returns. Return a rate
+   * to override, or nothing to leave it alone. Typical use is an allow-list: keep every session of the handful of
    * users you are debugging while the fleet stays at a low rate.
    */
   setBeforeSampling(callback: BeforeSamplingCallback): RumConfigurationBuilder {

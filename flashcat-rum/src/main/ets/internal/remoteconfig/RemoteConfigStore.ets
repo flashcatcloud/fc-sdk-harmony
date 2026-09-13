@@ -1,6 +1,10 @@
 import { SdkCore, FlashcatContext } from '@flashcatcloud/core';
+import { util } from '@kit.ArkTS';
 
 export const DEFAULT_TTL_SECONDS: number = 300;
+// Covers the 16 KiB custom budget, the response envelope, and JSON escaping
+// when custom is stored as a string. Bound both network input and local reads.
+export const MAX_CONFIG_BYTES: number = 64 * 1024;
 
 /**
  * The values one configuration response carried. `null` means the console did
@@ -92,8 +96,14 @@ export class RemoteConfigStore {
    * Replaces what is stored with what the response carried. A knob the response
    * omitted is dropped rather than left behind, so turning a knob off in the
    * console really does hand it back to the value the app was initialised with.
+   * Returns false when the entry exceeds the budget, leaving the old entry
+   * intact. Persistence itself remains best-effort through the core.
    */
-  write(values: RemoteConfigValues): void {
+  write(values: RemoteConfigValues): boolean {
+    if ((values.custom !== null && !RemoteConfigStore.isWithinSizeLimit(values.custom))
+      || (values.etag !== null && !RemoteConfigStore.isWithinSizeLimit(values.etag))) {
+      return false;
+    }
     const record: Record<string, Object> = {};
     if (values.sessionSampleRate !== null) {
       record[FIELD_RATE] = values.sessionSampleRate;
@@ -112,7 +122,12 @@ export class RemoteConfigStore {
     }
     record[FIELD_TTL] = values.ttlSeconds;
     record[FIELD_REFRESH_ON_FOREGROUND] = values.refreshOnForeground;
-    this.core.writeSetting(this.valuesKey(), JSON.stringify(record));
+    const serialized: string = JSON.stringify(record);
+    if (!RemoteConfigStore.isWithinSizeLimit(serialized)) {
+      return false;
+    }
+    this.core.writeSetting(this.valuesKey(), serialized);
+    return true;
   }
 
   /**
@@ -192,6 +207,9 @@ export class RemoteConfigStore {
    * body and this store's own entries need exactly the same tolerance. */
   static parseObject(serialized: string): Record<string, Object> | null {
     try {
+      if (!RemoteConfigStore.isWithinSizeLimit(serialized)) {
+        return null;
+      }
       const value: Object = JSON.parse(serialized) as Object;
       if (typeof value !== 'object' || value === null || Array.isArray(value)) {
         return null;
@@ -200,6 +218,13 @@ export class RemoteConfigStore {
     } catch (_e) {
       return null;
     }
+  }
+
+  private static isWithinSizeLimit(value: string): boolean {
+    // Reject large strings before allocating an encoding buffer. The second
+    // check counts UTF-8 bytes, so multibyte values cannot bypass the budget.
+    return value.length <= MAX_CONFIG_BYTES
+      && new util.TextEncoder().encodeInto(value).byteLength <= MAX_CONFIG_BYTES;
   }
 
   /** An out-of-range rate is treated as absent rather than clamped: a rate we

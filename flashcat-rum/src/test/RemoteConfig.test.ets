@@ -183,6 +183,166 @@ function body(version: number, enabled: boolean, rate: number | null,
 }
 
 export default function remoteConfigTests(): void {
+  describe('rum-remote-config-host-isolation', (): void => {
+    it('rejectsOversizedResponsesWithoutChangingStoredStateAndCanRecover',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        const core: FakeCore = new FakeCore();
+        const store: RemoteConfigStore = newStore(core);
+        let changes: number = 0;
+        const controller: RemoteConfigController = new RemoteConfigController(
+          store, new FakeFetcher(), 'https://x/config', (): void => { changes++; });
+        controller.apply(body(1, true, 25, 'next_session', '{"allowed":true}'), '"old"');
+        const key: string = Array.from(core.settings.keys())[0];
+        const previous: string = core.settings.get(key) as string;
+
+        expect(controller.apply(body(99, true, 0, 'immediate',
+          `{"blob":"${'x'.repeat(64 * 1024)}"}`), '"oversized"')).assertEqual(ApplyOutcome.UNREADABLE);
+        expect(core.settings.get(key)).assertEqual(previous);
+        expect(changes).assertEqual(1);
+        expect(controller.apply(body(2, true, 50), '"new"')).assertEqual(ApplyOutcome.APPLIED);
+        expect(store.appliedVersion()).assertEqual(2);
+        expect(changes).assertEqual(2);
+      });
+
+    it('countsUtf8BytesAndAcceptsTheExactResponseBoundary',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        const store: RemoteConfigStore = newStore(new FakeCore());
+        const controller: RemoteConfigController = new RemoteConfigController(
+          store, new FakeFetcher(), 'https://x/config', ignoreChanges);
+        const payload: string = body(1, true, 100);
+        const atLimit: string = payload + ' '.repeat(64 * 1024 - payload.length);
+        expect(controller.apply(atLimit, '"one"')).assertEqual(ApplyOutcome.APPLIED);
+        expect(controller.apply(atLimit + ' ', '"too-large"')).assertEqual(ApplyOutcome.UNREADABLE);
+        const multibyte: string = body(2, true, 0, 'immediate', `{"blob":"${'\u4e00'.repeat(24000)}"}`);
+        expect(multibyte.length < 64 * 1024).assertTrue();
+        expect(controller.apply(multibyte, '"multibyte"')).assertEqual(ApplyOutcome.UNREADABLE);
+        expect(store.appliedVersion()).assertEqual(1);
+      });
+
+    it('keepsTheOldConfigurationWhenTheSerializedCacheWouldExceedTheBudget',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        const core: FakeCore = new FakeCore();
+        const store: RemoteConfigStore = newStore(core);
+        let changes: number = 0;
+        const controller: RemoteConfigController = new RemoteConfigController(
+          store, new FakeFetcher(), 'https://x/config', (): void => { changes++; });
+        controller.apply(body(1, true, 25), '"old"');
+        expect(controller.apply(body(2, true, 0), 'x'.repeat(64 * 1024))).assertEqual(ApplyOutcome.UNREADABLE);
+        expect(store.appliedVersion()).assertEqual(1);
+        expect((store.read() as RemoteConfigValues).etag).assertEqual('"old"');
+        expect(changes).assertEqual(1);
+      });
+
+    it('ignoresOversizedCachedValuesAndRequestsAFullReplacement',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, async (): Promise<void> => {
+        const core: FakeCore = new FakeCore();
+        const store: RemoteConfigStore = newStore(core);
+        store.write(new RemoteConfigValues(100, 1));
+        const key: string = Array.from(core.settings.keys())[0];
+        const custom: Record<string, Object> = { blob: '\u4e00'.repeat(24000) };
+        const cached: string = JSON.stringify({ rate: 0, version: 99, custom: JSON.stringify(custom),
+          etag: '"cached"', ttl: 1, refresh_on_foreground: true });
+        expect(cached.length < 64 * 1024).assertTrue();
+        core.settings.set(key, cached);
+        expect(store.read()).assertNull();
+        const fetcher: FakeFetcher = new FakeFetcher();
+        fetcher.answer(200, body(2, true, 50), '"replacement"');
+        const controller: RemoteConfigController = new RemoteConfigController(
+          store, fetcher, 'https://x/config?client_token=t', ignoreChanges);
+        controller.start();
+        await sleep(20);
+        controller.stop();
+        expect(fetcher.validators[0]).assertNull();
+        expect(fetcher.urls[0]).assertEqual('https://x/config?client_token=t');
+        expect(store.appliedVersion()).assertEqual(2);
+      });
+
+    it('preservesAValidCacheWhenAnOversizedWriteIsAttempted',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        const store: RemoteConfigStore = newStore(new FakeCore());
+        store.write(new RemoteConfigValues(25, 1, '{"ok":true}', '"one"'));
+        store.write(new RemoteConfigValues(0, 99, `{"blob":"${'x'.repeat(64 * 1024)}"}`, '"large"'));
+        expect(store.appliedVersion()).assertEqual(1);
+        expect((store.read() as RemoteConfigValues).custom).assertEqual('{"ok":true}');
+      });
+
+    it('roundTripsTheSupportedCustomBudgetIncludingEscapedValues',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        const store: RemoteConfigStore = newStore(new FakeCore());
+        const custom: Record<string, Object> = { a: '"'.repeat(2000), b: '"'.repeat(2000),
+          c: '"'.repeat(2000), d: '"'.repeat(2000) };
+        const serialized: string = JSON.stringify(custom);
+        const controller: RemoteConfigController = new RemoteConfigController(
+          store, new FakeFetcher(), 'https://x/config', ignoreChanges);
+        expect(controller.apply(body(1, true, 100, 'next_session', serialized), '"tag"')).assertEqual(ApplyOutcome.APPLIED);
+        expect((store.read() as RemoteConfigValues).custom).assertEqual(serialized);
+        const multibyte: string = `{"text":"${'\u4e00'.repeat(1000)}"}`;
+        expect(controller.apply(body(2, true, 100, 'next_session', multibyte), '"unicode"')).assertEqual(ApplyOutcome.APPLIED);
+        expect((store.read() as RemoteConfigValues).custom).assertEqual(multibyte);
+      });
+
+    it('doesNotReenterSamplingWhenTheHookReportsAnEvent',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        const scope: CapturingScope = new CapturingScope();
+        let calls: number = 0;
+        const app: RumApplicationScope = new RumApplicationScope(
+          scope, new FakeCore(), 'app-1', 100, null,
+          (_context: BeforeSamplingContext): number | undefined => {
+            calls++;
+            if (calls < 4) {
+              app.handleEvent(raw('addAction', Date.now()));
+            }
+            return 100;
+          });
+        startView(app, Date.now());
+        expect(calls).assertEqual(1);
+        expect(scope.written.length).assertEqual(1);
+        app.stopCurrentSession(Date.now());
+        startView(app, Date.now());
+        expect(calls).assertEqual(2);
+      });
+
+    it('ignoresSessionMutationsInsideTheHookAndReleasesTheGuardAfterAThrow',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        const scope: CapturingScope = new CapturingScope();
+        const app: RumApplicationScope = new RumApplicationScope(
+          scope, new FakeCore(), 'app-1', 0, null,
+          (_context: BeforeSamplingContext): number | undefined => {
+            app.forceSession(Date.now());
+            app.stopCurrentSession(Date.now());
+            throw new Error('callback failed');
+          });
+        startView(app, Date.now());
+        expect(scope.written.length).assertEqual(0);
+        app.forceSession(Date.now());
+        startView(app, Date.now());
+        expect(scope.written.length > 0).assertTrue();
+      });
+
+    it('doesNotEndTheSessionReentrantlyDuringConfigurationActivation',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        const core: FakeCore = new FakeCore();
+        const store: RemoteConfigStore = newStore(core);
+        store.write(new RemoteConfigValues(100, 1));
+        let calls: number = 0;
+        const app: RumApplicationScope = new RumApplicationScope(
+          new CapturingScope(), core, 'app-1', 100, store,
+          (_context: BeforeSamplingContext): number | undefined => {
+            calls++;
+            if (calls === 2) {
+              app.stopCurrentSession(Date.now());
+              app.onConfigurationChanged('immediate', 100, 0, Date.now());
+            }
+            return undefined;
+          });
+        startView(app, Date.now());
+        const session: string | undefined = app.getCurrentSessionId();
+        app.onConfigurationChanged('next_session', 100, 100, Date.now());
+        expect(app.getCurrentSessionId()).assertEqual(session);
+        expect(calls).assertEqual(2);
+      });
+  });
+
   describe('rum-remote-config-store', (): void => {
     it('keepsAbsentKnobsAbsent', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
       const core: FakeCore = new FakeCore();

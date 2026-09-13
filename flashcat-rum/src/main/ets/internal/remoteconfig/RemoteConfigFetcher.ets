@@ -1,5 +1,6 @@
 import { http } from '@kit.NetworkKit';
 import { FlashcatContext, FlashcatLog } from '@flashcatcloud/core';
+import { MAX_CONFIG_BYTES } from './RemoteConfigStore';
 
 const CONFIG_PATH: string = '/api/v2/rum/config';
 const TIMEOUT_MS: number = 10000;
@@ -41,6 +42,7 @@ export class HttpRemoteConfigFetcher implements RemoteConfigFetcher {
         method: http.RequestMethod.GET,
         header: header,
         expectDataType: http.HttpDataType.STRING,
+        maxLimit: MAX_CONFIG_BYTES,
         connectTimeout: TIMEOUT_MS,
         readTimeout: TIMEOUT_MS
       });
