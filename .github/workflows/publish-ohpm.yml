@@ -122,6 +122,16 @@ jobs:
           ohpm config set publish_registry "$OHPM_PUBLISH_REGISTRY"
           ohpm install
 
+      # hvigor loads every module's hvigorfile, and the demo's imports the
+      # in-repo symbol upload plugin from its build output, which is not
+      # committed. Without it no module builds, including the SDK HARs.
+      - name: Build hvigor-plugin
+        working-directory: hvigor-plugin
+        run: |
+          set -euo pipefail
+          npm ci
+          npm run build
+
       - name: Build HAR packages
         run: |
           set -euo pipefail
