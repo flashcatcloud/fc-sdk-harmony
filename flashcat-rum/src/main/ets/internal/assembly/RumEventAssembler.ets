@@ -1,5 +1,6 @@
 import { FlashcatContext } from '@flashcatcloud/core';
 import { util } from '@kit.ArkTS';
+import { DrawnConfiguration } from '../remoteconfig/RemoteConfigStore';
 
 const VIEW_URL_ATTRIBUTE: string = 'view.url';
 const BUILD_ID_ATTRIBUTE: string = 'build_id';
@@ -34,12 +35,13 @@ export class RumEventAssembler {
     crashCount: number,
     documentVersion: number,
     isActive: boolean,
-    attributes: Record<string, Object>
+    attributes: Record<string, Object>,
+    draw: DrawnConfiguration | null = null
   ): Record<string, Object> {
     const event: Record<string, Object> = {};
     event['type'] = 'view';
     event['date'] = dateMs; // view START time — stable across all updates of this view.id
-    event['_dd'] = RumEventAssembler.dd(documentVersion);
+    event['_dd'] = RumEventAssembler.dd(documentVersion, draw);
     event['application'] = RumEventAssembler.idObj(applicationId);
     event['session'] = RumEventAssembler.session(sessionId);
 
@@ -238,12 +240,24 @@ export class RumEventAssembler {
 
   // ---- shared sub-objects ----
 
-  private static dd(documentVersion: number): Record<string, Object> {
+  private static dd(documentVersion: number, draw: DrawnConfiguration | null = null): Record<string, Object> {
     const dd: Record<string, Object> = {};
     dd['format_version'] = 2;
     dd['session'] = RumEventAssembler.sessionPlan();
     if (documentVersion > 0) {
       dd['document_version'] = documentVersion;
+    }
+    if (draw !== null) {
+      // The rate the session was ACTUALLY drawn with, not the one passed to
+      // init: server-side extrapolation multiplies by this, and reporting the
+      // init value after the console moved the knob would scale the numbers by
+      // a rate nobody drew with.
+      const configuration: Record<string, Object> = {};
+      configuration['session_sample_rate'] = draw.sessionSampleRate;
+      if (draw.version > 0) {
+        configuration['rc_version'] = draw.version;
+      }
+      dd['configuration'] = configuration;
     }
     return dd;
   }

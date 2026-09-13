@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.6.0
+
+- `SdkCore` gains `getIntakeTarget()`, `readSetting()` and `writeSetting()`,
+  which feature packages use to call an endpoint of their own and keep small
+  settings across launches (see `@flashcatcloud/rum` 0.6.0: remote
+  configuration).
+
+### Breaking
+
+- Code that implements `SdkCore` itself needs to add the three methods above.
+
 ## 0.5.1
 
 - Version bump to keep the SDK packages in lockstep (see `@flashcatcloud/rum`

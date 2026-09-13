@@ -3,6 +3,7 @@ import { RumScope, RumRawEvent } from './RumScope';
 import { RumResourceScope } from './RumResourceScope';
 import { RumEventAssembler } from '../assembly/RumEventAssembler';
 import { writeMapped } from '../RumEventMapperHolder';
+import { DrawnConfiguration } from '../remoteconfig/RemoteConfigStore';
 
 const MS_TO_NS: number = 1e6;
 const MAX_PENDING_RESOURCES: number = 100;
@@ -24,6 +25,10 @@ export class RumViewScope implements RumScope {
   private readonly viewId: string;
   private readonly startedAtMs: number;
   private readonly attributes: Record<string, Object>;
+  // What this session was drawn under. Reported on the view document (the only
+  // event type the backend builds session rows from), so a session can be
+  // traced back to the settings that decided whether to keep it.
+  private readonly draw: DrawnConfiguration | null;
   private actionCount: number = 0;
   private errorCount: number = 0;
   private resourceCount: number = 0;
@@ -47,7 +52,8 @@ export class RumViewScope implements RumScope {
     viewName: string,
     viewId: string,
     startedAtMs: number,
-    attributes: Record<string, Object>
+    attributes: Record<string, Object>,
+    draw: DrawnConfiguration | null = null
   ) {
     this.featureScope = featureScope;
     this.core = core;
@@ -58,6 +64,7 @@ export class RumViewScope implements RumScope {
     this.viewId = viewId;
     this.startedAtMs = startedAtMs;
     this.attributes = attributes;
+    this.draw = draw;
     // Publish the active view so Logs/Trace/Crash can correlate. The URL is the
     // RESOLVED one (caller-supplied view.url, e.g. the nav tracker's route path),
     // not the opaque key — a crash incident snapshots this and must match the
@@ -265,7 +272,8 @@ export class RumViewScope implements RumScope {
     this.featureScope.withWriteContext((context: FlashcatContext, writer: EventWriter) => {
       const event: Record<string, Object> = RumEventAssembler.view(
         context, this.applicationId, this.sessionId, this.viewId, this.viewName,
-        this.startedAtMs, timeSpentNs, actions, errors, resources, crashes, version, isActive, this.viewAttributes());
+        this.startedAtMs, timeSpentNs, actions, errors, resources, crashes, version, isActive,
+        this.viewAttributes(), this.draw);
       writeMapped(writer, event, false);
     });
   }

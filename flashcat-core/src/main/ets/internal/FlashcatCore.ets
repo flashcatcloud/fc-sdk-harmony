@@ -2,8 +2,9 @@ import { common, bundleManager, ApplicationStateChangeCallback } from '@kit.Abil
 import { fileIo as fs } from '@kit.CoreFileKit';
 import { preferences } from '@kit.ArkData';
 import { Configuration } from '../config/Configuration';
+import { intakeEndpoint } from '../FlashcatSite';
 import { TrackingConsent } from '../privacy/TrackingConsent';
-import { SdkCore } from '../api/SdkCore';
+import { SdkCore, IntakeTarget } from '../api/SdkCore';
 import { Feature, FeatureScope, FeatureEventReceiver, EventWriter, RUM_FEATURE_NAME } from '../api/feature/Feature';
 import { FlashcatContext, UserInfo } from '../api/context/FlashcatContext';
 import { ContextProvider } from './context/ContextProvider';
@@ -17,6 +18,9 @@ import { FlashcatLog } from './FlashcatLog';
 
 const PREFERENCES_NAME: string = 'flashcat_sdk';
 const CONSENT_KEY: string = 'tracking_consent';
+// Namespace for feature settings, so a feature key can never collide with a
+// core-owned entry in the shared Preferences file.
+const SETTING_PREFIX: string = 'setting.';
 
 /**
  * Default SdkCore implementation. Owns the context provider, message bus, and the
@@ -112,7 +116,13 @@ export class FlashcatCore implements SdkCore {
     }
     try {
       this.appStateCallback = {
-        onApplicationForeground: () => {},
+        onApplicationForeground: () => {
+          // The only moment a feature can trust that time has passed: an
+          // in-process timer may not have run for hours while backgrounded.
+          // RUM decides whether this is worth a request (see the console's
+          // refresh_on_foreground) — the core just says when.
+          this.bus.send(RUM_FEATURE_NAME, { 'type': 'app_foreground' } as Record<string, Object>);
+        },
         onApplicationBackground: () => {
           this.flushAll();
         }
@@ -239,6 +249,44 @@ export class FlashcatCore implements SdkCore {
       // nothing uploadable until the user decides.
       this.features.forEach((r: RegisteredFeature) => r.scheduler.stop());
       this.deferredUploadRegistrar.deregister(this.deferredWorkOptions());
+    }
+  }
+
+  getIntakeTarget(): IntakeTarget {
+    const host: string = this.configuration.customEndpoint.length > 0
+      ? this.configuration.customEndpoint
+      : intakeEndpoint(this.configuration.site);
+    return { host: host, clientToken: this.configuration.clientToken };
+  }
+
+  readSetting(key: string): string | null {
+    try {
+      const prefs: preferences.Preferences =
+        preferences.getPreferencesSync(this.context, { name: PREFERENCES_NAME });
+      const value: preferences.ValueType = prefs.getSync(SETTING_PREFIX + key, '');
+      // An empty string reads as "never written": callers store JSON, which is
+      // never empty, and this keeps the absent case a single value.
+      return typeof value === 'string' && value.length > 0 ? value : null;
+    } catch (_e) {
+      // Storage unavailable — the caller must behave as if nothing was stored.
+      return null;
+    }
+  }
+
+  writeSetting(key: string, value: string | null): void {
+    try {
+      const prefs: preferences.Preferences =
+        preferences.getPreferencesSync(this.context, { name: PREFERENCES_NAME });
+      if (value === null) {
+        prefs.deleteSync(SETTING_PREFIX + key);
+      } else {
+        prefs.putSync(SETTING_PREFIX + key, value);
+      }
+      prefs.flush((_err) => {
+        // best-effort durability, exactly like the consent record above
+      });
+    } catch (_e) {
+      // best-effort: a settings write must never surface into the host app
     }
   }
 

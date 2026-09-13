@@ -6,6 +6,7 @@ import phase2Tests from './Phase2AutoInstrumentation.test';
 import schemaAlignmentTests from './SchemaAlignment.test';
 import resourceKindTests from './ResourceKind.test';
 import crashAttributionTests from './CrashAttribution.test';
+import remoteConfigTests from './RemoteConfig.test';
 
 export default function testsuite(): void {
   crashReportTests();
@@ -13,6 +14,7 @@ export default function testsuite(): void {
   schemaAlignmentTests();
   resourceKindTests();
   crashAttributionTests();
+  remoteConfigTests();
   describe('flashcat-rum', (): void => {
     it('defaultMonitorIsNoOp', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
       const monitor = GlobalRumMonitor.get();

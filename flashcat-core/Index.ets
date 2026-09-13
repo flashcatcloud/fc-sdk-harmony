@@ -6,7 +6,7 @@ export { Configuration, ConfigurationBuilder } from './src/main/ets/config/Confi
 export { UploadFrequency, BatchSize, BatchProcessingLevel } from './src/main/ets/config/Batching';
 export { FlashcatSite } from './src/main/ets/FlashcatSite';
 export { TrackingConsent } from './src/main/ets/privacy/TrackingConsent';
-export { SdkCore } from './src/main/ets/api/SdkCore';
+export { SdkCore, IntakeTarget } from './src/main/ets/api/SdkCore';
 
 // Feature SDK authoring surface — used by flashcat-rum / flashcat-trace /
 // flashcat-crash, not by app developers directly. (LOGS_FEATURE_NAME is

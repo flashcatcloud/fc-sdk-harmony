@@ -115,6 +115,10 @@ export default class EntryAbility extends UIAbility {
       EntryAbility.forwardParam(params, 'netbench_events', 'netbenchEvents');
       EntryAbility.forwardParam(params, 'netbench_pacing', 'netbenchPacing');
       EntryAbility.forwardParam(params, 'netbench_body_bytes', 'netbenchBodyBytes');
+      // Remote-configuration knobs: which mode RUM is enabled in, and the rate
+      // this run's build "ships" with, so a run can show which of the two won.
+      EntryAbility.forwardParam(params, 'rc_mode', 'rcMode');
+      EntryAbility.forwardParam(params, 'rc_init_rate', 'rcInitRate');
       hilog.info(DOMAIN, TAG, 'e2e params from %{public}s: endpoint=%{public}s scenario=%{public}s',
         from, e2eEndpoint, scenario);
     } else {

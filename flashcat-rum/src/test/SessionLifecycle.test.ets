@@ -1,7 +1,7 @@
 import { describe, expect, it, Level, Size, TestType } from '@ohos/hypium';
 import {
   FlashcatContext, FeatureScope, EventWriter, SdkCore, TrackingConsent,
-  Feature, FeatureEventReceiver, UserInfo
+  Feature, FeatureEventReceiver, UserInfo, IntakeTarget
 } from '@flashcatcloud/core';
 import { RumApplicationScope } from '../main/ets/internal/scope/RumApplicationScope';
 import { RumRawEvent } from '../main/ets/internal/scope/RumScope';
@@ -17,7 +17,7 @@ function testContext(): FlashcatContext {
     version: '1.0.0',
     bundleId: 'com.example.demo',
     source: 'harmony',
-    sdkVersion: '0.5.1',
+    sdkVersion: '0.6.0',
     device: {
       brand: 'HUAWEI', model: 'Pura', osName: 'HarmonyOS', osVersion: 'NEXT',
       apiVersion: 18, deviceType: 'phone'
@@ -54,6 +54,7 @@ class CapturingScope implements FeatureScope {
 class FakeCore implements SdkCore {
   readonly name: string = 'test';
   readonly featureContext: Record<string, Object> = {};
+  private readonly settings: Map<string, string> = new Map<string, string>();
 
   registerFeature(_feature: Feature): void {}
   getFeature(_featureName: string): FeatureScope | null {
@@ -77,6 +78,20 @@ class FakeCore implements SdkCore {
   }
   setUserInfo(_user: UserInfo): void {}
   clearUserInfo(): void {}
+  getIntakeTarget(): IntakeTarget {
+    return { host: 'https://intake.example.com', clientToken: 'token' };
+  }
+  readSetting(key: string): string | null {
+    const value: string | undefined = this.settings.get(key);
+    return value === undefined ? null : value;
+  }
+  writeSetting(key: string, value: string | null): void {
+    if (value === null) {
+      this.settings.delete(key);
+    } else {
+      this.settings.set(key, value);
+    }
+  }
 }
 
 function raw(kind: string, timestampMs: number, key?: string): RumRawEvent {
@@ -195,6 +210,23 @@ export default function sessionLifecycleTests(): void {
         const latest: Record<string, Object> =
           scope.ofType('view')[scope.ofType('view').length - 1];
         expect(sessionIdOf(latest) === sessionA).assertFalse();
+      });
+
+    it('stopSessionAfterExpiryClosesViewAtLastActivity',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        const scope: CapturingScope = new CapturingScope();
+        const app: RumApplicationScope = new RumApplicationScope(scope, new FakeCore(), 'app-1', 100);
+        const t0: number = Date.now();
+        const start: RumRawEvent = raw('startView', t0, 'home');
+        start.name = 'Home';
+        app.handleEvent(start);
+        app.handleEvent(raw('keepAlive', t0 + 5 * 60 * 1000));
+
+        app.stopCurrentSession(t0 + 3 * MIN_15);
+        const views: Array<Record<string, Object>> = scope.ofType('view');
+        const closing: Record<string, Object> = views[views.length - 1]['view'] as Record<string, Object>;
+        // Closed at the last keep-alive, the latest moment the session was seen alive.
+        expect(closing['time_spent'] as number).assertEqual(5 * 60 * 1000 * 1000000);
       });
   });
 

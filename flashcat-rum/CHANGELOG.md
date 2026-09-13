@@ -1,5 +1,32 @@
 # Changelog
 
+## 0.6.0
+
+- **Remote configuration.** `RumConfigurationBuilder.setRemoteConfigurationEnabled(true)`
+  lets the session sample rate and a `custom` map be changed from the console
+  without releasing the app again. Off by default. The SDK fetches the
+  configuration at startup, at every new session and, when the console allows
+  it, on return to foreground; a failed or malformed response never changes the
+  values in use. A new rate applies from the next session, unless the console
+  asks for it immediately or it switches collection on or off.
+- `RumConfigurationBuilder.setBeforeSampling(callback)` gives the app the last
+  word on the rate a session is drawn with, for example an allow-list driven by
+  `custom`. It runs synchronously on the calling thread: keep it light, and do
+  not report RUM events from inside it.
+- `RumMonitor.setForcedSession()` keeps every session from then on, and
+  `RumMonitor.getRemoteConfig()` returns the delivered `custom` map.
+- View events now report the sample rate their session was drawn with
+  (`_dd.configuration.session_sample_rate`), also when remote configuration is
+  off, and the configuration version (`rc_version`) when one decided it.
+- Fixed: ending a session that had already expired, for example `stopSession()`
+  after a long time in the background, credited the idle gap to the last
+  view's `time_spent`.
+
+### Breaking
+
+- `RumMonitor` gains `setForcedSession()` and `getRemoteConfig()`. Only code
+  that implements `RumMonitor` itself needs to add them.
+
 ## 0.5.1
 
 - App freezes (`APP_FREEZE`) are now reported with `error.category: "ANR"`
