@@ -267,6 +267,13 @@ export class RumSessionScope implements RumScope {
     }
   }
 
+  /** SDK stop: drop what is held and any release still waiting on its jitter. */
+  stopWithheld(): void {
+    if (this.withheld !== null) {
+      this.withheld.stop();
+    }
+  }
+
   /** The app may be going away: a release already earned must not wait out its jitter. */
   releaseScheduledWithheld(): void {
     if (this.withheld !== null) {

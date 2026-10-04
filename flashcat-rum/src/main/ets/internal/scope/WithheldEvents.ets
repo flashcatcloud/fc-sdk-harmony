@@ -129,11 +129,13 @@ export class WithheldEventBuffer {
    * session row from the first view it receives), then errors, then the rest
    * oldest first. A release often happens right before the app goes away, and
    * only the first writes are sure to leave — the error must not ride in the last.
+   *
+   * Every detail goes out whether or not its view is held: views only decide
+   * the order. An error before the first view, with view tracking off, or whose
+   * view document the mapper dropped is still the error the session is kept for.
    */
   release(writer: EventWriter, nowMs: number): void {
     this.prune(nowMs);
-    const releasable: HeldEvent[] = this.details.filter((held: HeldEvent) =>
-      held.viewId.length === 0 || this.views.has(held.viewId));
     const ordered: Array<Record<string, Object>> = [];
     this.views.forEach((view: Record<string, Object>) => {
       ordered.push(view);
@@ -141,12 +143,12 @@ export class WithheldEventBuffer {
     ordered.sort((left: Record<string, Object>, right: Record<string, Object>) =>
       (left['date'] as number) - (right['date'] as number));
     const viewCount: number = ordered.length;
-    for (const held of releasable) {
+    for (const held of this.details) {
       if (held.tier === EvictionTier.LAST_RESORT) {
         ordered.push(held.event);
       }
     }
-    for (const held of releasable) {
+    for (const held of this.details) {
       if (held.tier !== EvictionTier.LAST_RESORT) {
         ordered.push(held.event);
       }
@@ -155,8 +157,8 @@ export class WithheldEventBuffer {
       // One batch, uploaded as soon as the last event is in.
       writer.write(ordered[i], i === ordered.length - 1);
     }
-    FlashcatLog.d(`rum.withheld: released views=${viewCount} events=${releasable.length} ` +
-      `dropped=${this.droppedCount + this.details.length - releasable.length} bytes=${this.bytes}`);
+    FlashcatLog.d(`rum.withheld: released views=${viewCount} events=${this.details.length} ` +
+      `dropped=${this.droppedCount} bytes=${this.bytes}`);
     this.clear();
   }
 
@@ -303,10 +305,6 @@ export class WithholdingFeatureScope implements FeatureScope {
     this.delegate.sendEvent(event);
   }
 
-  isWithholding(): boolean {
-    return this.buffer !== null;
-  }
-
   /** The process is about to die of a crash: whatever is held must reach storage now. */
   releaseForCrash(): void {
     this.hasError = true;
@@ -324,6 +322,13 @@ export class WithholdingFeatureScope implements FeatureScope {
     if (this.releaseTimerId !== -1) {
       this.releaseNow();
     }
+  }
+
+  /** SDK stop: nothing held may reach the core any more, earned or not. */
+  stop(): void {
+    this.cancelTimer();
+    this.buffer = null;
+    this.discarded = true;
   }
 
   /** The session ended: what it earned goes out, the rest is thrown away for good. */

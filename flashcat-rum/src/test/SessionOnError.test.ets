@@ -17,6 +17,8 @@ import { LastViewSnapshot } from '../main/ets/internal/LastViewSnapshot';
 import { RumFeature } from '../main/ets/internal/RumFeature';
 import { BeforeSamplingContext } from '../main/ets/RumTypes';
 import { RumConfigurationBuilder } from '../main/ets/RumConfiguration';
+import { DefaultRumMonitor } from '../main/ets/internal/monitor/DefaultRumMonitor';
+import { RumErrorSource } from '../main/ets/RumTypes';
 
 const MIN_15: number = 15 * 60 * 1000;
 
@@ -404,6 +406,41 @@ export default function sessionOnErrorTests(): void {
         expect(scope.ofType('action').length).assertEqual(1);
       });
 
+    it('aFlushSendsAScheduledReleaseAtOnceAndTheTimerAddsNothing',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, async (): Promise<void> => {
+        const scope: CapturingScope = new CapturingScope();
+        const app: RumApplicationScope = onErrorApp(scope);
+        startView(app, Date.now());
+        addError(app, Date.now());
+        const delay: number = computeReleaseDelay(app.getCurrentSessionId() as string);
+        expect(scope.written.length).assertEqual(0); // scheduled, waiting on its jitter
+        app.releaseScheduledWithheld();
+        const released: number = scope.written.length;
+        expect(released).assertEqual(2); // view + error, without waiting
+        await sleep(delay + 150);
+        expect(scope.written.length).assertEqual(released); // the cancelled timer wrote nothing more
+      });
+
+    it('aSessionThatExpiresWhileItsReleaseWaitsIsReleasedOnceAtExpiry',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, async (): Promise<void> => {
+        const scope: CapturingScope = new CapturingScope();
+        const app: RumApplicationScope = onErrorApp(scope);
+        const t0: number = Date.now();
+        startView(app, t0);
+        addError(app, t0 + 1);
+        const first: string = app.getCurrentSessionId() as string;
+        const delay: number = computeReleaseDelay(first);
+        expect(scope.written.length).assertEqual(0);
+        startView(app, t0 + MIN_15 + 1000, 'later'); // detects the expiry
+        const atExpiry: number = scope.written.length;
+        expect(scope.ofType('error').length).assertEqual(1);
+        for (const e of scope.written) {
+          expect(sessionOf(e)['id']).assertEqual(first); // the new session holds its own
+        }
+        await sleep(delay + 150);
+        expect(scope.written.length).assertEqual(atExpiry);
+      });
+
     it('aFlushKeepsWhatHasNotYetEarnedItsRelease',
       TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
         const scope: CapturingScope = new CapturingScope();
@@ -417,6 +454,86 @@ export default function sessionOnErrorTests(): void {
         app.releaseScheduledWithheld();
         // The history from before the background is still there.
         expect(scope.ofType('action').length).assertEqual(1);
+      });
+  });
+
+  describe('rum-session-on-error-viewless', (): void => {
+    it('releasesAnErrorRaisedBeforeAnyView',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        const scope: CapturingScope = new CapturingScope();
+        const app: RumApplicationScope = onErrorApp(scope);
+        addError(app, Date.now(), 'before any view');
+        app.releaseScheduledWithheld();
+        expect(scope.ofType('error').length).assertEqual(1);
+      });
+
+    it('releasesTheErrorWhenTheMapperDroppedEveryViewDocument',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        RumEventMapperHolder.configure((event: Record<string, Object>): Record<string, Object> | null =>
+          event['type'] === 'view' ? null : event);
+        try {
+          const scope: CapturingScope = new CapturingScope();
+          const app: RumApplicationScope = onErrorApp(scope);
+          startView(app, Date.now());
+          addAction(app, Date.now());
+          addError(app, Date.now());
+          app.releaseScheduledWithheld();
+          expect(scope.ofType('view').length).assertEqual(0);
+          expect(scope.ofType('error').length).assertEqual(1);
+          expect(scope.ofType('action').length).assertEqual(1);
+        } finally {
+          RumEventMapperHolder.reset();
+        }
+      });
+
+    it('releasesDetailsWhoseViewIsNotHeld',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        const now: number = 1_000_000;
+        const buffer: WithheldEventBuffer = new WithheldEventBuffer();
+        buffer.hold(detail('error', 'unknown-view', 'error'), 10, now);
+        buffer.hold(detail('action', 'unknown-view', 'act'), 10, now);
+        const out: Array<Record<string, Object>> = released(buffer, now);
+        expect(out.map((e: Record<string, Object>) => e['tag'] as string).join(',')).assertEqual('error,act');
+      });
+
+    it('stillDropsAViewLeftWithoutDetail',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        const now: number = 1_000_000;
+        const buffer: WithheldEventBuffer = new WithheldEventBuffer();
+        buffer.hold(view('old', now), 50, now);
+        buffer.hold(view('current', now + 1), 50, now + 1);
+        buffer.hold(detail('error', 'current', 'error'), 10, now + 2);
+        const out: Array<Record<string, Object>> = released(buffer, now + 3);
+        const ids: string[] = out.filter((e: Record<string, Object>) => e['type'] === 'view')
+          .map((e: Record<string, Object>) => (e['view'] as Record<string, Object>)['id'] as string);
+        expect(ids.join(',')).assertEqual('current');
+      });
+  });
+
+  describe('rum-session-on-error-stop', (): void => {
+    it('sdkStopCancelsAReleaseStillWaitingOnItsJitter',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, async (): Promise<void> => {
+        const delays: number[] = [];
+        const scopes: CapturingScope[] = [];
+        for (const stop of [true, false]) {
+          const scope: CapturingScope = new CapturingScope();
+          const monitor: DefaultRumMonitor = new DefaultRumMonitor(new FakeCore(), scope,
+            new RumConfigurationBuilder('app-1').setSessionSampleRate(0).setSessionOnError(true).build());
+          monitor.stopKeepAlive();
+          monitor.startView('home', 'home');
+          monitor.addError('boom', RumErrorSource.SOURCE);
+          monitor.getCurrentSessionId((id: string | undefined): void => {
+            delays.push(computeReleaseDelay(id as string));
+          });
+          if (stop) {
+            monitor.stopWithheld(); // what RumFeature.onStop does
+          }
+          scopes.push(scope);
+        }
+        await sleep(Math.max(delays[0], delays[1]) + 150);
+        expect(scopes[0].written.length).assertEqual(0);
+        // Negative control: the same session without the stop releases on its timer.
+        expect(scopes[1].ofType('error').length).assertEqual(1);
       });
   });
 
@@ -706,6 +823,28 @@ export default function sessionOnErrorTests(): void {
         controller.apply('{"version":1,"enabled":true,"rum":{"sessionSampleRate":0,"sessionOnError":false}}', null);
         expect(app.getCurrentSessionId()).assertUndefined();
         expect(scope.written.length).assertEqual(0); // ended without an error: discarded
+      });
+
+    it('anImmediateSwitchOnlyChangeKeepsASessionTheRateKept',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        expect(RumApplicationScope.shouldEndSession(true, 100, 100, 'immediate', false, true)).assertFalse();
+        // Negative control: a rate that moved is still re-decided.
+        expect(RumApplicationScope.shouldEndSession(true, 100, 50, 'immediate', false, true)).assertTrue();
+
+        const core: FakeCore = new FakeCore();
+        const store: RemoteConfigStore = newStore(core);
+        const scope: CapturingScope = new CapturingScope();
+        const app: RumApplicationScope = new RumApplicationScope(scope, core, 'app-1', 100, store);
+        const controller: RemoteConfigController = new RemoteConfigController(
+          store, new SilentFetcher(), 'https://x/config',
+          (activation: string, before: number | null, after: number | null): void => {
+            app.onConfigurationChanged(activation, before, after, Date.now());
+          });
+        startView(app, Date.now());
+        const id: string = app.getCurrentSessionId() as string;
+        controller.apply('{"version":1,"enabled":true,"activation":"immediate",' +
+          '"rum":{"sessionSampleRate":100,"sessionOnError":true}}', null);
+        expect(app.getCurrentSessionId()).assertEqual(id);
       });
 
     it('decidesTheRunningSessionByTheStopTree',

@@ -228,6 +228,7 @@ export class RumFeature implements Feature, FeatureEventReceiver {
     if (this.monitor !== null) {
       this.monitor.stopKeepAlive(); // stop the keep-alive timer so it doesn't leak
       this.monitor.stopRemoteConfig(); // and the configuration refresh with it
+      this.monitor.stopWithheld(); // and any withheld release still waiting on its jitter
     }
     RumNavigationTracker.detach(); // remove the router observer
     RumAutoInstrumentation.reset(); // make tap/nav trackers inert after stop

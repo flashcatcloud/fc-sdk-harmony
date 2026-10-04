@@ -228,6 +228,13 @@ export class RumApplicationScope implements RumScope {
     }
   }
 
+  /** SDK stop: nothing held may be written through the core afterwards. */
+  stopWithheld(): void {
+    if (this.session !== null) {
+      this.session.stopWithheld();
+    }
+  }
+
   /**
    * Draws a new session under the settings that apply RIGHT NOW: what the
    * console published if anything, the init value otherwise, and finally
@@ -382,7 +389,9 @@ export class RumApplicationScope implements RumScope {
         // next draw keeps, it does not exempt a session already collected in full.
         return !(sampledOnError && nextOnError);
       }
-      return activation === ACTIVATION_IMMEDIATE;
+      // `immediate` re-decides on a rate that moved; a change to the switch
+      // alone says nothing about a session the rate already kept.
+      return activation === ACTIVATION_IMMEDIATE && nextRate !== drawnRate;
     }
     // A dark session is worth replacing only by one that can collect something;
     // otherwise the replacement is just as dark and the visitor lost a view.

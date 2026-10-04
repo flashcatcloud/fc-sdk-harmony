@@ -73,6 +73,15 @@ export class DefaultRumMonitor implements RumMonitor {
     }
   }
 
+  /**
+   * SDK stop. A release that earned its place was already written by the
+   * flush that precedes stop; one still waiting here (the flush is skipped
+   * under a refused consent) must not fire through a stopped core.
+   */
+  stopWithheld(): void {
+    this.applicationScope.stopWithheld();
+  }
+
   /** Stop keeping the console's configuration fresh (SDK stop). */
   stopRemoteConfig(): void {
     if (this.controller !== null) {
