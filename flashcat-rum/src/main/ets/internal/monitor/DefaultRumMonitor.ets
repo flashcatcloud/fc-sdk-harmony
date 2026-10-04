@@ -60,7 +60,8 @@ export class DefaultRumMonitor implements RumMonitor {
     this.applicationScope = new RumApplicationScope(
       featureScope, core, configuration.applicationId, configuration.sessionSampleRate,
       remoteConfig, configuration.beforeSampling,
-      controller === null ? null : (): void => controller.onSessionStarted());
+      controller === null ? null : (): void => controller.onSessionStarted(),
+      configuration.sessionOnError);
     this.startKeepAlive();
   }
 
@@ -195,6 +196,15 @@ export class DefaultRumMonitor implements RumMonitor {
   /** Re-emit the active view (keep its time_spent / the session duration current). */
   keepAlive(): void {
     this.applicationScope.handleEvent({ kind: 'keepAlive', attributes: {}, timestampMs: Date.now() });
+  }
+
+  /**
+   * The app is being flushed — backgrounded, about to exit, or asked to by the
+   * host. A session that already reported its error releases what it held now
+   * instead of after its jitter: the process may not live that long.
+   */
+  releaseScheduledWithheld(): void {
+    this.applicationScope.releaseScheduledWithheld();
   }
 
   /**

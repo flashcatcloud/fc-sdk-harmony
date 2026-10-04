@@ -16,6 +16,8 @@ export class RumConfiguration {
   /** Whether to read the sampling settings the console publishes. Default false. */
   readonly remoteConfigurationEnabled: boolean;
   readonly beforeSampling: BeforeSamplingCallback | null;
+  /** Keep the sessions `sessionSampleRate` misses when they report an error. Default false. */
+  readonly sessionOnError: boolean;
 
   constructor(
     applicationId: string,
@@ -27,7 +29,8 @@ export class RumConfiguration {
     eventMapper: RumEventMapper | null = null,
     trackErrors: boolean = true,
     remoteConfigurationEnabled: boolean = false,
-    beforeSampling: BeforeSamplingCallback | null = null
+    beforeSampling: BeforeSamplingCallback | null = null,
+    sessionOnError: boolean = false
   ) {
     this.applicationId = applicationId;
     this.sessionSampleRate = sessionSampleRate;
@@ -39,6 +42,7 @@ export class RumConfiguration {
     this.eventMapper = eventMapper;
     this.remoteConfigurationEnabled = remoteConfigurationEnabled;
     this.beforeSampling = beforeSampling;
+    this.sessionOnError = sessionOnError;
   }
 }
 
@@ -56,6 +60,7 @@ export class RumConfigurationBuilder {
   private eventMapper: RumEventMapper | null = null;
   private remoteConfigurationEnabled: boolean = false;
   private beforeSampling: BeforeSamplingCallback | null = null;
+  private sessionOnError: boolean = false;
 
   constructor(applicationId: string) {
     this.applicationId = applicationId;
@@ -148,6 +153,34 @@ export class RumConfigurationBuilder {
     return this;
   }
 
+  /**
+   * Also keep the sessions `sessionSampleRate` does not sample, but only those
+   * that report an error. Default false.
+   *
+   * Such a session is collected in memory and nothing is uploaded until it
+   * reports an error of its own — one that survives the event mapper. Then the
+   * minute leading up to that error (its views, actions, resources and errors)
+   * is uploaded, after a delay of up to 3 s that spreads a fleet-wide failure,
+   * and the rest of the session is collected normally. A session that ends
+   * without an error is thrown away with everything it held. An uncaught ArkTS
+   * exception that terminates the process releases what was held before the
+   * process exits; a native crash or a freeze, reported on the next launch, is
+   * delivered with the last view of the session only — what was held in memory
+   * died with the process.
+   *
+   * Such sessions report a session sample rate of 0 and
+   * `session.sampled_for_error: true`: each one stands for itself rather than
+   * for `100 / rate` sessions. A rate the `beforeSampling` hook sets to 0 turns
+   * this off for that session — 0 means never collect.
+   *
+   * With remote configuration enabled, the console's `sessionOnError` overrides
+   * this value for the sessions drawn after it arrives.
+   */
+  setSessionOnError(enabled: boolean): RumConfigurationBuilder {
+    this.sessionOnError = enabled;
+    return this;
+  }
+
   build(): RumConfiguration {
     return new RumConfiguration(
       this.applicationId,
@@ -159,7 +192,8 @@ export class RumConfigurationBuilder {
       this.eventMapper,
       this.trackErrors,
       this.remoteConfigurationEnabled,
-      this.beforeSampling
+      this.beforeSampling,
+      this.sessionOnError
     );
   }
 }

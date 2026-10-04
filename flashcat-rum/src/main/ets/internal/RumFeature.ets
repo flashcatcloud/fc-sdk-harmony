@@ -274,10 +274,12 @@ export class RumFeature implements Feature, FeatureEventReceiver {
       }
     } else if (type === 'keep_alive') {
       // App backgrounded — refresh the active view so its final time_spent is sent
-      // before the batch is flushed (published by the core on background).
+      // before the batch is flushed (published by the core on background, and by
+      // every flush, including the one before a crash policy exits the process).
       const m: DefaultRumMonitor | null = this.monitor;
       if (m !== null) {
         m.keepAlive();
+        m.releaseScheduledWithheld();
       }
     }
   }

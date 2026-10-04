@@ -21,6 +21,7 @@ export class RemoteConfigValues {
   readonly etag: string | null;
   readonly ttlSeconds: number;
   readonly refreshOnForeground: boolean;
+  readonly sessionOnError: boolean | null;
 
   constructor(
     sessionSampleRate: number | null,
@@ -28,7 +29,8 @@ export class RemoteConfigValues {
     custom: string | null = null,
     etag: string | null = null,
     ttlSeconds: number = DEFAULT_TTL_SECONDS,
-    refreshOnForeground: boolean = false
+    refreshOnForeground: boolean = false,
+    sessionOnError: boolean | null = null
   ) {
     this.sessionSampleRate = sessionSampleRate;
     this.version = version;
@@ -36,25 +38,29 @@ export class RemoteConfigValues {
     this.etag = etag;
     this.ttlSeconds = ttlSeconds;
     this.refreshOnForeground = refreshOnForeground;
+    this.sessionOnError = sessionOnError;
   }
 }
 
 /**
  * The configuration a session was drawn under: the rate actually used at the
  * draw (the console's where it set one, the init value where it did not, the
- * hook's where it overrode both) and the settings version it came from. Events
- * carry these instead of the init values, so an audit lines up with the draw
- * that kept the session — a session is never re-judged, so the metadata must
- * come from its creation, not from whatever has arrived since.
+ * hook's where it overrode both), whether `sessionOnError` kept the sessions the
+ * rate missed, and the settings version they came from. Events carry these
+ * instead of the init values, so an audit lines up with the draw that kept the
+ * session — a session is never re-judged, so the metadata must come from its
+ * creation, not from whatever has arrived since.
  */
 export class DrawnConfiguration {
   /** 0 when no configuration was ever fetched. */
   readonly version: number;
   readonly sessionSampleRate: number;
+  readonly sessionOnError: boolean;
 
-  constructor(version: number, sessionSampleRate: number) {
+  constructor(version: number, sessionSampleRate: number, sessionOnError: boolean = false) {
     this.version = version;
     this.sessionSampleRate = sessionSampleRate;
+    this.sessionOnError = sessionOnError;
   }
 }
 
@@ -64,6 +70,7 @@ const FIELD_CUSTOM: string = 'custom';
 const FIELD_ETAG: string = 'etag';
 const FIELD_TTL: string = 'ttl';
 const FIELD_REFRESH_ON_FOREGROUND: string = 'refresh_on_foreground';
+const FIELD_SESSION_ON_ERROR: string = 'session_on_error';
 const MAX_RATE: number = 100;
 
 /**
@@ -119,6 +126,9 @@ export class RemoteConfigStore {
     }
     if (values.etag !== null) {
       record[FIELD_ETAG] = values.etag;
+    }
+    if (values.sessionOnError !== null) {
+      record[FIELD_SESSION_ON_ERROR] = values.sessionOnError;
     }
     record[FIELD_TTL] = values.ttlSeconds;
     record[FIELD_REFRESH_ON_FOREGROUND] = values.refreshOnForeground;
@@ -198,7 +208,8 @@ export class RemoteConfigStore {
       RemoteConfigStore.stringOf(record[FIELD_CUSTOM]),
       hasRefreshSettings ? RemoteConfigStore.stringOf(record[FIELD_ETAG]) : null,
       ttl !== null && ttl > 0 ? ttl : DEFAULT_TTL_SECONDS,
-      record[FIELD_REFRESH_ON_FOREGROUND] === true
+      record[FIELD_REFRESH_ON_FOREGROUND] === true,
+      typeof record[FIELD_SESSION_ON_ERROR] === 'boolean' ? record[FIELD_SESSION_ON_ERROR] as boolean : null
     );
   }
 

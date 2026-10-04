@@ -5,6 +5,7 @@ import { RumViewScope } from './RumViewScope';
 import { RumEventAssembler } from '../assembly/RumEventAssembler';
 import { writeMapped } from '../RumEventMapperHolder';
 import { DrawnConfiguration } from '../remoteconfig/RemoteConfigStore';
+import { WithholdingFeatureScope } from './WithheldEvents';
 
 const SESSION_INACTIVITY_MS: number = 15 * 60 * 1000;     // 15 min
 const SESSION_MAX_DURATION_MS: number = 4 * 60 * 60 * 1000; // 4 h
@@ -21,7 +22,12 @@ export class RumSessionScope implements RumScope {
   private readonly core: SdkCore;
   private readonly applicationId: string;
   private readonly sessionId: string;
+  // Collected: drawn by the rate, forced, or kept on error (see sampledOnError).
   private readonly sampled: boolean;
+  // Missed by the rate and kept only if it errors (`sessionOnError`): its scopes
+  // run as usual, but write through `withheld` until it reports an error.
+  private readonly sampledOnError: boolean;
+  private readonly withheld: WithholdingFeatureScope | null;
   // The settings this session was drawn under, carried onto its view documents.
   private readonly draw: DrawnConfiguration;
   private readonly startedAtMs: number;
@@ -55,7 +61,6 @@ export class RumSessionScope implements RumScope {
     forced: boolean = false,
     draw: DrawnConfiguration = new DrawnConfiguration(0, sampleRate)
   ) {
-    this.featureScope = featureScope;
     this.core = core;
     this.applicationId = applicationId;
     this.sessionId = util.generateRandomUUID(true);
@@ -63,10 +68,18 @@ export class RumSessionScope implements RumScope {
     this.lastActivityMs = startedAtMs;
     // A forced session skips the draw entirely: the app has said this visitor
     // must be collected, and a coin flip could still say no.
-    this.sampled = forced || RumSessionScope.decideSampling(sampleRate);
+    const drawn: boolean = forced || RumSessionScope.decideSampling(sampleRate);
+    // Only the sessions the rate missed, so a session is never counted by both.
+    this.sampledOnError = !drawn && draw.sessionOnError;
+    this.sampled = drawn || this.sampledOnError;
+    this.withheld = this.sampledOnError ? new WithholdingFeatureScope(featureScope, core, this.sessionId) : null;
+    this.featureScope = this.withheld ?? featureScope;
     this.draw = draw;
     const update: Record<string, Object> = {};
     update['session.id'] = this.sessionId;
+    // An on-error session counts as sampled here: a crash in it is still
+    // reported into it (with the last view it wrote), even if nothing it held
+    // made it out before the process died.
     update['session.sampled'] = this.sampled;
     this.core.updateFeatureContext('rum', update);
   }
@@ -94,6 +107,13 @@ export class RumSessionScope implements RumScope {
         // page-hide stopView is the common path): count it on the last closed
         // view so it still reaches session_crash_count.
         this.lastStoppedView.handleEvent(event);
+      }
+      if (this.withheld !== null) {
+        if (event.kind === 'markCrash') {
+          this.withheld.releaseForCrash();
+        } else {
+          this.withheld.settle();
+        }
       }
       // Un-publish the session identity so a crash in the gap before the next
       // session isn't attributed to this dead one (the context is merge-only).
@@ -138,7 +158,8 @@ export class RumSessionScope implements RumScope {
       const viewId: string = util.generateRandomUUID(true);
       this.activeView = new RumViewScope(
         this.featureScope, this.core, this.applicationId, this.sessionId,
-        event.key ?? '', event.name ?? '', viewId, event.timestampMs, event.attributes, this.draw);
+        event.key ?? '', event.name ?? '', viewId, event.timestampMs, event.attributes, this.draw,
+        this.sampledOnError);
       return this;
     }
 
@@ -180,6 +201,11 @@ export class RumSessionScope implements RumScope {
       // Surfaced so integrators can see why their data is missing — previously
       // these were dropped with no trace at any log level.
       FlashcatLog.d(`rum.session: dropped viewless ${event.kind} — no active view (missing startView?)`);
+    }
+    if (event.kind === 'markCrash' && this.withheld !== null) {
+      // The process is about to exit: what was held — the document counting this
+      // crash included — has to reach storage now, not after a jitter.
+      this.withheld.releaseForCrash();
     }
     return this;
   }
@@ -226,9 +252,26 @@ export class RumSessionScope implements RumScope {
       this.retireView(this.activeView); // keep in-flight resources drainable
       this.activeView = null;
     }
+    if (this.withheld !== null) {
+      this.withheld.settle();
+    }
     const cleared: Record<string, Object> = {};
     cleared['session.id'] = '';
     this.core.updateFeatureContext('rum', cleared);
+  }
+
+  /** RumMonitor.setForcedSession on a session kept only on error: release it now. */
+  releaseWithheld(): void {
+    if (this.withheld !== null) {
+      this.withheld.releaseForced();
+    }
+  }
+
+  /** The app may be going away: a release already earned must not wait out its jitter. */
+  releaseScheduledWithheld(): void {
+    if (this.withheld !== null) {
+      this.withheld.releaseIfScheduled();
+    }
   }
 
   /** True when a view of this (possibly ended) session still owns `key`. */
@@ -286,6 +329,15 @@ export class RumSessionScope implements RumScope {
 
   isSampled(): boolean {
     return this.sampled;
+  }
+
+  isSampledOnError(): boolean {
+    return this.sampledOnError;
+  }
+
+  /** Whether the settings this session was drawn under are exactly these. */
+  wasDrawnWith(sessionSampleRate: number, sessionOnError: boolean): boolean {
+    return this.draw.sessionSampleRate === sessionSampleRate && this.draw.sessionOnError === sessionOnError;
   }
 
   private writeViewlessError(raw: RumRawEvent): void {

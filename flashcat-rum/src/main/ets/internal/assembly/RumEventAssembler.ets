@@ -36,14 +36,21 @@ export class RumEventAssembler {
     documentVersion: number,
     isActive: boolean,
     attributes: Record<string, Object>,
-    draw: DrawnConfiguration | null = null
+    draw: DrawnConfiguration | null = null,
+    sampledForError: boolean = false
   ): Record<string, Object> {
     const event: Record<string, Object> = {};
     event['type'] = 'view';
     event['date'] = dateMs; // view START time — stable across all updates of this view.id
-    event['_dd'] = RumEventAssembler.dd(documentVersion, draw);
+    event['_dd'] = RumEventAssembler.dd(documentVersion, draw, sampledForError);
     event['application'] = RumEventAssembler.idObj(applicationId);
-    event['session'] = RumEventAssembler.session(sessionId);
+    const session: Record<string, Object> = RumEventAssembler.session(sessionId);
+    if (sampledForError) {
+      // Kept only because it errored: its detail starts where the withheld
+      // buffer reached, so the gap before reads as "not collected", not missing.
+      session['sampled_for_error'] = true;
+    }
+    event['session'] = session;
 
     const view: Record<string, Object> = {};
     view['id'] = viewId;
@@ -240,7 +247,8 @@ export class RumEventAssembler {
 
   // ---- shared sub-objects ----
 
-  private static dd(documentVersion: number, draw: DrawnConfiguration | null = null): Record<string, Object> {
+  private static dd(documentVersion: number, draw: DrawnConfiguration | null = null,
+    sampledForError: boolean = false): Record<string, Object> {
     const dd: Record<string, Object> = {};
     dd['format_version'] = 2;
     dd['session'] = RumEventAssembler.sessionPlan();
@@ -252,8 +260,12 @@ export class RumEventAssembler {
       // init: server-side extrapolation multiplies by this, and reporting the
       // init value after the console moved the knob would scale the numbers by
       // a rate nobody drew with.
+      //
+      // A session kept only because it errored reports 0 whatever it was drawn
+      // at: it stands for itself, and 0 is what the backend reads as "one
+      // session, do not scale" — not for `100 / rate` sessions like a sampled one.
       const configuration: Record<string, Object> = {};
-      configuration['session_sample_rate'] = draw.sessionSampleRate;
+      configuration['session_sample_rate'] = sampledForError ? 0 : draw.sessionSampleRate;
       if (draw.version > 0) {
         configuration['rc_version'] = draw.version;
       }
