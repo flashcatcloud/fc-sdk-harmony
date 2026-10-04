@@ -108,8 +108,9 @@ struct Index {
       const pacing: string = AppStorage.get<string>('netbenchPacing') ?? 'demo'; // SDK init only
       const rcMode: string = AppStorage.get<string>('rcMode') ?? '';
       const rcInitRate: number = Number.parseInt(AppStorage.get<string>('rcInitRate') ?? '100', 10);
+      const sessionOnError: boolean = (AppStorage.get<string>('soe') ?? '') === '1';
       DemoSdk.init(this.context, this.useProd, this.customEndpoint, false, trackErrors, pacing,
-        rcMode, rcInitRate);
+        rcMode, rcInitRate, sessionOnError);
     } catch (e) {
       this.append(e instanceof Error ? e.message : 'SDK initialization failed');
       return;
@@ -188,6 +189,13 @@ struct Index {
       this.runNetBench(`${endpoint}/e2e/echo`);
     } else if (name === 'remoteconfig') {
       this.runRemoteConfigScenario();
+    } else if (name.startsWith('soe')) {
+      this.runSessionOnErrorScenario(name);
+    } else if (name === 'native-crash') {
+      this.append('e2e: native crash in 800ms');
+      setTimeout(() => {
+        testNapi.triggerNativeCrash();
+      }, 800);
     } else if (name === 'crash') {
       this.append('e2e: crashing in 800ms');
       setTimeout(() => {
@@ -230,6 +238,35 @@ struct Index {
         after === null ? 'null' : JSON.stringify(after));
       this.append('e2e: remoteconfig — forced session emitted');
     }, 3000);
+  }
+
+  /**
+   * Error-session capture runs (launch with `--ps soe 1`). Every step is logged
+   * under FCSOE so a run can be lined up with what the intake received:
+   * - soe: activity, then an error 2 s later — the error releases the held minute;
+   * - soe-quiet: activity, then the session ends without an error;
+   * - soe-secret: activity, then an error the event mapper drops.
+   */
+  private runSessionOnErrorScenario(name: string): void {
+    const monitor: RumMonitor = DemoSdk.monitor();
+    monitor.addAction(RumActionType.TAP, 'soe-tap');
+    monitor.getCurrentSessionId((sessionId: string | undefined): void => {
+      hilog.info(0x0000, 'FCSOE', '%{public}s session=%{public}s', name, sessionId ?? 'none');
+    });
+    setTimeout(() => {
+      if (name === 'soe') {
+        monitor.addError('soe manual error', RumErrorSource.CUSTOM, 'at Index.soe');
+        hilog.info(0x0000, 'FCSOE', 'error at %{public}d', Date.now());
+      } else if (name === 'soe-secret') {
+        monitor.addError('soe secret error', RumErrorSource.CUSTOM, 'at Index.soe');
+        monitor.stopSession();
+        hilog.info(0x0000, 'FCSOE', 'dropped error, session stopped at %{public}d', Date.now());
+      } else {
+        monitor.stopSession();
+        hilog.info(0x0000, 'FCSOE', 'session stopped at %{public}d', Date.now());
+      }
+      this.append(`e2e: ${name} done`);
+    }, 2000);
   }
 
   aboutToDisappear(): void {
