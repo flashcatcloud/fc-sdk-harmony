@@ -71,6 +71,14 @@ const FIELD_ETAG: string = 'etag';
 const FIELD_TTL: string = 'ttl';
 const FIELD_REFRESH_ON_FOREGROUND: string = 'refresh_on_foreground';
 const FIELD_SESSION_ON_ERROR: string = 'session_on_error';
+/**
+ * Which fields the entry was written with. An entry written by an SDK that did
+ * not read every field this one reads carries a validator for a response this
+ * SDK has never seen: its values are kept, its validator is not, so the next
+ * request asks for the whole body. Format 2 added `session_on_error`.
+ */
+const FIELD_FORMAT: string = 'format';
+const RECORD_FORMAT: number = 2;
 const MAX_RATE: number = 100;
 
 /**
@@ -132,6 +140,7 @@ export class RemoteConfigStore {
     }
     record[FIELD_TTL] = values.ttlSeconds;
     record[FIELD_REFRESH_ON_FOREGROUND] = values.refreshOnForeground;
+    record[FIELD_FORMAT] = RECORD_FORMAT;
     const serialized: string = JSON.stringify(record);
     if (!RemoteConfigStore.isWithinSizeLimit(serialized)) {
       return false;
@@ -176,17 +185,15 @@ export class RemoteConfigStore {
    * The SDK version is deliberately left out: including it would discard the
    * stored values on every SDK upgrade and put the first session after an
    * upgrade back on the init values. The storage FORMAT version lives in the
-   * prefix instead, so only a real format change orphans the cache. Adding a
-   * field is such a change: an entry written without it carries a validator
-   * for a response this SDK never read, and the 304 that validator earns
-   * would keep the field unknown for as long as the console leaves the
-   * configuration alone. Format 2 added `session_on_error`.
+   * prefix instead, so only a real format change orphans the cache. A field
+   * added to the entry is not one: the entry's own `format` field retires the
+   * validator while the values stay in force.
    */
   static buildStoreKey(context: FlashcatContext, host: string, applicationId: string): string {
     const parts: string[] = [
       RemoteConfigStore.hostOf(host), applicationId, context.service, context.env, context.version
     ];
-    return `_fc_rc_2_${parts.join('|')}`;
+    return `_fc_rc_1_${parts.join('|')}`;
   }
 
   private static hostOf(url: string): string {
@@ -203,9 +210,11 @@ export class RemoteConfigStore {
     }
     const ttl: number | null = RemoteConfigStore.intOf(record[FIELD_TTL]);
     const hasRefreshSettings: boolean = ttl !== null && ttl > 0
-      && typeof record[FIELD_REFRESH_ON_FOREGROUND] === 'boolean';
+      && typeof record[FIELD_REFRESH_ON_FOREGROUND] === 'boolean'
+      && RemoteConfigStore.intOf(record[FIELD_FORMAT]) === RECORD_FORMAT;
     // A validator can only be reused with the whole state it validates. If
-    // refresh settings are missing, keep the rates but ask for a full body.
+    // refresh settings are missing, or the entry predates a field this SDK
+    // reads, keep the rates but ask for a full body.
     return new RemoteConfigValues(
       RemoteConfigStore.rateOf(record[FIELD_RATE]),
       RemoteConfigStore.intOf(record[FIELD_VERSION]),

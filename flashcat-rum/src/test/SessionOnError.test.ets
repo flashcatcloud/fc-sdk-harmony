@@ -16,9 +16,9 @@ import { RumEventMapperHolder } from '../main/ets/internal/RumEventMapperHolder'
 import { LastViewSnapshot } from '../main/ets/internal/LastViewSnapshot';
 import { RumFeature } from '../main/ets/internal/RumFeature';
 import { BeforeSamplingContext } from '../main/ets/RumTypes';
-import { RumConfigurationBuilder } from '../main/ets/RumConfiguration';
+import { RumConfiguration, RumConfigurationBuilder } from '../main/ets/RumConfiguration';
 import { DefaultRumMonitor } from '../main/ets/internal/monitor/DefaultRumMonitor';
-import { RumErrorSource } from '../main/ets/RumTypes';
+import { RumActionType, RumErrorSource } from '../main/ets/RumTypes';
 
 const MIN_15: number = 15 * 60 * 1000;
 
@@ -432,6 +432,34 @@ export default function sessionOnErrorTests(): void {
         expect(scope.ofType('action').length).assertEqual(1);
       });
 
+    it('aCrashReportedAsAnErrorReleasesAtOnce',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        // A crash reaches a live session only as a replay of a process that
+        // already died; the crash feature drops its copy once reported.
+        const scope: CapturingScope = new CapturingScope();
+        const app: RumApplicationScope = onErrorApp(scope);
+        const now: number = Date.now();
+        startView(app, now);
+        addAction(app, now + 1);
+        const crash: RumRawEvent = raw('addError', now + 2);
+        crash.errorMessage = 'replayed crash';
+        crash.errorSource = 'source';
+        crash.isCrash = true;
+        app.handleEvent(crash);
+        // Synchronous: nothing waits on a jitter.
+        expect(scope.ofType('error').length).assertEqual(1);
+        expect(scope.ofType('action').length).assertEqual(1);
+        expect(scope.written[0]['type']).assertEqual('view');
+        // Negative control: an ordinary error waits for its jitter.
+        const quiet: CapturingScope = new CapturingScope();
+        const app2: RumApplicationScope = onErrorApp(quiet);
+        startView(app2, now);
+        addError(app2, now + 1);
+        expect(quiet.written.length).assertEqual(0);
+        app2.releaseScheduledWithheld();
+        expect(quiet.ofType('error').length).assertEqual(1);
+      });
+
     it('setForcedSessionReleasesWithoutAnError',
       TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
         const scope: CapturingScope = new CapturingScope();
@@ -716,6 +744,28 @@ export default function sessionOnErrorTests(): void {
         expect(scope.ofType('view').length).assertEqual(1);
       });
 
+    it('theCoreAnnouncementOfARefusalReachesTheSession',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        // The whole path from the bus message the core sends to the buffer.
+        const core: FakeCore = new FakeCore();
+        const scope: CapturingScope = new CapturingScope();
+        const configuration: RumConfiguration =
+          new RumConfigurationBuilder('app-1').setSessionSampleRate(0).setSessionOnError(true).build();
+        const feature: RumFeature = new RumFeature(core, configuration);
+        const monitor: DefaultRumMonitor = new DefaultRumMonitor(core, scope, configuration);
+        monitor.stopKeepAlive();
+        feature.attachMonitor(monitor);
+        monitor.startView('home', 'home');
+        monitor.addAction(RumActionType.TAP, 'before-refusal');
+        core.consent = TrackingConsent.NOT_GRANTED;
+        feature.onReceive({ 'type': 'consent_revoked' } as Record<string, Object>);
+        core.consent = TrackingConsent.GRANTED;
+        monitor.addError('boom', RumErrorSource.SOURCE);
+        monitor.releaseScheduledWithheld();
+        expect(scope.ofType('action').length).assertEqual(0);
+        expect(scope.ofType('error').length).assertEqual(1);
+      });
+
     it('aRefusedConsentForgetsTheErrorThatHadEarnedARelease',
       TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, async (): Promise<void> => {
         const core: FakeCore = new FakeCore();
@@ -854,6 +904,33 @@ export default function sessionOnErrorTests(): void {
         const ids2: string[] = released(other, now + 5).filter((e: Record<string, Object>) => e['type'] === 'view')
           .map((e: Record<string, Object>) => (e['view'] as Record<string, Object>)['id'] as string);
         expect(ids2.join(',')).assertEqual('current');
+      });
+
+    it('keepsTheNewestDocumentVersionOfAViewWhateverOrderTheyArriveIn',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        // A document is assembled before its mapper runs; a mapper that reports
+        // into the SDK has the next version written first.
+        const now: number = 1_000_000;
+        const buffer: WithheldEventBuffer = new WithheldEventBuffer();
+        const v3: Record<string, Object> = view('v1', now);
+        v3['_dd'] = { 'document_version': 3 } as Record<string, Object>;
+        const v2: Record<string, Object> = view('v1', now);
+        v2['_dd'] = { 'document_version': 2 } as Record<string, Object>;
+        hold(buffer, v3, 50, now + 1);
+        hold(buffer, v2, 50, now + 2);
+        hold(buffer, detail('error', 'v1', 'error'), 10, now + 3);
+        const views: Array<Record<string, Object>> = released(buffer, now + 4)
+          .filter((e: Record<string, Object>) => e['type'] === 'view');
+        expect(views.length).assertEqual(1);
+        expect((views[0]['_dd'] as Record<string, Object>)['document_version']).assertEqual(3);
+        // Negative control: in order, the later version supersedes.
+        const ordered: WithheldEventBuffer = new WithheldEventBuffer();
+        hold(ordered, v2, 50, now + 1);
+        hold(ordered, v3, 50, now + 2);
+        hold(ordered, detail('error', 'v1', 'error'), 10, now + 3);
+        const kept: Array<Record<string, Object>> = released(ordered, now + 4)
+          .filter((e: Record<string, Object>) => e['type'] === 'view');
+        expect((kept[0]['_dd'] as Record<string, Object>)['document_version']).assertEqual(3);
       });
 
     it('dropsADetailTooLargeToEverBeReleasedAndKeepsTheHistory',
@@ -1139,17 +1216,26 @@ export default function sessionOnErrorTests(): void {
         expect(found).assertTrue();
       });
 
-    it('aCacheWrittenByAnSdkWithoutTheSwitchIsNotReadBack',
+    it('aCacheWrittenByAnSdkWithoutTheSwitchKeepsItsRateButNotItsValidator',
       TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
-        // An entry of the previous format carries a validator for a response
-        // whose switch was never read; a 304 against it would keep the switch
-        // unknown for as long as the console leaves the configuration alone.
+        // An entry written before the switch existed carries a validator for a
+        // response whose switch was never read; a 304 against it would keep the
+        // switch unknown for as long as the console leaves the configuration
+        // alone. The rate it stored — an emergency stop, say — stays in force.
         const core: FakeCore = new FakeCore();
         const key: string = RemoteConfigStore.buildStoreKey(core.getContext(), 'https://intake.example.com', 'app-1');
-        const legacy: string = key.replace('_fc_rc_2_', '_fc_rc_1_');
-        expect(legacy === key).assertFalse();
-        core.writeSetting(`${legacy}.values`, '{"rate":0,"version":10,"etag":"\\"v10\\"","ttl":300,"refresh_on_foreground":false}');
-        expect(newStore(core).read()).assertNull();
+        core.writeSetting(`${key}.values`, '{"rate":0,"version":10,"etag":"\\"v10\\"","ttl":300,"refresh_on_foreground":false}');
+        const legacy: RemoteConfigValues = newStore(core).read() as RemoteConfigValues;
+        expect(legacy.sessionSampleRate).assertEqual(0);
+        expect(legacy.version).assertEqual(10);
+        expect(legacy.etag).assertNull();
+        expect(legacy.sessionOnError).assertNull();
+        // Negative control: an entry this SDK wrote keeps its validator.
+        const store: RemoteConfigStore = newStore(core);
+        store.write(new RemoteConfigValues(0, 11, null, '"v11"', 300, false, true));
+        const current: RemoteConfigValues = store.read() as RemoteConfigValues;
+        expect(current.etag).assertEqual('"v11"');
+        expect(current.sessionOnError).assertEqual(true);
       });
 
     it('decidesTheRunningSessionByTheStopTree',

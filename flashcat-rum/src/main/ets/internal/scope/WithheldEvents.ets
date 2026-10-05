@@ -60,10 +60,13 @@ class HeldView {
   readonly line: string;
   /** The view's start date, which orders the release. */
   readonly date: number;
+  /** Its document version: a document is superseded only by a newer one. */
+  readonly version: number;
 
-  constructor(line: string, date: number) {
+  constructor(line: string, date: number, version: number) {
     this.line = line;
     this.date = date;
+    this.version = version;
   }
 }
 
@@ -92,12 +95,18 @@ export class WithheldEventBuffer {
   hold(event: Record<string, Object>, line: string, bytes: number, nowMs: number): boolean {
     const viewId: string = WithheldEventBuffer.viewIdOf(event);
     if (event['type'] === 'view') {
-      // Upsert: a view document is cumulative, so the latest supersedes the rest.
-      // Deleting first moves it to the back, so the oldest entry is the least
-      // recently updated one.
+      // Upsert: a view document is cumulative, so the newest supersedes the rest.
+      // Newest by document version, not by arrival: a document is assembled
+      // before its mapper runs, and a mapper that reports into the SDK has the
+      // next version written first. Deleting first moves the entry to the back,
+      // so the oldest entry is the least recently updated one.
       const date: number = typeof event['date'] === 'number' ? event['date'] as number : 0;
-      this.views.delete(viewId);
-      this.views.set(viewId, new HeldView(line, date));
+      const version: number = WithheldEventBuffer.documentVersionOf(event);
+      const held: HeldView | undefined = this.views.get(viewId);
+      if (held === undefined || version >= held.version) {
+        this.views.delete(viewId);
+        this.views.set(viewId, new HeldView(line, date, version));
+      }
       // The view's own start date decides which one is current, not arrival order:
       // a late update of a view that already ended must not make it current again,
       // or prune would drop the view the next error hangs from.
@@ -262,6 +271,19 @@ export class WithheldEventBuffer {
     return EvictionTier.LAST;
   }
 
+  private static documentVersionOf(event: Record<string, Object>): number {
+    const dd: Object | undefined = event['_dd'];
+    const version: Object | undefined = typeof dd === 'object' && dd !== null ?
+      (dd as Record<string, Object>)['document_version'] : undefined;
+    return typeof version === 'number' ? version as number : 0;
+  }
+
+  /** @internal */
+  static isCrash(event: Record<string, Object>): boolean {
+    const error: Object | undefined = event['error'];
+    return typeof error === 'object' && error !== null && (error as Record<string, Object>)['is_crash'] === true;
+  }
+
   private static viewIdOf(event: Record<string, Object>): string {
     const view: Object | undefined = event['view'];
     if (typeof view !== 'object' || view === null) {
@@ -421,22 +443,37 @@ export class WithholdingFeatureScope implements FeatureScope {
     const line: string = JSON.stringify(event);
     // Views stay out of the byte budget, so only details pay for the measurement.
     const bytes: number = event['type'] === 'view' ? 0 : ENCODER.encodeInto(line).byteLength;
-    if (this.isOwnError(event)) {
-      if (bytes > WITHHELD_BUFFER_BYTES_LIMIT) {
-        // An error too large for the buffer goes out on its own rather than
-        // evicting the history it explains. Only an error storage accepted earns
-        // the release: a history uploaded for an error the backend will never
-        // see is a session nobody can explain.
-        if (!writer.write(event, true)) {
-          return false;
-        }
-        this.hasError = true;
-        this.scheduleRelease(buffer);
-        return true;
+    if (!this.isOwnError(event)) {
+      return buffer.hold(event, line, bytes, Date.now());
+    }
+    // A crash is released at once. It reaches a live session only as a replay
+    // of a process that already died, spread across the fleet by app launches
+    // rather than by a jitter — and the process that replays it may not live
+    // out a jitter either, while the crash feature has already dropped its copy.
+    const crash: boolean = WithheldEventBuffer.isCrash(event);
+    if (bytes > WITHHELD_BUFFER_BYTES_LIMIT) {
+      // An error too large for the buffer goes out on its own rather than
+      // evicting the history it explains. Only an error storage accepted earns
+      // the release: a history uploaded for an error the backend will never
+      // see is a session nobody can explain.
+      if (!writer.write(event, true)) {
+        return false;
       }
       this.hasError = true;
-      this.scheduleRelease(buffer);
+      if (crash) {
+        this.releaseNow();
+      } else {
+        this.scheduleRelease(buffer);
+      }
+      return true;
     }
+    this.hasError = true;
+    if (crash) {
+      const held: boolean = buffer.hold(event, line, bytes, Date.now());
+      this.releaseNow();
+      return held;
+    }
+    this.scheduleRelease(buffer);
     return buffer.hold(event, line, bytes, Date.now());
   }
 
