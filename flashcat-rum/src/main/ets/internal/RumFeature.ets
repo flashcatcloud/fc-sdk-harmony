@@ -282,6 +282,13 @@ export class RumFeature implements Feature, FeatureEventReceiver {
         m.keepAlive();
         m.releaseScheduledWithheld();
       }
+    } else if (type === 'consent_revoked') {
+      // The core has wiped its batches; what a session still holds in memory
+      // goes the same way.
+      const m: DefaultRumMonitor | null = this.monitor;
+      if (m !== null) {
+        m.forgetWithheld();
+      }
     }
   }
 

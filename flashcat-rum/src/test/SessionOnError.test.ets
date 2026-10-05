@@ -195,6 +195,11 @@ function view(viewId: string, dateMs: number): Record<string, Object> {
   return { 'type': 'view', 'date': dateMs, 'view': { 'id': viewId } as Record<string, Object> };
 }
 
+/** Holds `event` as the write path would, with the size the test wants it charged for. */
+function hold(buffer: WithheldEventBuffer, event: Record<string, Object>, bytes: number, nowMs: number): boolean {
+  return buffer.hold(event, JSON.stringify(event), bytes, nowMs);
+}
+
 function released(buffer: WithheldEventBuffer, nowMs: number): Array<Record<string, Object>> {
   const scope: CapturingScope = new CapturingScope();
   scope.withWriteContext((_context: FlashcatContext, writer: EventWriter) => {
@@ -441,6 +446,48 @@ export default function sessionOnErrorTests(): void {
         expect(scope.written.length).assertEqual(atExpiry);
       });
 
+    it('aCrashThatDetectsExpiryReleasesTheExpiredSessionAtOnce',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        const scope: CapturingScope = new CapturingScope();
+        const app: RumApplicationScope = onErrorApp(scope);
+        const t0: number = Date.now();
+        startView(app, t0);
+        addAction(app, t0 + 1);
+        const first: string = app.getCurrentSessionId() as string;
+        // Backgrounded past the inactivity limit, then the process dies of a crash.
+        app.handleEvent(raw('markCrash', t0 + MIN_15 + 1000));
+        const views: Array<Record<string, Object>> = scope.ofType('view');
+        expect(views.length).assertEqual(1);
+        const crash: Record<string, Object> = (views[0]['view'] as Record<string, Object>)['crash'] as Record<string, Object>;
+        expect(crash['count']).assertEqual(1);
+        expect(scope.ofType('action').length).assertEqual(1);
+        for (const e of scope.written) {
+          expect(sessionOf(e)['id']).assertEqual(first);
+        }
+      });
+
+    it('aKeepAliveThatDetectsExpiryThrowsAnUnerroredSessionAway',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        const scope: CapturingScope = new CapturingScope();
+        const app: RumApplicationScope = onErrorApp(scope);
+        const t0: number = Date.now();
+        startView(app, t0);
+        addAction(app, t0 + 1);
+        const first: string = app.getCurrentSessionId() as string;
+        // The flush on backgrounding, after the session sat idle past its limit.
+        app.handleEvent(raw('keepAlive', t0 + MIN_15 + 1000));
+        app.releaseScheduledWithheld();
+        expect(scope.written.length).assertEqual(0);
+        // The next session's error releases only its own events.
+        addError(app, t0 + MIN_15 + 2000);
+        app.releaseScheduledWithheld();
+        expect(scope.ofType('error').length).assertEqual(1);
+        expect(scope.ofType('action').length).assertEqual(0);
+        for (const e of scope.written) {
+          expect(sessionOf(e)['id'] === first).assertFalse();
+        }
+      });
+
     it('aFlushKeepsWhatHasNotYetEarnedItsRelease',
       TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
         const scope: CapturingScope = new CapturingScope();
@@ -490,8 +537,8 @@ export default function sessionOnErrorTests(): void {
       TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
         const now: number = 1_000_000;
         const buffer: WithheldEventBuffer = new WithheldEventBuffer();
-        buffer.hold(detail('error', 'unknown-view', 'error'), 10, now);
-        buffer.hold(detail('action', 'unknown-view', 'act'), 10, now);
+        hold(buffer, detail('error', 'unknown-view', 'error'), 10, now);
+        hold(buffer, detail('action', 'unknown-view', 'act'), 10, now);
         const out: Array<Record<string, Object>> = released(buffer, now);
         expect(out.map((e: Record<string, Object>) => e['tag'] as string).join(',')).assertEqual('error,act');
       });
@@ -500,9 +547,9 @@ export default function sessionOnErrorTests(): void {
       TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
         const now: number = 1_000_000;
         const buffer: WithheldEventBuffer = new WithheldEventBuffer();
-        buffer.hold(view('old', now), 50, now);
-        buffer.hold(view('current', now + 1), 50, now + 1);
-        buffer.hold(detail('error', 'current', 'error'), 10, now + 2);
+        hold(buffer, view('old', now), 50, now);
+        hold(buffer, view('current', now + 1), 50, now + 1);
+        hold(buffer, detail('error', 'current', 'error'), 10, now + 2);
         const out: Array<Record<string, Object>> = released(buffer, now + 3);
         const ids: string[] = out.filter((e: Record<string, Object>) => e['type'] === 'view')
           .map((e: Record<string, Object>) => (e['view'] as Record<string, Object>)['id'] as string);
@@ -612,6 +659,47 @@ export default function sessionOnErrorTests(): void {
         expect(scope.ofType('action').length).assertEqual(0);
         expect(scope.ofType('error').length).assertEqual(1);
       });
+
+    it('aRefusedConsentForgetsWhatWasHeldEvenWhenNothingIsWrittenMeanwhile',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        const core: FakeCore = new FakeCore();
+        const scope: CapturingScope = new CapturingScope();
+        const app: RumApplicationScope = onErrorApp(scope, core);
+        const now: number = Date.now();
+        startView(app, now);
+        addAction(app, now + 1, 'consented');
+        // Refused and granted again with no RUM write in between: only the
+        // core's announcement can tell the session.
+        core.consent = TrackingConsent.NOT_GRANTED;
+        app.forgetWithheld();
+        core.consent = TrackingConsent.GRANTED;
+        addError(app, now + 2);
+        app.releaseScheduledWithheld();
+        expect(scope.ofType('action').length).assertEqual(0);
+        expect(scope.ofType('error').length).assertEqual(1);
+        // The view is released as the error's container, from its post-consent document only.
+        expect(scope.ofType('view').length).assertEqual(1);
+      });
+
+    it('aRefusedConsentForgetsTheErrorThatHadEarnedARelease',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, async (): Promise<void> => {
+        const core: FakeCore = new FakeCore();
+        const scope: CapturingScope = new CapturingScope();
+        const app: RumApplicationScope = onErrorApp(scope, core);
+        const now: number = Date.now();
+        startView(app, now);
+        addError(app, now + 1);
+        const delay: number = computeReleaseDelay(app.getCurrentSessionId() as string);
+        core.consent = TrackingConsent.NOT_GRANTED;
+        app.forgetWithheld();
+        core.consent = TrackingConsent.GRANTED;
+        // The error went with the refusal: the session is back to waiting for one.
+        addAction(app, now + 2, 'after');
+        await sleep(delay + 150);
+        expect(scope.written.length).assertEqual(0); // the cancelled timer released nothing
+        app.stopCurrentSession(now + 3);
+        expect(scope.written.length).assertEqual(0); // ended without an error on record
+      });
   });
 
   describe('rum-session-on-error-buffer', (): void => {
@@ -619,16 +707,16 @@ export default function sessionOnErrorTests(): void {
       TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
         const buffer: WithheldEventBuffer = new WithheldEventBuffer();
         const now: number = 1_000_000;
-        buffer.hold(view('v1', now), 50, now);
+        hold(buffer, view('v1', now), 50, now);
         const first: Record<string, Object> = detail('error', 'v1', 'first-error');
-        buffer.hold(first, 2000, now);
-        buffer.hold(resource(500), 4000, now);
+        hold(buffer, first, 2000, now);
+        hold(buffer, resource(500), 4000, now);
         for (let i: number = 0; i < 40; i++) {
-          buffer.hold(resource(200), 2000, now + i);
+          hold(buffer, resource(200), 2000, now + i);
         }
-        buffer.hold(detail('action', 'v1', 'act'), 2000, now + 50);
+        hold(buffer, detail('action', 'v1', 'act'), 2000, now + 50);
         const out: Array<Record<string, Object>> = released(buffer, now + 60);
-        expect(out.indexOf(first)).assertEqual(1); // right behind the view
+        expect(out.findIndex((e: Record<string, Object>) => e['tag'] === 'first-error')).assertEqual(1); // right behind the view
         // The failed request and the action outlive the successful requests,
         // which give up exactly what the 64 KiB budget needs: (65536 - 8000) / 2000.
         expect(out.filter((e: Record<string, Object>) => e['tag'] === 'act').length).assertEqual(1);
@@ -642,24 +730,29 @@ export default function sessionOnErrorTests(): void {
       TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
         const buffer: WithheldEventBuffer = new WithheldEventBuffer();
         const now: number = 1_000_000;
-        buffer.hold(view('v1', now), 50, now);
+        hold(buffer, view('v1', now), 50, now);
         for (let i: number = 0; i < WITHHELD_BUFFER_EVENTS_LIMIT + 5; i++) {
-          buffer.hold(detail('error', 'v1', `e${i}`), 10, now + i);
+          hold(buffer, detail('error', 'v1', `e${i}`), 10, now + i);
         }
         const out: Array<Record<string, Object>> = released(buffer, now + 300);
         const errors: Array<Record<string, Object>> = out.filter((e: Record<string, Object>) => e['type'] === 'error');
         expect(errors.length).assertEqual(WITHHELD_BUFFER_EVENTS_LIMIT);
-        expect(errors[0]['tag']).assertEqual('e0');
+        // Exactly the oldest ones survive, in order: the five newest were evicted.
+        const expected: string[] = [];
+        for (let i: number = 0; i < WITHHELD_BUFFER_EVENTS_LIMIT; i++) {
+          expected.push(`e${i}`);
+        }
+        expect(errors.map((e: Record<string, Object>) => e['tag'] as string).join(',')).assertEqual(expected.join(','));
       });
 
     it('keepsOnlyTheLastMinuteUntilAReleaseFreezesTheWindow',
       TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
         const now: number = 1_000_000;
         const buffer: WithheldEventBuffer = new WithheldEventBuffer();
-        buffer.hold(view('v1', now), 50, now);
-        buffer.hold(detail('action', 'v1', 'old'), 10, now);
-        buffer.hold(detail('action', 'v1', 'recent'), 10, now + WITHHELD_BUFFER_DURATION_MS);
-        buffer.hold(detail('error', 'v1', 'error'), 10, now + WITHHELD_BUFFER_DURATION_MS + 1);
+        hold(buffer, view('v1', now), 50, now);
+        hold(buffer, detail('action', 'v1', 'old'), 10, now);
+        hold(buffer, detail('action', 'v1', 'recent'), 10, now + WITHHELD_BUFFER_DURATION_MS);
+        hold(buffer, detail('error', 'v1', 'error'), 10, now + WITHHELD_BUFFER_DURATION_MS + 1);
         let out: Array<Record<string, Object>> = released(buffer, now + WITHHELD_BUFFER_DURATION_MS + 1);
         expect(out.filter((e: Record<string, Object>) => e['tag'] === 'old').length).assertEqual(0);
         expect(out.filter((e: Record<string, Object>) => e['tag'] === 'recent').length).assertEqual(1);
@@ -667,9 +760,9 @@ export default function sessionOnErrorTests(): void {
         // The release timer fires late (backgrounded app): the window stays where
         // the release was scheduled, so the minute before the error survives.
         const frozen: WithheldEventBuffer = new WithheldEventBuffer();
-        frozen.hold(view('v1', now), 50, now);
-        frozen.hold(detail('action', 'v1', 'before'), 10, now);
-        frozen.hold(detail('error', 'v1', 'error'), 10, now + 1000);
+        hold(frozen, view('v1', now), 50, now);
+        hold(frozen, detail('action', 'v1', 'before'), 10, now);
+        hold(frozen, detail('error', 'v1', 'error'), 10, now + 1000);
         frozen.freeze(now + 1000);
         out = released(frozen, now + 10 * WITHHELD_BUFFER_DURATION_MS);
         expect(out.filter((e: Record<string, Object>) => e['tag'] === 'before').length).assertEqual(1);
@@ -681,12 +774,12 @@ export default function sessionOnErrorTests(): void {
         const buffer: WithheldEventBuffer = new WithheldEventBuffer();
         // The current view starts first and keeps being updated late.
         for (let i: number = 0; i < WITHHELD_BUFFER_VIEWS_LIMIT + 10; i++) {
-          buffer.hold(view(`v${i}`, now + i), 50, now + i);
-          buffer.hold(detail('action', `v${i}`), 10, now + i);
+          hold(buffer, view(`v${i}`, now + i), 50, now + i);
+          hold(buffer, detail('action', `v${i}`), 10, now + i);
         }
         // A late update of an old view must not make it current again.
-        buffer.hold(view('v20', now + 20), 50, now + 100);
-        buffer.hold(detail('error', `v${WITHHELD_BUFFER_VIEWS_LIMIT + 9}`, 'error'), 10, now + 101);
+        hold(buffer, view('v20', now + 20), 50, now + 100);
+        hold(buffer, detail('error', `v${WITHHELD_BUFFER_VIEWS_LIMIT + 9}`, 'error'), 10, now + 101);
         const out: Array<Record<string, Object>> = released(buffer, now + 102);
         const views: Array<Record<string, Object>> = out.filter((e: Record<string, Object>) => e['type'] === 'view');
         expect(views.length <= WITHHELD_BUFFER_VIEWS_LIMIT).assertTrue();
@@ -703,9 +796,9 @@ export default function sessionOnErrorTests(): void {
       TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
         const now: number = 1_000_000;
         const buffer: WithheldEventBuffer = new WithheldEventBuffer();
-        buffer.hold(view('v1', now), 50, now);
-        buffer.hold(detail('action', 'v1', 'kept'), 10, now);
-        expect(buffer.hold(detail('action', 'v1', 'huge'), WITHHELD_BUFFER_BYTES_LIMIT + 1, now)).assertFalse();
+        hold(buffer, view('v1', now), 50, now);
+        hold(buffer, detail('action', 'v1', 'kept'), 10, now);
+        expect(hold(buffer, detail('action', 'v1', 'huge'), WITHHELD_BUFFER_BYTES_LIMIT + 1, now)).assertFalse();
         const out: Array<Record<string, Object>> = released(buffer, now);
         expect(out.filter((e: Record<string, Object>) => e['tag'] === 'kept').length).assertEqual(1);
       });
@@ -722,6 +815,29 @@ export default function sessionOnErrorTests(): void {
         app.releaseScheduledWithheld();
         expect(scope.ofType('view').length).assertEqual(1);
         expect(scope.ofType('action').length).assertEqual(1);
+      });
+
+    it('releasesWhatWasWrittenNotWhatTheAppChangedAfterwards',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        const scope: CapturingScope = new CapturingScope();
+        const app: RumApplicationScope = onErrorApp(scope);
+        const now: number = Date.now();
+        startView(app, now);
+        const payload: Record<string, Object> = { 'value': 'small' };
+        const e: RumRawEvent = raw('addAction', now + 1);
+        e.name = 'tap';
+        e.actionType = 'tap';
+        e.actionId = 'a1';
+        e.attributes = { 'nested': payload };
+        app.handleEvent(e);
+        // The app keeps changing the object it passed in. A collected session
+        // would have uploaded the value at the write; so must this one.
+        payload['value'] = 'x'.repeat(WITHHELD_BUFFER_BYTES_LIMIT * 2);
+        addError(app, now + 2);
+        app.releaseScheduledWithheld();
+        const action: Record<string, Object> = scope.ofType('action')[0];
+        const nested: Record<string, Object> = (action['context'] as Record<string, Object>)['nested'] as Record<string, Object>;
+        expect(nested['value']).assertEqual('small');
       });
 
     it('spreadsReleasesAcrossTheJitterWindow',
@@ -845,6 +961,38 @@ export default function sessionOnErrorTests(): void {
         controller.apply('{"version":1,"enabled":true,"activation":"immediate",' +
           '"rum":{"sessionSampleRate":100,"sessionOnError":true}}', null);
         expect(app.getCurrentSessionId()).assertEqual(id);
+      });
+
+    it('anImmediateSwitchOnlyChangeKeepsADarkSessionTheRateLost',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        expect(RumApplicationScope.shouldEndSession(false, 20, 20, 'immediate', false, true)).assertFalse();
+        // Negative control: a rate that moved is still re-decided.
+        expect(RumApplicationScope.shouldEndSession(false, 20, 50, 'immediate', false, true)).assertTrue();
+
+        // A session that lost its draw at 1% is not owed another one because
+        // the console turned the switch on with `immediate`.
+        let found: boolean = false;
+        for (let attempt: number = 0; attempt < 20 && !found; attempt++) {
+          const core: FakeCore = new FakeCore();
+          const store: RemoteConfigStore = newStore(core);
+          const scope: CapturingScope = new CapturingScope();
+          const app: RumApplicationScope = new RumApplicationScope(scope, core, 'app-1', 1, store);
+          const controller: RemoteConfigController = new RemoteConfigController(
+            store, new SilentFetcher(), 'https://x/config',
+            (activation: string, before: number | null, after: number | null): void => {
+              app.onConfigurationChanged(activation, before, after, Date.now());
+            });
+          startView(app, Date.now());
+          if (scope.written.length > 0) {
+            continue; // won the 1% draw
+          }
+          const id: string = app.getCurrentSessionId() as string;
+          controller.apply('{"version":1,"enabled":true,"activation":"immediate",' +
+            '"rum":{"sessionSampleRate":1,"sessionOnError":true}}', null);
+          expect(app.getCurrentSessionId()).assertEqual(id);
+          found = true;
+        }
+        expect(found).assertTrue();
       });
 
     it('decidesTheRunningSessionByTheStopTree',

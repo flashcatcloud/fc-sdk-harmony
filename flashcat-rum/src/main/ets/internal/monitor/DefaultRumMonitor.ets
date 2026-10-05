@@ -217,6 +217,15 @@ export class DefaultRumMonitor implements RumMonitor {
   }
 
   /**
+   * Tracking consent was refused. The core wipes what it had collected; a
+   * session holding its events in memory must forget them the same way, or a
+   * consent granted again later would release what the refusal was meant to end.
+   */
+  forgetWithheld(): void {
+    this.applicationScope.forgetWithheld();
+  }
+
+  /**
    * Internal: a terminating crash was persisted for next-launch replay. Bump the
    * active view's error/crash counts now (only the crashing process can), so the
    * final view document feeds session_crash_count → crash-free rate. The error

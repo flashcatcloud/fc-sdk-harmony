@@ -235,6 +235,13 @@ export class RumApplicationScope implements RumScope {
     }
   }
 
+  /** Tracking consent was refused: nothing collected so far may be released later. */
+  forgetWithheld(): void {
+    if (this.session !== null) {
+      this.session.forgetWithheld();
+    }
+  }
+
   /**
    * Draws a new session under the settings that apply RIGHT NOW: what the
    * console published if anything, the init value otherwise, and finally
@@ -395,8 +402,10 @@ export class RumApplicationScope implements RumScope {
     }
     // A dark session is worth replacing only by one that can collect something;
     // otherwise the replacement is just as dark and the visitor lost a view.
+    // `immediate` re-decides it on a rate that moved, as above: a session that
+    // lost a fair draw is not owed another one because the switch changed.
     return (drawnRate === 0 && (nextRate > 0 || nextOnError))
-      || (nextRate > 0 && activation === ACTIVATION_IMMEDIATE);
+      || (nextRate > 0 && nextRate !== drawnRate && activation === ACTIVATION_IMMEDIATE);
   }
 
   /**

@@ -242,6 +242,9 @@ export class FlashcatCore implements SdkCore {
       // included. Revocation has to take it too.
       this.bus.send(CRASH_STORAGE_TARGET,
         { 'type': 'crash_storage_delete_last_view' } as Record<string, Object>);
+      // RUM may still hold events in memory that have not reached a batch;
+      // those are the refused user's data as much as the batches are.
+      this.bus.send(RUM_FEATURE_NAME, { 'type': 'consent_revoked' } as Record<string, Object>);
       this.deferredUploadRegistrar.deregister(this.deferredWorkOptions());
     } else {
       // → PENDING: stop uploading; new events buffer separately until a decision.

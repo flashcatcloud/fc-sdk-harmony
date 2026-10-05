@@ -33,20 +33,37 @@ enum EvictionTier {
   LAST_RESORT = 2
 }
 
+/**
+ * What is held is the event's serialized form, taken as it was written: an
+ * event object shares the attribute values the app passed in, and the app may
+ * go on changing those. A collected session uploads what the values were at the
+ * write; an on-error session must release the same, not what they became.
+ */
 class HeldEvent {
-  readonly event: Record<string, Object>;
+  readonly line: string;
   /** '' for an error raised before any view started: it has no container to lose. */
   readonly viewId: string;
   readonly timeMs: number;
   readonly bytes: number;
   readonly tier: EvictionTier;
 
-  constructor(event: Record<string, Object>, viewId: string, timeMs: number, bytes: number, tier: EvictionTier) {
-    this.event = event;
+  constructor(line: string, viewId: string, timeMs: number, bytes: number, tier: EvictionTier) {
+    this.line = line;
     this.viewId = viewId;
     this.timeMs = timeMs;
     this.bytes = bytes;
     this.tier = tier;
+  }
+}
+
+class HeldView {
+  readonly line: string;
+  /** The view's start date, which orders the release. */
+  readonly date: number;
+
+  constructor(line: string, date: number) {
+    this.line = line;
+    this.date = date;
   }
 }
 
@@ -58,7 +75,7 @@ class HeldEvent {
  */
 export class WithheldEventBuffer {
   /** Latest document per view, in the order they were last updated. */
-  private views: Map<string, Record<string, Object>> = new Map<string, Record<string, Object>>();
+  private views: Map<string, HeldView> = new Map<string, HeldView>();
   private details: HeldEvent[] = [];
   private bytes: number = 0;
   private droppedCount: number = 0;
@@ -67,26 +84,30 @@ export class WithheldEventBuffer {
   /** When the release was scheduled; 0 while none is. Freezes the window, see prune. */
   private frozenAtMs: number = 0;
 
-  /** Returns false when the event was dropped rather than held. */
-  hold(event: Record<string, Object>, bytes: number, nowMs: number): boolean {
+  /**
+   * Holds `line`, the serialized form of `event` as it was written; `bytes` is
+   * its size, which views are not charged for. Returns false when the event was
+   * dropped rather than held.
+   */
+  hold(event: Record<string, Object>, line: string, bytes: number, nowMs: number): boolean {
     const viewId: string = WithheldEventBuffer.viewIdOf(event);
     if (event['type'] === 'view') {
       // Upsert: a view document is cumulative, so the latest supersedes the rest.
       // Deleting first moves it to the back, so the oldest entry is the least
       // recently updated one.
+      const date: number = typeof event['date'] === 'number' ? event['date'] as number : 0;
       this.views.delete(viewId);
-      this.views.set(viewId, event);
+      this.views.set(viewId, new HeldView(line, date));
       // The view's own start date decides which one is current, not arrival order:
       // a late update of a view that already ended must not make it current again,
       // or prune would drop the view the next error hangs from.
-      const date: number = typeof event['date'] === 'number' ? event['date'] as number : 0;
       if (date >= this.currentViewDate) {
         this.currentViewDate = date;
         this.currentViewId = viewId;
       }
       while (this.views.size > WITHHELD_BUFFER_VIEWS_LIMIT) {
         const oldest: string = this.views.keys().next().value as string;
-        const evicted: Record<string, Object> = this.views.get(oldest) as Record<string, Object>;
+        const evicted: HeldView = this.views.get(oldest) as HeldView;
         this.views.delete(oldest);
         if (oldest === this.currentViewId) {
           // The view in progress is never evicted: move it to the back instead.
@@ -102,7 +123,7 @@ export class WithheldEventBuffer {
       this.droppedCount += 1;
       return false;
     }
-    this.details.push(new HeldEvent(event, viewId, nowMs, bytes, WithheldEventBuffer.tierOf(event)));
+    this.details.push(new HeldEvent(line, viewId, nowMs, bytes, WithheldEventBuffer.tierOf(event)));
     this.bytes += bytes;
     this.prune(nowMs);
     while (this.details.length > WITHHELD_BUFFER_EVENTS_LIMIT || this.bytes > WITHHELD_BUFFER_BYTES_LIMIT) {
@@ -136,34 +157,33 @@ export class WithheldEventBuffer {
    */
   release(writer: EventWriter, nowMs: number): void {
     this.prune(nowMs);
-    const ordered: Array<Record<string, Object>> = [];
-    this.views.forEach((view: Record<string, Object>) => {
-      ordered.push(view);
+    const views: HeldView[] = [];
+    this.views.forEach((view: HeldView) => {
+      views.push(view);
     });
-    ordered.sort((left: Record<string, Object>, right: Record<string, Object>) =>
-      (left['date'] as number) - (right['date'] as number));
-    const viewCount: number = ordered.length;
+    views.sort((left: HeldView, right: HeldView) => left.date - right.date);
+    const ordered: string[] = views.map((view: HeldView) => view.line);
     for (const held of this.details) {
       if (held.tier === EvictionTier.LAST_RESORT) {
-        ordered.push(held.event);
+        ordered.push(held.line);
       }
     }
     for (const held of this.details) {
       if (held.tier !== EvictionTier.LAST_RESORT) {
-        ordered.push(held.event);
+        ordered.push(held.line);
       }
     }
     for (let i: number = 0; i < ordered.length; i++) {
       // One batch, uploaded as soon as the last event is in.
-      writer.write(ordered[i], i === ordered.length - 1);
+      writer.write(JSON.parse(ordered[i]) as Record<string, Object>, i === ordered.length - 1);
     }
-    FlashcatLog.d(`rum.withheld: released views=${viewCount} events=${this.details.length} ` +
-      `dropped=${this.droppedCount} bytes=${this.bytes}`);
+    FlashcatLog.d(`rum.withheld: released views=${views.length} details=${this.details.length} ` +
+      `dropped=${this.droppedCount} detail_bytes=${this.bytes}`);
     this.clear();
   }
 
   clear(): void {
-    this.views = new Map<string, Record<string, Object>>();
+    this.views = new Map<string, HeldView>();
     this.details = [];
     this.bytes = 0;
     this.droppedCount = 0;
@@ -190,7 +210,7 @@ export class WithheldEventBuffer {
       withDetail.add(held.viewId);
     }
     const stale: string[] = [];
-    this.views.forEach((_view: Record<string, Object>, id: string) => {
+    this.views.forEach((_view: HeldView, id: string) => {
       if (id !== this.currentViewId && !withDetail.has(id)) {
         stale.push(id);
       }
@@ -277,7 +297,9 @@ export function computeReleaseDelay(sessionId: string): number {
  * - the session ends: released if it errored, thrown away otherwise. A thrown-away
  *   session keeps dropping whatever its still-draining views write afterwards, so
  *   a request that completes after the session ended cannot resurrect it.
- * After a release the session writes straight through, like any collected one.
+ * A refused tracking consent forgets everything held, the error included, and
+ * the session starts withholding afresh. After a release the session writes
+ * straight through, like any collected one.
  */
 export class WithholdingFeatureScope implements FeatureScope {
   private readonly delegate: FeatureScope;
@@ -331,6 +353,22 @@ export class WithholdingFeatureScope implements FeatureScope {
     this.discarded = true;
   }
 
+  /**
+   * Tracking consent was refused: everything collected so far is forgotten, the
+   * error included, exactly as the core wipes the batches it had collected. The
+   * session goes on withholding, so a later consent and a later error release
+   * only what was collected after both.
+   */
+  forget(): void {
+    const buffer: WithheldEventBuffer | null = this.buffer;
+    if (buffer === null) {
+      return;
+    }
+    this.cancelTimer();
+    buffer.clear();
+    this.hasError = false;
+  }
+
   /** The session ended: what it earned goes out, the rest is thrown away for good. */
   settle(): void {
     if (this.buffer === null) {
@@ -356,13 +394,14 @@ export class WithholdingFeatureScope implements FeatureScope {
       return writer.write(event, forceFlush);
     }
     if (this.core.getTrackingConsent() === TrackingConsent.NOT_GRANTED) {
-      // Every write is dropped under a refused consent, and what was collected
-      // before goes with it, exactly as the core wipes collected batches.
-      buffer.clear();
+      // Every write is dropped under a refused consent. The core announces the
+      // refusal too; this covers a core that predates the announcement.
+      this.forget();
       return false;
     }
+    const line: string = JSON.stringify(event);
     // Views stay out of the byte budget, so only details pay for the measurement.
-    const bytes: number = event['type'] === 'view' ? 0 : ENCODER.encodeInto(JSON.stringify(event)).byteLength;
+    const bytes: number = event['type'] === 'view' ? 0 : ENCODER.encodeInto(line).byteLength;
     if (this.isOwnError(event)) {
       this.hasError = true;
       this.scheduleRelease(buffer);
@@ -372,7 +411,7 @@ export class WithholdingFeatureScope implements FeatureScope {
         return writer.write(event, true);
       }
     }
-    return buffer.hold(event, bytes, Date.now());
+    return buffer.hold(event, line, bytes, Date.now());
   }
 
   private isOwnError(event: Record<string, Object>): boolean {

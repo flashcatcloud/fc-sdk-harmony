@@ -3,6 +3,7 @@ import { common } from '@kit.AbilityKit';
 import { ConfigurationBuilder } from '../main/ets/config/Configuration';
 import { TrackingConsent } from '../main/ets/privacy/TrackingConsent';
 import { FlashcatCore } from '../main/ets/internal/FlashcatCore';
+import { FeatureEventReceiver, RUM_FEATURE_NAME } from '../main/ets/api/feature/Feature';
 
 // NOTE (headless runner): Preferences are process-wide per name, so two
 // FlashcatCore constructions in one test behave like two app launches sharing
@@ -89,6 +90,25 @@ export default function consentPolicyTests(): void {
         const main2: FlashcatCore = build(TrackingConsent.PENDING);
         expect(main2.getTrackingConsent() === TrackingConsent.PENDING).assertTrue();
         main2.stop();
+      });
+
+    it('revocationIsAnnouncedToRum',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        // RUM may hold events in memory that never reached a batch; the wipe
+        // of the batches has to reach those too.
+        const core: FlashcatCore = build(TrackingConsent.GRANTED);
+        const received: string[] = [];
+        const receiver: FeatureEventReceiver = {
+          onReceive: (event: Record<string, Object>): void => {
+            received.push(event['type'] as string);
+          }
+        };
+        core.setEventReceiver(RUM_FEATURE_NAME, receiver);
+        core.setTrackingConsent(TrackingConsent.PENDING);
+        expect(received.indexOf('consent_revoked')).assertEqual(-1); // undecided is not refused
+        core.setTrackingConsent(TrackingConsent.NOT_GRANTED);
+        expect(received.indexOf('consent_revoked') !== -1).assertTrue();
+        core.stop();
       });
 
     it('stopDeactivatesTheCore',

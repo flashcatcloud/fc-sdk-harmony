@@ -160,8 +160,9 @@ export class RumConfigurationBuilder {
    * Such a session is collected in memory and nothing is uploaded until it
    * reports an error of its own — one that survives the event mapper. Then the
    * minute leading up to that error (its views, actions, resources and errors)
-   * is uploaded, after a delay of up to 3 s that spreads a fleet-wide failure,
-   * and the rest of the session is collected normally. A session that ends
+   * is uploaded, after a delay of up to 3 s that spreads out the uploads a
+   * fleet-wide failure would otherwise send all at once, and the rest of the
+   * session is collected normally. A session that ends
    * without an error is thrown away with everything it held. An uncaught ArkTS
    * exception that terminates the process releases what was held before the
    * process exits; a native crash or a freeze, reported on the next launch, is

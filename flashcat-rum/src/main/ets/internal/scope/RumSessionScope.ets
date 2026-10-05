@@ -281,6 +281,13 @@ export class RumSessionScope implements RumScope {
     }
   }
 
+  /** Tracking consent was refused: what is held is forgotten, as the core forgets its batches. */
+  forgetWithheld(): void {
+    if (this.withheld !== null) {
+      this.withheld.forget();
+    }
+  }
+
   /** True when a view of this (possibly ended) session still owns `key`. */
   ownsResource(key: string): boolean {
     if (this.activeView !== null && this.activeView.hasPendingResource(key)) {
