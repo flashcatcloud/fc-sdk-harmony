@@ -157,7 +157,7 @@ export class RumConfigurationBuilder {
    * Also keep the sessions `sessionSampleRate` does not sample, but only those
    * that report an error. Default false.
    *
-   * Such a session is collected in memory and nothing is uploaded until it
+   * Such a session is collected in memory and none of its events is uploaded until it
    * reports an error of its own — one that survives the event mapper. Then the
    * minute leading up to that error (its views, and up to 200 actions, resources
    * and errors within 64 KiB, the least telling dropped first when there are more)

@@ -372,9 +372,14 @@ export class RumApplicationScope implements RumScope {
       || this.session.wasDrawnWith(resolved.sessionSampleRate, resolved.sessionOnError)) {
       return; // unchanged effective settings must not cause another draw
     }
+    // A rate already announced for the next session has not moved in this
+    // publication, whatever else it carries: a switch that changed beside it
+    // must not turn that deferral into a redraw.
+    const rateMoved: boolean = (previous === null || previous.sessionSampleRate !== resolved.sessionSampleRate)
+      && resolved.sessionSampleRate !== this.session.getDrawnRate();
     if (RumApplicationScope.shouldEndSession(
       this.session.isSampled(), this.session.getDrawnRate(), resolved.sessionSampleRate, activation,
-      this.session.isSampledOnError(), resolved.sessionOnError)) {
+      this.session.isSampledOnError(), resolved.sessionOnError, rateMoved)) {
       this.stopCurrentSession(nowMs);
     }
   }
@@ -385,10 +390,13 @@ export class RumApplicationScope implements RumScope {
    * `drawnRate` is what that session was actually drawn with, which is the only
    * way to tell a session that could never have been collected from one that
    * lost a fair draw: only the first is owed another chance when collection is
-   * switched back on.
+   * switched back on. `rateMoved` says whether this publication is the one
+   * that changed the rate: a rate already announced for the next session and
+   * republished beside a changed switch has not.
    */
   static shouldEndSession(sampled: boolean, drawnRate: number, nextRate: number, activation: string,
-    sampledOnError: boolean = false, nextOnError: boolean = false): boolean {
+    sampledOnError: boolean = false, nextOnError: boolean = false,
+    rateMoved: boolean = nextRate !== drawnRate): boolean {
     if (sampled) {
       if (nextRate === 0) {
         // A session the switch kept is left running while the switch stays on;
@@ -398,14 +406,14 @@ export class RumApplicationScope implements RumScope {
       }
       // `immediate` re-decides on a rate that moved; a change to the switch
       // alone says nothing about a session the rate already kept.
-      return activation === ACTIVATION_IMMEDIATE && nextRate !== drawnRate;
+      return activation === ACTIVATION_IMMEDIATE && rateMoved;
     }
     // A dark session is worth replacing only by one that can collect something;
     // otherwise the replacement is just as dark and the visitor lost a view.
     // `immediate` re-decides it on a rate that moved, as above: a session that
     // lost a fair draw is not owed another one because the switch changed.
     return (drawnRate === 0 && (nextRate > 0 || nextOnError))
-      || (nextRate > 0 && nextRate !== drawnRate && activation === ACTIVATION_IMMEDIATE);
+      || (nextRate > 0 && rateMoved && activation === ACTIVATION_IMMEDIATE);
   }
 
   /**

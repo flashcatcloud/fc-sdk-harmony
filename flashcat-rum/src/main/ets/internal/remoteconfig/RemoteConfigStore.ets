@@ -176,13 +176,17 @@ export class RemoteConfigStore {
    * The SDK version is deliberately left out: including it would discard the
    * stored values on every SDK upgrade and put the first session after an
    * upgrade back on the init values. The storage FORMAT version lives in the
-   * prefix instead, so only a real format change orphans the cache.
+   * prefix instead, so only a real format change orphans the cache. Adding a
+   * field is such a change: an entry written without it carries a validator
+   * for a response this SDK never read, and the 304 that validator earns
+   * would keep the field unknown for as long as the console leaves the
+   * configuration alone. Format 2 added `session_on_error`.
    */
   static buildStoreKey(context: FlashcatContext, host: string, applicationId: string): string {
     const parts: string[] = [
       RemoteConfigStore.hostOf(host), applicationId, context.service, context.env, context.version
     ];
-    return `_fc_rc_1_${parts.join('|')}`;
+    return `_fc_rc_2_${parts.join('|')}`;
   }
 
   private static hostOf(url: string): string {

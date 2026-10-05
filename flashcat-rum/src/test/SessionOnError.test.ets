@@ -827,6 +827,35 @@ export default function sessionOnErrorTests(): void {
         }
       });
 
+    it('aLateUpdateOfAnEndedViewDoesNotMakeItCurrentAgain',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        const now: number = 1_000_000;
+        const buffer: WithheldEventBuffer = new WithheldEventBuffer();
+        hold(buffer, view('ended', now), 50, now);
+        hold(buffer, detail('action', 'ended', 'act'), 10, now + 1);
+        hold(buffer, view('current', now + 2), 50, now + 2); // in progress, no detail of its own yet
+        // The ended view's final document arrives after the current view started.
+        hold(buffer, view('ended', now), 50, now + 3);
+        // Prune keeps the current view only by being current: the detail-less
+        // one that survives must be `current`, not `ended`.
+        hold(buffer, detail('error', 'ended', 'error'), 10, now + 4);
+        const out: Array<Record<string, Object>> = released(buffer, now + 5);
+        const ids: string[] = out.filter((e: Record<string, Object>) => e['type'] === 'view')
+          .map((e: Record<string, Object>) => (e['view'] as Record<string, Object>)['id'] as string);
+        expect(ids.join(',')).assertEqual('ended,current');
+
+        // Negative control: with the late update to a view that never had detail
+        // and is not current, that view is dropped.
+        const other: WithheldEventBuffer = new WithheldEventBuffer();
+        hold(other, view('stale', now), 50, now);
+        hold(other, view('current', now + 2), 50, now + 2);
+        hold(other, view('stale', now), 50, now + 3);
+        hold(other, detail('error', 'current', 'error'), 10, now + 4);
+        const ids2: string[] = released(other, now + 5).filter((e: Record<string, Object>) => e['type'] === 'view')
+          .map((e: Record<string, Object>) => (e['view'] as Record<string, Object>)['id'] as string);
+        expect(ids2.join(',')).assertEqual('current');
+      });
+
     it('dropsADetailTooLargeToEverBeReleasedAndKeepsTheHistory',
       TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
         const now: number = 1_000_000;
@@ -1051,6 +1080,76 @@ export default function sessionOnErrorTests(): void {
           found = true;
         }
         expect(found).assertTrue();
+      });
+
+    it('aSwitchChangeDoesNotTurnADeferredRateIntoAnImmediateRedraw',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        // Rate 50 was announced for the next session; republished beside a
+        // changed switch under `immediate`, it is still the same announcement.
+        const core: FakeCore = new FakeCore();
+        const store: RemoteConfigStore = newStore(core);
+        const scope: CapturingScope = new CapturingScope();
+        const app: RumApplicationScope = new RumApplicationScope(scope, core, 'app-1', 100, store);
+        const controller: RemoteConfigController = new RemoteConfigController(
+          store, new SilentFetcher(), 'https://x/config',
+          (activation: string, before: number | null, after: number | null): void => {
+            app.onConfigurationChanged(activation, before, after, Date.now());
+          });
+        startView(app, Date.now());
+        const id: string = app.getCurrentSessionId() as string;
+        controller.apply('{"version":1,"enabled":true,"activation":"next_session",' +
+          '"rum":{"sessionSampleRate":50,"sessionOnError":false}}', null);
+        expect(app.getCurrentSessionId()).assertEqual(id);
+        controller.apply('{"version":2,"enabled":true,"activation":"immediate",' +
+          '"rum":{"sessionSampleRate":50,"sessionOnError":true}}', null);
+        expect(app.getCurrentSessionId()).assertEqual(id);
+        // Negative control: a rate that really moved under `immediate` is re-decided.
+        controller.apply('{"version":3,"enabled":true,"activation":"immediate",' +
+          '"rum":{"sessionSampleRate":60,"sessionOnError":true}}', null);
+        expect(app.getCurrentSessionId()).assertUndefined();
+
+        // The same for a session the switch kept: turning the switch off beside
+        // a deferred rate does not throw its history away.
+        let found: boolean = false;
+        for (let attempt: number = 0; attempt < 20 && !found; attempt++) {
+          const core2: FakeCore = new FakeCore();
+          const store2: RemoteConfigStore = newStore(core2);
+          const scope2: CapturingScope = new CapturingScope();
+          const app2: RumApplicationScope = new RumApplicationScope(scope2, core2, 'app-1', 1, store2, null, null, true);
+          const controller2: RemoteConfigController = new RemoteConfigController(
+            store2, new SilentFetcher(), 'https://x/config',
+            (activation: string, before: number | null, after: number | null): void => {
+              app2.onConfigurationChanged(activation, before, after, Date.now());
+            });
+          startView(app2, Date.now());
+          if (scope2.written.length > 0) {
+            continue; // won the 1% draw
+          }
+          const id2: string = app2.getCurrentSessionId() as string;
+          controller2.apply('{"version":1,"enabled":true,"activation":"next_session",' +
+            '"rum":{"sessionSampleRate":50,"sessionOnError":true}}', null);
+          controller2.apply('{"version":2,"enabled":true,"activation":"immediate",' +
+            '"rum":{"sessionSampleRate":50,"sessionOnError":false}}', null);
+          expect(app2.getCurrentSessionId()).assertEqual(id2);
+          addError(app2, Date.now());
+          app2.releaseScheduledWithheld();
+          expect(scope2.ofType('error').length).assertEqual(1);
+          found = true;
+        }
+        expect(found).assertTrue();
+      });
+
+    it('aCacheWrittenByAnSdkWithoutTheSwitchIsNotReadBack',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        // An entry of the previous format carries a validator for a response
+        // whose switch was never read; a 304 against it would keep the switch
+        // unknown for as long as the console leaves the configuration alone.
+        const core: FakeCore = new FakeCore();
+        const key: string = RemoteConfigStore.buildStoreKey(core.getContext(), 'https://intake.example.com', 'app-1');
+        const legacy: string = key.replace('_fc_rc_2_', '_fc_rc_1_');
+        expect(legacy === key).assertFalse();
+        core.writeSetting(`${legacy}.values`, '{"rate":0,"version":10,"etag":"\\"v10\\"","ttl":300,"refresh_on_foreground":false}');
+        expect(newStore(core).read()).assertNull();
       });
 
     it('decidesTheRunningSessionByTheStopTree',
