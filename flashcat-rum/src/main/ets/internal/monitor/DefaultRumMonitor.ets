@@ -318,7 +318,9 @@ export class DefaultRumMonitor implements RumMonitor {
   }
 
   getCurrentSessionId(callback: (sessionId: string | undefined) => void): void {
-    callback(this.applicationScope.getCurrentSessionId());
+    // A session kept only on error has nothing on the backend until it is
+    // released: an id handed out before then could never be looked up.
+    callback(this.applicationScope.isWithholding() ? undefined : this.applicationScope.getCurrentSessionId());
   }
 
   stopSession(): void {

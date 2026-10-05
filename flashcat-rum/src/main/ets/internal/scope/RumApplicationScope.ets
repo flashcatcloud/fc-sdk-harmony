@@ -221,6 +221,11 @@ export class RumApplicationScope implements RumScope {
     return this.session?.getSessionId();
   }
 
+  /** Whether the running session is one kept on error that has not been released yet. */
+  isWithholding(): boolean {
+    return this.session !== null && this.session.isWithholding();
+  }
+
   /** The app may be going away: a release the session has earned leaves now. */
   releaseScheduledWithheld(): void {
     if (this.session !== null) {

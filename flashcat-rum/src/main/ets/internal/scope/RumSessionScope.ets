@@ -349,6 +349,11 @@ export class RumSessionScope implements RumScope {
     return this.sampledOnError;
   }
 
+  /** Kept on error and not released yet: the backend has no session under this id so far. */
+  isWithholding(): boolean {
+    return this.withheld !== null && this.withheld.isWithholding();
+  }
+
   /** Whether the settings this session was drawn under are exactly these. */
   wasDrawnWith(sessionSampleRate: number, sessionOnError: boolean): boolean {
     return this.draw.sessionSampleRate === sessionSampleRate && this.draw.sessionOnError === sessionOnError;

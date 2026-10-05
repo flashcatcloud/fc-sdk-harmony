@@ -361,6 +361,11 @@ export class WithholdingFeatureScope implements FeatureScope {
     this.delegate.sendEvent(event);
   }
 
+  /** Still holding: nothing of this session has reached storage, so the backend has no session under its id. */
+  isWithholding(): boolean {
+    return this.buffer !== null;
+  }
+
   /** The process is about to die of a crash: whatever is held must reach storage now. */
   releaseForCrash(): void {
     this.hasError = true;

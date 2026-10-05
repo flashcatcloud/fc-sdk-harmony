@@ -620,21 +620,61 @@ export default function sessionOnErrorTests(): void {
       });
   });
 
+  describe('rum-session-on-error-session-id', (): void => {
+    it('reportsNoSessionIdWhileWithheldAndTheRealOneOnceReleased',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        const core: FakeCore = new FakeCore();
+        const scope: CapturingScope = new CapturingScope();
+        const monitor: DefaultRumMonitor = new DefaultRumMonitor(core, scope,
+          new RumConfigurationBuilder('app-1').setSessionSampleRate(0).setSessionOnError(true).build());
+        monitor.stopKeepAlive();
+        monitor.startView('home', 'home');
+        let reported: string | undefined = 'unset';
+        monitor.getCurrentSessionId((id: string | undefined): void => {
+          reported = id;
+        });
+        // Withheld: the backend has no session under this id, so the app gets none.
+        expect(reported).assertUndefined();
+        monitor.addError('boom', RumErrorSource.SOURCE);
+        monitor.getCurrentSessionId((id: string | undefined): void => {
+          reported = id;
+        });
+        expect(reported).assertUndefined(); // still behind the jitter
+        monitor.releaseScheduledWithheld();
+        monitor.getCurrentSessionId((id: string | undefined): void => {
+          reported = id;
+        });
+        expect(reported).assertEqual(core.featureContext['session.id'] as string);
+        expect(sessionOf(scope.ofType('view')[0])['id']).assertEqual(reported);
+
+        // Negative control: a session the rate collects reports its id from the start.
+        const sampledCore: FakeCore = new FakeCore();
+        const sampled: DefaultRumMonitor = new DefaultRumMonitor(sampledCore, new CapturingScope(),
+          new RumConfigurationBuilder('app-1').setSessionSampleRate(100).setSessionOnError(true).build());
+        sampled.stopKeepAlive();
+        sampled.startView('home', 'home');
+        sampled.getCurrentSessionId((id: string | undefined): void => {
+          reported = id;
+        });
+        expect(reported).assertEqual(sampledCore.featureContext['session.id'] as string);
+      });
+  });
+
   describe('rum-session-on-error-stop', (): void => {
     it('sdkStopCancelsAReleaseStillWaitingOnItsJitter',
       TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, async (): Promise<void> => {
         const delays: number[] = [];
         const scopes: CapturingScope[] = [];
         for (const stop of [true, false]) {
+          const core: FakeCore = new FakeCore();
           const scope: CapturingScope = new CapturingScope();
-          const monitor: DefaultRumMonitor = new DefaultRumMonitor(new FakeCore(), scope,
+          const monitor: DefaultRumMonitor = new DefaultRumMonitor(core, scope,
             new RumConfigurationBuilder('app-1').setSessionSampleRate(0).setSessionOnError(true).build());
           monitor.stopKeepAlive();
           monitor.startView('home', 'home');
           monitor.addError('boom', RumErrorSource.SOURCE);
-          monitor.getCurrentSessionId((id: string | undefined): void => {
-            delays.push(computeReleaseDelay(id as string));
-          });
+          // The public API withholds the id along with the events; the context carries it.
+          delays.push(computeReleaseDelay(core.featureContext['session.id'] as string));
           if (stop) {
             monitor.stopWithheld(); // what RumFeature.onStop does
           }
