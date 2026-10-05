@@ -94,6 +94,8 @@ class FakeCore implements SdkCore {
 class CapturingScope implements FeatureScope {
   readonly written: Array<Record<string, Object>> = [];
   readonly flushes: boolean[] = [];
+  /** Storage's per-event size limit: a larger event is refused, as the core's persistence refuses it. */
+  rejectAbove: number = Number.MAX_SAFE_INTEGER;
 
   withWriteContext(callback: (context: FlashcatContext, writer: EventWriter) => void): void {
     callback(testContext(), new CapturingWriter(this));
@@ -114,6 +116,9 @@ class CapturingWriter implements EventWriter {
   }
 
   write(event: Record<string, Object>, forceFlush?: boolean): boolean {
+    if (JSON.stringify(event).length > this.scope.rejectAbove) {
+      return false;
+    }
     this.scope.written.push(event);
     this.scope.flushes.push(forceFlush === true);
     return true;
@@ -366,6 +371,36 @@ export default function sessionOnErrorTests(): void {
         addError(app2, Date.now());
         app2.stopCurrentSession(Date.now());
         expect(kept.ofType('error').length).assertEqual(1);
+      });
+
+    it('aMapperThatEndsTheSessionOnItsErrorStillReleasesIt',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        const scope: CapturingScope = new CapturingScope();
+        const app: RumApplicationScope = onErrorApp(scope);
+        // An app that ends the session from inside its mapper, say on an
+        // authentication error, and keeps the error.
+        RumEventMapperHolder.configure((event: Record<string, Object>): Record<string, Object> | null => {
+          if (event['type'] === 'error') {
+            app.stopCurrentSession(Date.now());
+          }
+          return event;
+        });
+        try {
+          const now: number = Date.now();
+          startView(app, now);
+          addAction(app, now + 1);
+          addError(app, now + 2);
+          expect(app.getCurrentSessionId()).assertUndefined();
+          // Ended with an error on record: released at once, history included.
+          expect(scope.ofType('error').length).assertEqual(1);
+          expect(scope.ofType('action').length).assertEqual(1);
+          // The view's final document, then the one counting the error — written
+          // straight through once released, as a collected session's would be.
+          expect(scope.written[0]['type']).assertEqual('view');
+          expect(scope.ofType('view').length).assertEqual(2);
+        } finally {
+          RumEventMapperHolder.reset();
+        }
       });
 
     it('aFailedRequestIsAnErrorThatReleases',
@@ -838,6 +873,29 @@ export default function sessionOnErrorTests(): void {
         const action: Record<string, Object> = scope.ofType('action')[0];
         const nested: Record<string, Object> = (action['context'] as Record<string, Object>)['nested'] as Record<string, Object>;
         expect(nested['value']).assertEqual('small');
+      });
+
+    it('anOversizedErrorStorageRefusesReleasesNothing',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        const scope: CapturingScope = new CapturingScope();
+        scope.rejectAbove = WITHHELD_BUFFER_BYTES_LIMIT * 2;
+        const app: RumApplicationScope = onErrorApp(scope);
+        startView(app, Date.now());
+        addAction(app, Date.now());
+        addError(app, Date.now(), 'x'.repeat(WITHHELD_BUFFER_BYTES_LIMIT * 3));
+        app.releaseScheduledWithheld();
+        expect(scope.written.length).assertEqual(0); // no error reached storage, so no history either
+        app.stopCurrentSession(Date.now());
+        expect(scope.written.length).assertEqual(0);
+        // Negative control: an oversized error storage accepts releases the history.
+        const kept: CapturingScope = new CapturingScope();
+        kept.rejectAbove = WITHHELD_BUFFER_BYTES_LIMIT * 4;
+        const app2: RumApplicationScope = onErrorApp(kept);
+        startView(app2, Date.now());
+        addError(app2, Date.now(), 'x'.repeat(WITHHELD_BUFFER_BYTES_LIMIT * 3));
+        app2.releaseScheduledWithheld();
+        expect(kept.ofType('error').length).assertEqual(1);
+        expect(kept.ofType('view').length).assertEqual(1);
       });
 
     it('spreadsReleasesAcrossTheJitterWindow',

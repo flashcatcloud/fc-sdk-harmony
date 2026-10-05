@@ -310,6 +310,9 @@ export class WithholdingFeatureScope implements FeatureScope {
   private discarded: boolean = false;
   private hasError: boolean = false;
   private releaseTimerId: number = -1;
+  /** Writes in progress: the mapper runs inside one, and may end the session from there. */
+  private writing: number = 0;
+  private settleAfterWrite: boolean = false;
 
   constructor(delegate: FeatureScope, core: SdkCore, sessionId: string) {
     this.delegate = delegate;
@@ -319,7 +322,16 @@ export class WithholdingFeatureScope implements FeatureScope {
 
   withWriteContext(callback: (context: FlashcatContext, writer: EventWriter) => void): void {
     this.delegate.withWriteContext((context: FlashcatContext, writer: EventWriter) => {
-      callback(context, new WithholdingWriter(this, writer));
+      this.writing += 1;
+      try {
+        callback(context, new WithholdingWriter(this, writer));
+      } finally {
+        this.writing -= 1;
+        if (this.writing === 0 && this.settleAfterWrite) {
+          this.settleAfterWrite = false;
+          this.settle();
+        }
+      }
     });
   }
 
@@ -374,6 +386,13 @@ export class WithholdingFeatureScope implements FeatureScope {
     if (this.buffer === null) {
       return;
     }
+    if (this.writing > 0) {
+      // The session is being ended from inside a write — the app's mapper may
+      // be looking at this session's first error. Whether that error is kept
+      // is known only once the write lands, so the decision waits for it.
+      this.settleAfterWrite = true;
+      return;
+    }
     if (this.hasError) {
       this.releaseNow();
       return;
@@ -403,13 +422,20 @@ export class WithholdingFeatureScope implements FeatureScope {
     // Views stay out of the byte budget, so only details pay for the measurement.
     const bytes: number = event['type'] === 'view' ? 0 : ENCODER.encodeInto(line).byteLength;
     if (this.isOwnError(event)) {
+      if (bytes > WITHHELD_BUFFER_BYTES_LIMIT) {
+        // An error too large for the buffer goes out on its own rather than
+        // evicting the history it explains. Only an error storage accepted earns
+        // the release: a history uploaded for an error the backend will never
+        // see is a session nobody can explain.
+        if (!writer.write(event, true)) {
+          return false;
+        }
+        this.hasError = true;
+        this.scheduleRelease(buffer);
+        return true;
+      }
       this.hasError = true;
       this.scheduleRelease(buffer);
-      if (bytes > WITHHELD_BUFFER_BYTES_LIMIT) {
-        // The session has earned its release; an error too large for the buffer
-        // goes out on its own rather than evicting the history it explains.
-        return writer.write(event, true);
-      }
     }
     return buffer.hold(event, line, bytes, Date.now());
   }

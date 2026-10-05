@@ -159,7 +159,8 @@ export class RumConfigurationBuilder {
    *
    * Such a session is collected in memory and nothing is uploaded until it
    * reports an error of its own — one that survives the event mapper. Then the
-   * minute leading up to that error (its views, actions, resources and errors)
+   * minute leading up to that error (its views, and up to 200 actions, resources
+   * and errors within 64 KiB, the least telling dropped first when there are more)
    * is uploaded, after a delay of up to 3 s that spreads out the uploads a
    * fleet-wide failure would otherwise send all at once, and the rest of the
    * session is collected normally. A session that ends
