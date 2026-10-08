@@ -1,5 +1,6 @@
 import { FeatureScope, FlashcatContext, EventWriter, SdkCore, TrackingConsent, FlashcatLog } from '@flashcatcloud/core';
 import { util } from '@kit.ArkTS';
+import { LastViewSnapshot } from '../LastViewSnapshot';
 
 /**
  * How much history a withheld session keeps: an error session shows the minute
@@ -182,13 +183,21 @@ export class WithheldEventBuffer {
         ordered.push(held.line);
       }
     }
+    let persisted: number = 0;
     for (let i: number = 0; i < ordered.length; i++) {
-      // One batch, uploaded as soon as the last event is in.
-      writer.write(JSON.parse(ordered[i]) as Record<string, Object>, i === ordered.length - 1);
+      // One batch, uploaded as soon as the last event is in. A write storage
+      // refuses is gone, as it is for a collected session: nothing retries it.
+      if (writer.write(JSON.parse(ordered[i]) as Record<string, Object>, i === ordered.length - 1)) {
+        persisted += 1;
+      }
     }
-    FlashcatLog.d(`rum.withheld: released views=${views.length} details=${this.details.length} ` +
-      `dropped=${this.droppedCount} detail_bytes=${this.bytes}`);
+    FlashcatLog.d(`rum.withheld: released ${this.describe()} persisted=${persisted} failed=${ordered.length - persisted}`);
     this.clear();
+  }
+
+  /** What is held right now, for the log lines that account for it. */
+  describe(): string {
+    return `views=${this.views.size} details=${this.details.length} dropped=${this.droppedCount} detail_bytes=${this.bytes}`;
   }
 
   clear(): void {
@@ -276,12 +285,6 @@ export class WithheldEventBuffer {
     const version: Object | undefined = typeof dd === 'object' && dd !== null ?
       (dd as Record<string, Object>)['document_version'] : undefined;
     return typeof version === 'number' ? version as number : 0;
-  }
-
-  /** @internal */
-  static isCrash(event: Record<string, Object>): boolean {
-    const error: Object | undefined = event['error'];
-    return typeof error === 'object' && error !== null && (error as Record<string, Object>)['is_crash'] === true;
   }
 
   private static viewIdOf(event: Record<string, Object>): string {
@@ -387,9 +390,15 @@ export class WithholdingFeatureScope implements FeatureScope {
 
   /** SDK stop: nothing held may reach the core any more, earned or not. */
   stop(): void {
+    const buffer: WithheldEventBuffer | null = this.buffer;
     this.cancelTimer();
     this.buffer = null;
     this.discarded = true;
+    if (buffer !== null) {
+      // What was held is gone for good: nothing of this session may be rebuilt
+      // on the next launch either.
+      LastViewSnapshot.invalidateFor(this.sessionId);
+    }
   }
 
   /**
@@ -410,7 +419,8 @@ export class WithholdingFeatureScope implements FeatureScope {
 
   /** The session ended: what it earned goes out, the rest is thrown away for good. */
   settle(): void {
-    if (this.buffer === null) {
+    const buffer: WithheldEventBuffer | null = this.buffer;
+    if (buffer === null) {
       return;
     }
     if (this.writing > 0) {
@@ -427,7 +437,10 @@ export class WithholdingFeatureScope implements FeatureScope {
     this.cancelTimer();
     this.buffer = null;
     this.discarded = true;
-    FlashcatLog.d(`rum.withheld: discarded session=${this.sessionId} (ended without an error)`);
+    // The backend never saw this session; its last view must not let a crash
+    // replayed on the next launch build it after all.
+    LastViewSnapshot.invalidateFor(this.sessionId);
+    FlashcatLog.d(`rum.withheld: discarded session=${this.sessionId} ${buffer.describe()} (ended without an error)`);
   }
 
   /** @internal the write path of {@link WithholdingWriter}. */
@@ -451,11 +464,6 @@ export class WithholdingFeatureScope implements FeatureScope {
     if (!this.isOwnError(event)) {
       return buffer.hold(event, line, bytes, Date.now());
     }
-    // A crash is released at once. It reaches a live session only as a replay
-    // of a process that already died, spread across the fleet by app launches
-    // rather than by a jitter — and the process that replays it may not live
-    // out a jitter either, while the crash feature has already dropped its copy.
-    const crash: boolean = WithheldEventBuffer.isCrash(event);
     if (bytes > WITHHELD_BUFFER_BYTES_LIMIT) {
       // An error too large for the buffer goes out on its own rather than
       // evicting the history it explains. Only an error storage accepted earns
@@ -465,19 +473,10 @@ export class WithholdingFeatureScope implements FeatureScope {
         return false;
       }
       this.hasError = true;
-      if (crash) {
-        this.releaseNow();
-      } else {
-        this.scheduleRelease(buffer);
-      }
+      this.scheduleRelease(buffer);
       return true;
     }
     this.hasError = true;
-    if (crash) {
-      const held: boolean = buffer.hold(event, line, bytes, Date.now());
-      this.releaseNow();
-      return held;
-    }
     this.scheduleRelease(buffer);
     return buffer.hold(event, line, bytes, Date.now());
   }

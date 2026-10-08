@@ -166,6 +166,14 @@ export class RumSessionScope implements RumScope {
     if (!this.sampled) {
       return this; // session dropped — track lifecycle but emit nothing
     }
+    if (event.kind === 'addError' && event.inherited === true && this.withheld !== null && this.withheld.isWithholding()) {
+      // A crash of a process that already died is not this session's error: it
+      // must not turn a session the backend has never seen into an error
+      // session. Nothing identifies the session it happened in, so it goes
+      // nowhere — as it does when the current session was not drawn at all.
+      FlashcatLog.d('rum.session: dropped an inherited crash — the current session is withheld');
+      return this;
+    }
 
     // Late resource completions may belong to an already-closed view held in
     // the draining set — route by ownership, not blindly to the active view.

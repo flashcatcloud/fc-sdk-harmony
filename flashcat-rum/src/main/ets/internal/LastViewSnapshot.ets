@@ -21,21 +21,29 @@ import { FlashcatLog } from '@flashcatcloud/core';
  */
 export type LastViewWriter = (serialized: string) => void;
 export type LastViewReader = () => string;
+export type LastViewDeleter = () => void;
 
 export class LastViewSnapshot {
   private static writer: LastViewWriter | null = null;
   private static reader: LastViewReader | null = null;
+  private static deleter: LastViewDeleter | null = null;
+  /** The session of the view last recorded by this process, '' when none is on file. */
+  private static recordedSessionId: string = '';
 
   /** @internal wired by RumFeature.onInitialize to the core's crash storage. */
-  static configure(writer: LastViewWriter, reader: LastViewReader): void {
+  static configure(writer: LastViewWriter, reader: LastViewReader, deleter: LastViewDeleter): void {
     LastViewSnapshot.writer = writer;
     LastViewSnapshot.reader = reader;
+    LastViewSnapshot.deleter = deleter;
+    LastViewSnapshot.recordedSessionId = '';
   }
 
   /** @internal cleared on SDK stop so a torn-down core is never written to. */
   static reset(): void {
     LastViewSnapshot.writer = null;
     LastViewSnapshot.reader = null;
+    LastViewSnapshot.deleter = null;
+    LastViewSnapshot.recordedSessionId = '';
   }
 
   /**
@@ -51,10 +59,32 @@ export class LastViewSnapshot {
     }
     try {
       w(JSON.stringify(event));
+      LastViewSnapshot.recordedSessionId = LastViewSnapshot.sessionIdOf(event);
     } catch (e) {
       // Snapshotting is an optimisation for the NEXT launch; never let it
       // interfere with the event actually being delivered on this one.
       FlashcatLog.e(`rum.lastview: snapshot failed: ${e instanceof Error ? e.message : `${e}`}`);
+    }
+  }
+
+  /**
+   * Forget the snapshot if it describes `sessionId`. A session thrown away
+   * without ever reaching the backend must not be rebuilt by a crash replayed
+   * against its last view; the snapshot of any other session stays.
+   */
+  static invalidateFor(sessionId: string): void {
+    if (sessionId.length === 0 || LastViewSnapshot.recordedSessionId !== sessionId) {
+      return;
+    }
+    LastViewSnapshot.recordedSessionId = '';
+    const d: LastViewDeleter | null = LastViewSnapshot.deleter;
+    if (d === null) {
+      return;
+    }
+    try {
+      d();
+    } catch (e) {
+      FlashcatLog.e(`rum.lastview: snapshot delete failed: ${e instanceof Error ? e.message : `${e}`}`);
     }
   }
 
@@ -78,5 +108,12 @@ export class LastViewSnapshot {
       FlashcatLog.e(`rum.lastview: snapshot unreadable: ${e instanceof Error ? e.message : `${e}`}`);
       return null;
     }
+  }
+
+  private static sessionIdOf(event: Record<string, Object>): string {
+    const session: Object | undefined = event['session'];
+    const id: Object | undefined = typeof session === 'object' && session !== null ?
+      (session as Record<string, Object>)['id'] : undefined;
+    return typeof id === 'string' ? id as string : '';
   }
 }

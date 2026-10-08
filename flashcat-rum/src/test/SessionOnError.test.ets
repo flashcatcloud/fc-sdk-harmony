@@ -19,6 +19,7 @@ import { BeforeSamplingContext } from '../main/ets/RumTypes';
 import { RumConfiguration, RumConfigurationBuilder } from '../main/ets/RumConfiguration';
 import { DefaultRumMonitor } from '../main/ets/internal/monitor/DefaultRumMonitor';
 import { RumActionType, RumErrorSource } from '../main/ets/RumTypes';
+import { errorManager } from '@kit.AbilityKit';
 
 const MIN_15: number = 15 * 60 * 1000;
 
@@ -52,8 +53,18 @@ class FakeCore implements SdkCore {
   readonly settings: Map<string, string> = new Map<string, string>();
   consent: TrackingConsent = TrackingConsent.GRANTED;
 
+  /** What getFeature hands out: the RUM scope (storage commands included) and the crash feature. */
+  rumScope: CapturingScope | null = null;
+  crashScope: FakeCrashScope | null = null;
+
   registerFeature(_feature: Feature): void {}
-  getFeature(_featureName: string): FeatureScope | null {
+  getFeature(featureName: string): FeatureScope | null {
+    if (featureName === 'rum') {
+      return this.rumScope;
+    }
+    if (featureName === 'crash') {
+      return this.crashScope;
+    }
     return null;
   }
   setEventReceiver(_featureName: string, _receiver: FeatureEventReceiver): void {}
@@ -101,7 +112,21 @@ class CapturingScope implements FeatureScope {
     callback(testContext(), new CapturingWriter(this));
   }
 
-  sendEvent(_event: Record<string, Object>): void {}
+  /** The last-view snapshot file the crash storage would hold. */
+  lastView: string = '';
+  lastViewDeletes: number = 0;
+
+  sendEvent(event: Record<string, Object>): void {
+    const type: Object | undefined = event['type'];
+    if (type === 'crash_storage_write_last_view') {
+      this.lastView = event['serialized'] as string;
+    } else if (type === 'crash_storage_read_last_view') {
+      event['serialized'] = this.lastView;
+    } else if (type === 'crash_storage_delete_last_view') {
+      this.lastView = '';
+      this.lastViewDeletes += 1;
+    }
+  }
 
   ofType(type: string): Array<Record<string, Object>> {
     return this.written.filter((e: Record<string, Object>) => e['type'] === type);
@@ -123,6 +148,53 @@ class CapturingWriter implements EventWriter {
     this.scope.flushes.push(forceFlush === true);
     return true;
   }
+}
+
+/**
+ * Stands in for the crash feature on the bus: answers the policy pull and the
+ * live crash callback the way CrashFeature does for a persisted incident, minus
+ * the process exit.
+ */
+class FakeCrashScope implements FeatureScope {
+  readonly controls: Array<Record<string, Object>> = [];
+
+  withWriteContext(_callback: (context: FlashcatContext, writer: EventWriter) => void): void {}
+
+  sendEvent(event: Record<string, Object>): void {
+    const type: Object | undefined = event['type'];
+    if (type === 'js_crash_policy_request') {
+      event['policy'] = 'report_then_exit';
+    } else if (type === 'js_crash_callback') {
+      this.controls.push(event);
+      const suppressed: boolean = event['suppressed'] === true;
+      event['pending_written'] = !suppressed;
+      event['report_async'] = false;
+      event['should_exit'] = false; // the test process stays alive
+    }
+  }
+}
+
+function fireUnhandledException(text: string): void {
+  const observers: Record<string, Object> = (errorManager as Object as Record<string, Object>)['lastObservers'] as Record<string, Object>;
+  (observers['error'] as errorManager.ErrorObserver).onUnhandledException(text);
+}
+
+function fireUnhandledRejection(reason: Object): void {
+  const observers: Record<string, Object> = (errorManager as Object as Record<string, Object>)['lastObservers'] as Record<string, Object>;
+  (observers['unhandledRejection'] as errorManager.UnhandledRejectionObserver)(reason, Promise.resolve());
+}
+
+/** A RUM feature wired to the fake core, with its monitor attached, on a rate-0 + switch configuration. */
+function onErrorFeature(core: FakeCore, scope: CapturingScope): DefaultRumMonitor {
+  core.rumScope = scope;
+  const configuration: RumConfiguration =
+    new RumConfigurationBuilder('app-1').setSessionSampleRate(0).setSessionOnError(true).build();
+  const feature: RumFeature = new RumFeature(core, configuration);
+  feature.onInitialize();
+  const monitor: DefaultRumMonitor = new DefaultRumMonitor(core, scope, configuration);
+  monitor.stopKeepAlive();
+  feature.attachMonitor(monitor);
+  return monitor;
 }
 
 class SilentFetcher implements RemoteConfigFetcher {
@@ -432,32 +504,42 @@ export default function sessionOnErrorTests(): void {
         expect(scope.ofType('action').length).assertEqual(1);
       });
 
-    it('aCrashReportedAsAnErrorReleasesAtOnce',
+    it('anInheritedCrashDoesNotMakeAWithheldSessionAnErrorSession',
       TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
-        // A crash reaches a live session only as a replay of a process that
-        // already died; the crash feature drops its copy once reported.
+        // A crash of a process that already died, with nothing to attribute it
+        // to, is replayed into the current session. One that withholds its
+        // events is not made an error session by it.
+        const core: FakeCore = new FakeCore();
         const scope: CapturingScope = new CapturingScope();
-        const app: RumApplicationScope = onErrorApp(scope);
-        const now: number = Date.now();
-        startView(app, now);
-        addAction(app, now + 1);
-        const crash: RumRawEvent = raw('addError', now + 2);
-        crash.errorMessage = 'replayed crash';
-        crash.errorSource = 'source';
-        crash.isCrash = true;
-        app.handleEvent(crash);
-        // Synchronous: nothing waits on a jitter.
-        expect(scope.ofType('error').length).assertEqual(1);
-        expect(scope.ofType('action').length).assertEqual(1);
-        expect(scope.written[0]['type']).assertEqual('view');
-        // Negative control: an ordinary error waits for its jitter.
-        const quiet: CapturingScope = new CapturingScope();
-        const app2: RumApplicationScope = onErrorApp(quiet);
-        startView(app2, now);
-        addError(app2, now + 1);
-        expect(quiet.written.length).assertEqual(0);
-        app2.releaseScheduledWithheld();
-        expect(quiet.ofType('error').length).assertEqual(1);
+        const monitor: DefaultRumMonitor = new DefaultRumMonitor(core, scope,
+          new RumConfigurationBuilder('app-1').setSessionSampleRate(0).setSessionOnError(true).build());
+        monitor.stopKeepAlive();
+        monitor.startView('home', 'home');
+        monitor.reportError('NativeCrash', RumErrorSource.SOURCE, '#00 pc', true, 'unhandled', {}, undefined, true, true);
+        monitor.releaseScheduledWithheld();
+        expect(scope.written.length).assertEqual(0);
+        monitor.stopSession();
+        expect(scope.written.length).assertEqual(0);
+        // Negative controls: a session collected on its own merits takes it —
+        // one the rate drew, and one the switch kept that has errored itself.
+        const sampledCore: FakeCore = new FakeCore();
+        const sampled: CapturingScope = new CapturingScope();
+        const monitor2: DefaultRumMonitor = new DefaultRumMonitor(sampledCore, sampled,
+          new RumConfigurationBuilder('app-1').setSessionSampleRate(100).setSessionOnError(true).build());
+        monitor2.stopKeepAlive();
+        monitor2.startView('home', 'home');
+        monitor2.reportError('NativeCrash', RumErrorSource.SOURCE, '#00 pc', true, 'unhandled', {}, undefined, true, true);
+        expect(sampled.ofType('error').length).assertEqual(1);
+        const releasedCore: FakeCore = new FakeCore();
+        const released: CapturingScope = new CapturingScope();
+        const monitor3: DefaultRumMonitor = new DefaultRumMonitor(releasedCore, released,
+          new RumConfigurationBuilder('app-1').setSessionSampleRate(0).setSessionOnError(true).build());
+        monitor3.stopKeepAlive();
+        monitor3.startView('home', 'home');
+        monitor3.addError('own', RumErrorSource.SOURCE);
+        monitor3.releaseScheduledWithheld();
+        monitor3.reportError('NativeCrash', RumErrorSource.SOURCE, '#00 pc', true, 'unhandled', {}, undefined, true, true);
+        expect(released.ofType('error').length).assertEqual(2);
       });
 
     it('setForcedSessionReleasesWithoutAnError',
@@ -1320,7 +1402,9 @@ export default function sessionOnErrorTests(): void {
         let stored: string = '';
         LastViewSnapshot.configure((serialized: string): void => {
           stored = serialized;
-        }, (): string => stored);
+        }, (): string => stored, (): void => {
+          stored = '';
+        });
         try {
           const scope: CapturingScope = new CapturingScope();
           const app: RumApplicationScope = onErrorApp(scope);
@@ -1336,6 +1420,188 @@ export default function sessionOnErrorTests(): void {
         } finally {
           LastViewSnapshot.reset();
         }
+      });
+  });
+
+  describe('rum-session-on-error-discard-and-crash', (): void => {
+    it('throwingASessionAwayAlsoThrowsAwayItsLastViewSnapshot',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        let stored: string = '';
+        let deletes: number = 0;
+        LastViewSnapshot.configure((serialized: string): void => {
+          stored = serialized;
+        }, (): string => stored, (): void => {
+          stored = '';
+          deletes += 1;
+        });
+        try {
+          const scope: CapturingScope = new CapturingScope();
+          const app: RumApplicationScope = onErrorApp(scope);
+          startView(app, Date.now());
+          expect(stored.length > 0).assertTrue();
+          app.stopCurrentSession(Date.now()); // ended without an error: discarded
+          expect(stored).assertEqual('');
+          expect(deletes).assertEqual(1);
+
+          // Negative control: a released session keeps its snapshot...
+          const kept: CapturingScope = new CapturingScope();
+          const app2: RumApplicationScope = onErrorApp(kept);
+          startView(app2, Date.now());
+          addError(app2, Date.now());
+          app2.stopCurrentSession(Date.now());
+          expect(stored.length > 0).assertTrue();
+          expect(deletes).assertEqual(1);
+          // ...and a discard never touches another session's snapshot: app4 is
+          // thrown away by an SDK stop (no final view write) while app3's view
+          // is the one on file.
+          const other: CapturingScope = new CapturingScope();
+          const app3: RumApplicationScope = onErrorApp(other);
+          startView(app3, Date.now());
+          const otherView: string = stored;
+          const stale: CapturingScope = new CapturingScope();
+          const app4: RumApplicationScope = onErrorApp(stale);
+          startView(app4, Date.now());
+          LastViewSnapshot.record(JSON.parse(otherView) as Record<string, Object>); // app3's view is the newest again
+          app4.stopWithheld();
+          expect(stored).assertEqual(otherView);
+          expect(deletes).assertEqual(1);
+          // The owner's discard takes it, final document included.
+          app3.stopCurrentSession(Date.now());
+          expect(stored).assertEqual('');
+          expect(deletes).assertEqual(2);
+        } finally {
+          LastViewSnapshot.reset();
+        }
+      });
+
+    it('aNextLaunchCrashCannotResurrectAThrownAwaySession',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        // Run 1: a session kept on error, thrown away without one.
+        const core: FakeCore = new FakeCore();
+        const scope: CapturingScope = new CapturingScope();
+        const monitor: DefaultRumMonitor = onErrorFeature(core, scope);
+        monitor.startView('home', 'home');
+        const discarded: string = core.featureContext['session.id'] as string;
+        expect(scope.lastView.length > 0).assertTrue();
+        monitor.stopSession();
+        expect(scope.written.length).assertEqual(0);
+        // Run 2: the process died of a native crash in the gap; the replay carries no ids
+        // (the JS incident path leaves `session.sampled` true and the id empty: same replay).
+        const next: CapturingScope = new CapturingScope();
+        next.lastView = scope.lastView; // whatever run 1 left in the crash storage
+        const monitor2: DefaultRumMonitor = onErrorFeature(core, next);
+        monitor2.startView('home', 'home');
+        const feature: RumFeature = new RumFeature(core,
+          new RumConfigurationBuilder('app-1').setSessionSampleRate(0).setSessionOnError(true).build());
+        feature.onInitialize();
+        feature.attachMonitor(monitor2);
+        feature.onReceive({ 'type': 'crash_report', 'message': 'NativeCrash', 'stack': '#00 pc', 'crash_kind': 'crash',
+          'timestamp_ms': Date.now() - 1000 } as Record<string, Object>);
+        for (const e of next.written) {
+          expect(sessionOf(e)['id'] === discarded).assertFalse();
+        }
+        // Negative control: a session that errored keeps its snapshot, and the crash lands in it.
+        const core2: FakeCore = new FakeCore();
+        const scope2: CapturingScope = new CapturingScope();
+        const monitor3: DefaultRumMonitor = onErrorFeature(core2, scope2);
+        monitor3.startView('home', 'home');
+        const released: string = core2.featureContext['session.id'] as string;
+        monitor3.addError('boom', RumErrorSource.SOURCE);
+        monitor3.stopSession();
+        const snapshot: string = scope2.lastView;
+        expect(snapshot.length > 0).assertTrue();
+        const next2: CapturingScope = new CapturingScope();
+        next2.lastView = snapshot;
+        const feature2: RumFeature = new RumFeature(core2,
+          new RumConfigurationBuilder('app-1').setSessionSampleRate(0).setSessionOnError(true).build());
+        core2.rumScope = next2;
+        feature2.onInitialize();
+        feature2.onReceive({ 'type': 'crash_report', 'message': 'NativeCrash', 'stack': '#00 pc', 'crash_kind': 'crash',
+          'timestamp_ms': Date.now() - 1000 } as Record<string, Object>);
+        expect(next2.ofType('error').length).assertEqual(1);
+        expect(sessionOf(next2.ofType('error')[0])['id']).assertEqual(released);
+      });
+
+    it('aTerminatingCrashTheMapperDropsReleasesNothing',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        RumEventMapperHolder.configure((event: Record<string, Object>): Record<string, Object> | null =>
+          event['type'] === 'error' ? null : event);
+        try {
+          const core: FakeCore = new FakeCore();
+          core.crashScope = new FakeCrashScope();
+          const scope: CapturingScope = new CapturingScope();
+          const monitor: DefaultRumMonitor = onErrorFeature(core, scope);
+          monitor.startView('home', 'home');
+          monitor.addAction(RumActionType.TAP, 'before');
+          fireUnhandledException('Error name:Error\nError message:fatal\nStacktrace:\nat a (b.ets:1:1)');
+          expect(scope.written.length).assertEqual(0);
+          // The crash feature was told, so nothing is persisted for a replay either.
+          expect(core.crashScope.controls.length).assertEqual(1);
+          expect(core.crashScope.controls[0]['suppressed']).assertEqual(true);
+        } finally {
+          RumEventMapperHolder.reset();
+        }
+        // Negative control: a crash the mapper keeps releases the history at once.
+        const core2: FakeCore = new FakeCore();
+        core2.crashScope = new FakeCrashScope();
+        const kept: CapturingScope = new CapturingScope();
+        const monitor2: DefaultRumMonitor = onErrorFeature(core2, kept);
+        monitor2.startView('home', 'home');
+        monitor2.addAction(RumActionType.TAP, 'before');
+        fireUnhandledException('Error name:Error\nError message:fatal\nStacktrace:\nat a (b.ets:1:1)');
+        expect(kept.ofType('view').length >= 1).assertTrue();
+        expect(kept.ofType('action').length).assertEqual(1);
+        expect(core2.crashScope.controls[0]['suppressed'] === true).assertFalse();
+      });
+
+    it('anUncaughtExceptionWithoutTheCrashFeatureReleasesAtOnce',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        const core: FakeCore = new FakeCore();
+        const scope: CapturingScope = new CapturingScope();
+        const monitor: DefaultRumMonitor = onErrorFeature(core, scope);
+        monitor.startView('home', 'home');
+        monitor.addAction(RumActionType.TAP, 'before');
+        fireUnhandledException('Error name:Error\nError message:fatal\nStacktrace:\nat a (b.ets:1:1)');
+        // No jitter: the process may not live that long.
+        expect(scope.ofType('error').length).assertEqual(1);
+        expect(scope.ofType('action').length).assertEqual(1);
+        // Negative control: an unhandled rejection keeps the jitter.
+        const core2: FakeCore = new FakeCore();
+        const quiet: CapturingScope = new CapturingScope();
+        const monitor2: DefaultRumMonitor = onErrorFeature(core2, quiet);
+        monitor2.startView('home', 'home');
+        fireUnhandledRejection(new Error('later'));
+        expect(quiet.written.length).assertEqual(0);
+        monitor2.releaseScheduledWithheld();
+        expect(quiet.ofType('error').length).assertEqual(1);
+      });
+
+    it('anImmediateRateRiseKeepsASessionTheSwitchKept',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        expect(RumApplicationScope.shouldEndSession(true, 0, 50, 'immediate', true, true)).assertFalse();
+        // Negative control: a session the rate drew is still re-decided.
+        expect(RumApplicationScope.shouldEndSession(true, 20, 50, 'immediate', false, true)).assertTrue();
+
+        const core: FakeCore = new FakeCore();
+        const store: RemoteConfigStore = newStore(core);
+        const scope: CapturingScope = new CapturingScope();
+        const app: RumApplicationScope = onErrorApp(scope, core, store);
+        const controller: RemoteConfigController = new RemoteConfigController(
+          store, new SilentFetcher(), 'https://x/config',
+          (activation: string, before: number | null, after: number | null): void => {
+            app.onConfigurationChanged(activation, before, after, Date.now());
+          });
+        const now: number = Date.now();
+        startView(app, now);
+        addAction(app, now + 1, 'held');
+        const id: string = core.featureContext['session.id'] as string;
+        controller.apply('{"version":1,"enabled":true,"activation":"immediate",' +
+          '"rum":{"sessionSampleRate":50,"sessionOnError":true}}', null);
+        expect(core.featureContext['session.id']).assertEqual(id); // kept, history included
+        addError(app, now + 2);
+        app.releaseScheduledWithheld();
+        expect(scope.ofType('action').length).assertEqual(1);
+        expect(scope.ofType('error').length).assertEqual(1);
       });
   });
 }

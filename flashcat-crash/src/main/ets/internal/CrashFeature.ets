@@ -158,13 +158,27 @@ export class CrashFeature implements Feature, FeatureEventReceiver {
       return;
     }
 
+    // RUM's event mapper dropped this crash: it is not reported, now or on the
+    // next launch, so no incident is persisted. The fault is still remembered as
+    // consumed, so the watcher's own copy of it does not come back as a report
+    // the mapper never saw.
+    const suppressed: boolean = event['suppressed'] === true;
+    if (suppressed) {
+      this.consumed.push(new ConsumedCrashIncident(
+        util.generateRandomUUID(true), fingerprint, nowMs, nowMs));
+      this.consumed = CrashDeduplication.retainRecent(this.consumed, nowMs, CONSUMED_RETENTION_MS);
+      if (this.isDurableWriteAllowed()) {
+        this.persistConsumed();
+      }
+      FlashcatLog.d('crash.js: dropped by the RUM event mapper; not persisted');
+    }
     // NOT_GRANTED: no durable crash DATA may be written (the core enforces the
     // same rule for every event write) — nothing would be reported anyway, so
     // persisting the stack/ids would just park refused data on disk. Declining
     // telemetry must NOT change app runtime behavior though: REPORT_AND_RECOVER
     // still restarts, guarded by the loop history, which holds only crash
     // timestamps (no user data) and is therefore legitimate to persist.
-    if (!this.isDurableWriteAllowed()) {
+    if (suppressed || !this.isDurableWriteAllowed()) {
       event['pending_written'] = false;
       event['report_async'] = false;
       event['should_exit'] = true;

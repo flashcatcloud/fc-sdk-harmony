@@ -31,6 +31,9 @@ export interface RumRawEvent {
   // view's crash count (it was already counted in the crashed run's view doc,
   // and it did not happen in this session).
   countInView?: boolean;
+  // An error of a process that already died, replayed into whichever session is
+  // current because nothing identifies the one it happened in.
+  inherited?: boolean;
 
   // resource specifics (kind === 'startResource' | 'stopResource')
   url?: string;

@@ -283,8 +283,9 @@ export class DefaultRumMonitor implements RumMonitor {
   /** Internal: used by the unhandled-exception hook to flag errors as unhandled. */
   reportError(message: string, source: RumErrorSource, stack: string | undefined,
     isCrash: boolean, handling: string, attributes?: Record<string, Object>, timestampMs?: number,
-    countInView: boolean = true): void {
+    countInView: boolean = true, inherited: boolean = false): void {
     const e: RumRawEvent = this.raw('addError', attributes);
+    e.inherited = inherited;
     if (timestampMs !== undefined) {
       e.timestampMs = timestampMs;
     }

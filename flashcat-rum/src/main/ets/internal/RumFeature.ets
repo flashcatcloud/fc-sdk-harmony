@@ -103,6 +103,12 @@ export class RumFeature implements Feature, FeatureEventReceiver {
         };
         this.sendStorageCommand(command);
         return RumFeature.asString(command['serialized']);
+      },
+      (): void => {
+        this.sendStorageCommand({
+          'type': 'crash_storage_delete_last_view',
+          'target': CRASH_STORAGE_TARGET
+        });
       });
 
     // Capture the PREVIOUS process's snapshot now, before this run writes any
@@ -351,7 +357,8 @@ export class RumFeature implements Feature, FeatureEventReceiver {
       'unhandled',
       attributes,
       undefined,
-      !alreadyCounted);
+      !alreadyCounted,
+      true);
     // Known limitation: this path cannot observe the write result (the scope
     // tree has no return channel), so delivered=true is optimistic; and the
     // freshly minted session re-flips the sampling coin, which can drop the
@@ -660,18 +667,33 @@ export class RumFeature implements Feature, FeatureEventReceiver {
       if (this.activeJsCrashPolicy !== null) {
         const crash: FeatureScope | null = this.core.getFeature(CRASH_FEATURE_NAME);
         if (crash !== null) {
+          // The app's mapper decides now whether this crash is an error at all.
+          // Its verdict has to come before the incident is persisted: the error
+          // itself is only assembled on the next launch, but what the crash
+          // does to the session — count it, release what the session held —
+          // happens in this process, and an error the mapper drops must do
+          // neither.
+          const suppressed: boolean = callback === 'unhandled' && !this.crashSurvivesMapper(stackText, message);
           const control: Record<string, Object> = {
             'type': 'js_crash_callback',
             'target': CRASH_FEATURE_NAME,
             'callback': callback,
             'text': stackText,
             'timestamp_ms': Date.now(),
+            'suppressed': suppressed,
             // Safe defaults preserve the legacy report if the receiver is absent.
             'report_async': true,
             'should_exit': false
           };
           crash.sendEvent(control);
           if (control['duplicate'] === true) {
+            return;
+          }
+          if (suppressed) {
+            FlashcatLog.d('rum.error: crash dropped by the event mapper; not counted, not reported');
+            if (control['should_exit'] === true) {
+              this.flushAndTerminate(control['recover'] === true);
+            }
             return;
           }
           // The incident was durably persisted: the error event arrives via
@@ -734,9 +756,37 @@ export class RumFeature implements Feature, FeatureEventReceiver {
       // Frames only: the labeled callback text is for fingerprinting; sending
       // it as error.stack made the backend title issues "Error name".
       m.reportError(message, RumErrorSource.SOURCE, RumFeature.stackFramesOnly(stackText), false, 'unhandled');
+      // An uncaught exception may be the last thing this process does: what the
+      // session held for it leaves now, not after a jitter it may not live out.
+      m.releaseScheduledWithheld();
     } else {
       FlashcatLog.d('rum.error: dropped because monitor is null');
     }
+  }
+
+  /**
+   * Whether the app's event mapper keeps the crash this process is about to die
+   * of. The error is assembled the way the next launch's replay assembles it,
+   * stamped with the session and view the crash feature would persist.
+   */
+  private crashSurvivesMapper(stackText: string, message: string): boolean {
+    const context: FlashcatContext = this.core.getContext();
+    const rum: Record<string, Object> = RumFeature.recordValue(context.featureContext[RUM_FEATURE_NAME]);
+    const viewId: string = RumFeature.asString(rum['view.id']);
+    const attributes: Record<string, Object> = {};
+    attributes['error.category'] = 'Exception';
+    attributes['error.source_type'] = 'harmony';
+    const viewUrl: string = RumFeature.asString(rum['view.url']);
+    if (viewUrl.length > 0) {
+      attributes['view.url'] = viewUrl;
+    }
+    const event: Record<string, Object> = RumEventAssembler.error(
+      context, this.configuration.applicationId, RumFeature.asString(rum['session.id']),
+      viewId.length > 0 ? viewId : undefined,
+      viewId.length > 0 ? RumFeature.asString(rum['view.name']) : undefined,
+      message, RumErrorSource.SOURCE as string, RumFeature.stackFramesOnly(stackText),
+      true, 'unhandled', Date.now(), attributes);
+    return RumEventMapperHolder.apply(event) !== null;
   }
 
   private reportUnhandledRejection(reason: Object): void {

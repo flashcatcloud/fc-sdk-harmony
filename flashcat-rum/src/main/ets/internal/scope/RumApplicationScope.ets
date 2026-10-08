@@ -410,8 +410,11 @@ export class RumApplicationScope implements RumScope {
         return !(sampledOnError && nextOnError);
       }
       // `immediate` re-decides on a rate that moved; a change to the switch
-      // alone says nothing about a session the rate already kept.
-      return activation === ACTIVATION_IMMEDIATE && rateMoved;
+      // alone says nothing about a session the rate already kept. A session the
+      // switch kept is left alone too: it holds the minute before an error that
+      // has not happened yet, and a re-draw at the new rate would throw that
+      // away on a path that is not an emergency stop.
+      return activation === ACTIVATION_IMMEDIATE && rateMoved && !sampledOnError;
     }
     // A dark session is worth replacing only by one that can collect something;
     // otherwise the replacement is just as dark and the visitor lost a view.
