@@ -160,15 +160,17 @@ export class RumConfigurationBuilder {
    * Such a session is collected in memory and none of its events is uploaded until it
    * reports an error of its own — one that survives the event mapper. Then the
    * minute leading up to that error (its views, and up to 200 actions, resources
-   * and errors within 64 KiB, the least telling dropped first when there are more)
-   * is uploaded, after a delay of up to 3 s that spreads out the uploads a
+   * and errors within 64 KiB, the least informative dropped first when there are
+   * more) is uploaded, after a delay of up to 3 s that spreads out the uploads a
    * fleet-wide failure would otherwise send all at once, and the rest of the
-   * session is collected normally. A session that ends
-   * without an error is thrown away with everything it held. An uncaught ArkTS
-   * exception that terminates the process releases what was held before the
-   * process exits; a native crash or a freeze, reported on the next launch, is
-   * delivered with the last view of the session only — what was held in memory
-   * died with the process.
+   * session is collected normally. A session that ends without an error is
+   * thrown away with everything it held, and nothing of it — not even a crash
+   * replayed on the next launch — reaches the backend afterwards. An uncaught
+   * ArkTS exception the event mapper keeps releases what was held at once,
+   * before the process exits, with or without the crash feature; one the
+   * mapper drops releases nothing and is not reported. A native crash or a
+   * freeze, reported on the next launch, is delivered with the last view of
+   * the session only — what was held in memory died with the process.
    *
    * Such sessions report a session sample rate of 0 and
    * `session.sampled_for_error: true`: each one stands for itself rather than

@@ -1,5 +1,27 @@
 # Changelog
 
+## Unreleased
+
+- **Error-session capture.** `RumConfigurationBuilder.setSessionOnError(true)`
+  also keeps the sessions `sessionSampleRate` does not draw, but only those
+  that report an error. Such a session is collected in memory and none of its
+  events is uploaded until it reports an error the event mapper keeps; then
+  the minute leading up to it (its views, and up to 200 actions, resources and
+  errors within 64 KiB) is uploaded after a short per-session delay, and the
+  rest of the session is collected normally. A session that ends without an
+  error is thrown away with everything it held. Off by default; the console's
+  `sessionOnError` overrides the init value when remote configuration is on.
+  Its view events report `session.sampled_for_error: true` and a session
+  sample rate of 0, so each stands for itself.
+- `RumMonitor.getCurrentSessionId()` reports `undefined` for such a session
+  until it has been released: before that the backend has no session under
+  its id.
+- A rate-0 configuration with `sessionOnError` on no longer ends the session
+  it kept when the configuration is fetched; turning the switch on redraws a
+  session drawn dark at rate 0.
+- Revoking tracking consent now also discards what RUM holds in memory for a
+  session that has not reached storage.
+
 ## 0.6.0
 
 - **Remote configuration.** `RumConfigurationBuilder.setRemoteConfigurationEnabled(true)`

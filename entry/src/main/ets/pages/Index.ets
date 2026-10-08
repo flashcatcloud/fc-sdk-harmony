@@ -201,6 +201,13 @@ struct Index {
       setTimeout(() => {
         throw new Error('E2E crash marker');
       }, 800);
+    } else if (name === 'crash-secret') {
+      // A crash the demo mapper drops ("secret" in the message): it must not
+      // count, release, or be reported on the next launch.
+      this.append('e2e: secret crash in 800ms');
+      setTimeout(() => {
+        throw new Error('E2E secret crash');
+      }, 800);
     }
   }
 
@@ -245,7 +252,8 @@ struct Index {
    * under FCSOE so a run can be lined up with what the intake received:
    * - soe: activity, then an error 2 s later — the error releases the held minute;
    * - soe-quiet: activity, then the session ends without an error;
-   * - soe-secret: activity, then an error the event mapper drops.
+   * - soe-secret: activity, then an error the event mapper drops;
+   * - soe-quiet-native: the session ends without an error, then a native crash.
    */
   private runSessionOnErrorScenario(name: string): void {
     const monitor: RumMonitor = DemoSdk.monitor();
@@ -261,6 +269,14 @@ struct Index {
         monitor.addError('soe secret error', RumErrorSource.CUSTOM, 'at Index.soe');
         monitor.stopSession();
         hilog.info(0x0000, 'FCSOE', 'dropped error, session stopped at %{public}d', Date.now());
+      } else if (name === 'soe-quiet-native') {
+        // The session is thrown away, then the process dies of a native crash
+        // before any view is written: the next launch must not rebuild it.
+        monitor.stopSession();
+        hilog.info(0x0000, 'FCSOE', 'session stopped at %{public}d; native crash in 1 s', Date.now());
+        setTimeout(() => {
+          testNapi.triggerNativeCrash();
+        }, 1000);
       } else {
         monitor.stopSession();
         hilog.info(0x0000, 'FCSOE', 'session stopped at %{public}d', Date.now());
