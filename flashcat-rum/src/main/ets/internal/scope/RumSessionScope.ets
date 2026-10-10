@@ -171,7 +171,7 @@ export class RumSessionScope implements RumScope {
       // must not turn a session the backend has never seen into an error
       // session. Nothing identifies the session it happened in, so it goes
       // nowhere — as it does when the current session was not drawn at all.
-      FlashcatLog.d('rum.session: dropped an inherited crash — the current session is withheld');
+      FlashcatLog.d('rum.session: inherited crash not reported — the current session is withheld');
       return this;
     }
 

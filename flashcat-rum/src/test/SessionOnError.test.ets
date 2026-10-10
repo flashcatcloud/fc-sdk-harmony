@@ -152,25 +152,76 @@ class CapturingWriter implements EventWriter {
 
 /**
  * Stands in for the crash feature on the bus: answers the policy pull and the
- * live crash callback the way CrashFeature does for a persisted incident, minus
- * the process exit.
+ * live crash callback the way CrashFeature does, minus the process exit. For a
+ * terminating policy it persists nothing but asks RUM, as the real feature does,
+ * whether the event the next launch would replay survives the app's mapper.
  */
 class FakeCrashScope implements FeatureScope {
   readonly controls: Array<Record<string, Object>> = [];
+  readonly probes: Array<Record<string, Object>> = [];
+  policy: string = 'report_then_exit';
+  /** The restart the loop guard would allow: the replay carries `crash.recovered`. */
+  recover: boolean = false;
+  rum: RumFeature | null = null;
+  private readonly core: FakeCore;
+
+  constructor(core: FakeCore) {
+    this.core = core;
+  }
 
   withWriteContext(_callback: (context: FlashcatContext, writer: EventWriter) => void): void {}
 
   sendEvent(event: Record<string, Object>): void {
     const type: Object | undefined = event['type'];
     if (type === 'js_crash_policy_request') {
-      event['policy'] = 'report_then_exit';
-    } else if (type === 'js_crash_callback') {
-      this.controls.push(event);
-      const suppressed: boolean = event['suppressed'] === true;
-      event['pending_written'] = !suppressed;
-      event['report_async'] = false;
-      event['should_exit'] = false; // the test process stays alive
+      event['policy'] = this.policy;
+      return;
     }
+    if (type !== 'js_crash_callback') {
+      return;
+    }
+    this.controls.push(event);
+    if (event['callback'] !== 'unhandled' || this.policy === 'observe_only') {
+      // No incident: the live report is the only report.
+      event['report_async'] = true;
+      event['should_exit'] = false;
+      return;
+    }
+    // What CrashEventMapper.fromPendingIncident rebuilds from the persisted
+    // record: name/message/stack parts, the crash time, the ids the record
+    // took from the RUM context, and the recovery outcome.
+    const text: string = event['text'] as string;
+    const lines: string[] = text.split('\n');
+    const name: string = lines[0].substring('Error name:'.length);
+    const message: string = lines[1].substring('Error message:'.length);
+    const stack: string = lines.slice(3).join('\n');
+    const probe: Record<string, Object> = {
+      'type': 'crash_mapper_probe',
+      'target': 'rum',
+      'crash_type': 'JsError',
+      'crash_kind': 'crash',
+      'message': `${name}: ${message}`,
+      'stack': stack,
+      'timestamp_ms': event['timestamp_ms'] as number,
+      'incident_id': 'incident-under-test',
+      'fingerprint': 'fp',
+      'original_session_id': (this.core.featureContext['session.id'] ?? '') as string,
+      'original_view_id': (this.core.featureContext['view.id'] ?? '') as string,
+      'original_view_name': (this.core.featureContext['view.name'] ?? '') as string,
+      'original_view_url': (this.core.featureContext['view.url'] ?? '') as string
+    };
+    if (this.recover) {
+      probe['crash.recovered'] = true;
+    }
+    this.probes.push(probe);
+    if (this.rum !== null) {
+      this.rum.onReceive(probe);
+    }
+    const kept: boolean = probe['kept'] !== false;
+    event['suppressed'] = !kept;
+    event['pending_written'] = kept;
+    event['report_async'] = false;
+    event['should_exit'] = false; // the test process stays alive
   }
 }
 
@@ -184,18 +235,58 @@ function fireUnhandledRejection(reason: Object): void {
   (observers['unhandledRejection'] as errorManager.UnhandledRejectionObserver)(reason, Promise.resolve());
 }
 
-/** A RUM feature wired to the fake core, with its monitor attached, on a rate-0 + switch configuration. */
-function onErrorFeature(core: FakeCore, scope: CapturingScope): DefaultRumMonitor {
+/** A RUM feature wired to the fake core, with its monitor attached. */
+function featureWith(core: FakeCore, scope: CapturingScope, rate: number, sessionOnError: boolean): DefaultRumMonitor {
   core.rumScope = scope;
   const configuration: RumConfiguration =
-    new RumConfigurationBuilder('app-1').setSessionSampleRate(0).setSessionOnError(true).build();
+    new RumConfigurationBuilder('app-1').setSessionSampleRate(rate).setSessionOnError(sessionOnError).build();
   const feature: RumFeature = new RumFeature(core, configuration);
   feature.onInitialize();
   const monitor: DefaultRumMonitor = new DefaultRumMonitor(core, scope, configuration);
   monitor.stopKeepAlive();
   feature.attachMonitor(monitor);
+  if (core.crashScope !== null) {
+    core.crashScope.rum = feature;
+  }
   return monitor;
 }
+
+/** A RUM feature on a rate-0 + switch configuration. */
+function onErrorFeature(core: FakeCore, scope: CapturingScope): DefaultRumMonitor {
+  return featureWith(core, scope, 0, true);
+}
+
+/** A mapper that drops crashes (or, with `on`, events carrying that context key) and counts what it saw. */
+class CountingMapper {
+  crashesSeen: number = 0;
+  errorsSeen: number = 0;
+  readonly dropKey: string;
+
+  constructor(dropKey: string = '') {
+    this.dropKey = dropKey;
+  }
+
+  install(): void {
+    RumEventMapperHolder.configure((event: Record<string, Object>): Record<string, Object> | null => {
+      if (event['type'] !== 'error') {
+        return event;
+      }
+      const error: Record<string, Object> = event['error'] as Record<string, Object>;
+      const context: Record<string, Object> = (event['context'] ?? {}) as Record<string, Object>;
+      if (error['is_crash'] === true) {
+        this.crashesSeen += 1;
+      } else {
+        this.errorsSeen += 1;
+      }
+      if (this.dropKey.length > 0) {
+        return context[this.dropKey] === true ? null : event;
+      }
+      return error['is_crash'] === true ? null : event;
+    });
+  }
+}
+
+const CRASH_TEXT: string = 'Error name:Error\nError message:fatal\nStacktrace:\nat a (b.ets:1:1)';
 
 class SilentFetcher implements RemoteConfigFetcher {
   fetch(_url: string, _ifNoneMatch: string | null): Promise<RemoteConfigResponse> {
@@ -1528,7 +1619,7 @@ export default function sessionOnErrorTests(): void {
           event['type'] === 'error' ? null : event);
         try {
           const core: FakeCore = new FakeCore();
-          core.crashScope = new FakeCrashScope();
+          core.crashScope = new FakeCrashScope(core);
           const scope: CapturingScope = new CapturingScope();
           const monitor: DefaultRumMonitor = onErrorFeature(core, scope);
           monitor.startView('home', 'home');
@@ -1543,7 +1634,7 @@ export default function sessionOnErrorTests(): void {
         }
         // Negative control: a crash the mapper keeps releases the history at once.
         const core2: FakeCore = new FakeCore();
-        core2.crashScope = new FakeCrashScope();
+        core2.crashScope = new FakeCrashScope(core2);
         const kept: CapturingScope = new CapturingScope();
         const monitor2: DefaultRumMonitor = onErrorFeature(core2, kept);
         monitor2.startView('home', 'home');
@@ -1602,6 +1693,102 @@ export default function sessionOnErrorTests(): void {
         app.releaseScheduledWithheld();
         expect(scope.ofType('action').length).assertEqual(1);
         expect(scope.ofType('error').length).assertEqual(1);
+      });
+  });
+
+  describe('rum-session-on-error-crash-mapper', (): void => {
+    it('observeOnlyReportsTheLiveErrorOnceThroughTheMapperWhateverTheSwitch',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        // A mapper that drops crashes but keeps ordinary errors: OBSERVE_ONLY
+        // reports the exception as an ordinary error, exactly once, and no
+        // incident is ever involved — with the switch off...
+        const mapper: CountingMapper = new CountingMapper();
+        mapper.install();
+        try {
+          const core: FakeCore = new FakeCore();
+          core.crashScope = new FakeCrashScope(core);
+          core.crashScope.policy = 'observe_only';
+          const scope: CapturingScope = new CapturingScope();
+          const monitor: DefaultRumMonitor = featureWith(core, scope, 100, false);
+          monitor.startView('home', 'home');
+          fireUnhandledException(CRASH_TEXT);
+          expect(scope.ofType('error').length).assertEqual(1);
+          expect(mapper.crashesSeen).assertEqual(0);
+          expect(mapper.errorsSeen).assertEqual(1);
+          expect(core.crashScope.probes.length).assertEqual(0);
+          expect(core.crashScope.controls[0]['suppressed'] === true).assertFalse();
+          // ...and with the switch on, where the session was withholding.
+          const core2: FakeCore = new FakeCore();
+          core2.crashScope = new FakeCrashScope(core2);
+          core2.crashScope.policy = 'observe_only';
+          const scope2: CapturingScope = new CapturingScope();
+          const monitor2: DefaultRumMonitor = featureWith(core2, scope2, 0, true);
+          monitor2.startView('home', 'home');
+          fireUnhandledException(CRASH_TEXT);
+          expect(scope2.ofType('error').length).assertEqual(1);
+          expect(mapper.crashesSeen).assertEqual(0);
+          expect(core2.crashScope.probes.length).assertEqual(0);
+        } finally {
+          RumEventMapperHolder.reset();
+        }
+      });
+
+    it('aTerminatingCrashInACollectedSessionLeavesTheMapperToTheReplay',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        // Not withheld: nothing the crash does in this process depends on the
+        // mapper, so it is not asked now — the replay asks it once, as before.
+        const mapper: CountingMapper = new CountingMapper();
+        mapper.install();
+        try {
+          const core: FakeCore = new FakeCore();
+          core.crashScope = new FakeCrashScope(core);
+          const scope: CapturingScope = new CapturingScope();
+          const monitor: DefaultRumMonitor = featureWith(core, scope, 100, false);
+          monitor.startView('home', 'home');
+          fireUnhandledException(CRASH_TEXT);
+          expect(mapper.crashesSeen).assertEqual(0);
+          expect(core.crashScope.controls[0]['suppressed'] === true).assertFalse();
+          expect(core.crashScope.controls[0]['pending_written']).assertEqual(true);
+          // The crash is counted on the view, as on a run without the switch.
+          const views: Array<Record<string, Object>> = scope.ofType('view');
+          const last: Record<string, Object> = views[views.length - 1];
+          expect(((last['view'] as Record<string, Object>)['crash'] as Record<string, Object>)['count']).assertEqual(1);
+        } finally {
+          RumEventMapperHolder.reset();
+        }
+      });
+
+    it('theCrashTheMapperJudgesIsTheOneTheReplayWillCarry',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        // A mapper keyed on a field only the replayed event carries
+        // (`crash.recovered`): the verdict at crash time must be the replay's.
+        const mapper: CountingMapper = new CountingMapper('crash.recovered');
+        mapper.install();
+        try {
+          const core: FakeCore = new FakeCore();
+          core.crashScope = new FakeCrashScope(core);
+          core.crashScope.recover = true;
+          const scope: CapturingScope = new CapturingScope();
+          const monitor: DefaultRumMonitor = onErrorFeature(core, scope);
+          monitor.startView('home', 'home');
+          monitor.addAction(RumActionType.TAP, 'before');
+          fireUnhandledException(CRASH_TEXT);
+          expect(mapper.crashesSeen).assertEqual(1);
+          expect(core.crashScope.controls[0]['suppressed']).assertEqual(true);
+          expect(scope.written.length).assertEqual(0); // no release, nothing billed
+          // Negative control: the same crash without a recovery is kept and released.
+          const core2: FakeCore = new FakeCore();
+          core2.crashScope = new FakeCrashScope(core2);
+          const kept: CapturingScope = new CapturingScope();
+          const monitor2: DefaultRumMonitor = onErrorFeature(core2, kept);
+          monitor2.startView('home', 'home');
+          monitor2.addAction(RumActionType.TAP, 'before');
+          fireUnhandledException(CRASH_TEXT);
+          expect(core2.crashScope.controls[0]['suppressed'] === true).assertFalse();
+          expect(kept.ofType('action').length).assertEqual(1);
+        } finally {
+          RumEventMapperHolder.reset();
+        }
       });
   });
 }

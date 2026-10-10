@@ -318,6 +318,11 @@ export class DefaultRumMonitor implements RumMonitor {
     this.globalAttributes.clear();
   }
 
+  /** Whether the running session is one kept on error that has not been released yet. */
+  isWithholding(): boolean {
+    return this.applicationScope.isWithholding();
+  }
+
   getCurrentSessionId(callback: (sessionId: string | undefined) => void): void {
     // A session kept only on error has nothing on the backend until it is
     // released: an id handed out before then could never be looked up.

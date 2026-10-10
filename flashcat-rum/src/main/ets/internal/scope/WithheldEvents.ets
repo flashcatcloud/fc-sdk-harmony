@@ -165,7 +165,7 @@ export class WithheldEventBuffer {
    * the order. An error before the first view, with view tracking off, or whose
    * view document the mapper dropped is still the error the session is kept for.
    */
-  release(writer: EventWriter, nowMs: number): void {
+  release(writer: EventWriter, nowMs: number, sessionId: string): void {
     this.prune(nowMs);
     const views: HeldView[] = [];
     this.views.forEach((view: HeldView) => {
@@ -191,7 +191,7 @@ export class WithheldEventBuffer {
         persisted += 1;
       }
     }
-    FlashcatLog.d(`rum.withheld: released ${this.describe()} persisted=${persisted} failed=${ordered.length - persisted}`);
+    FlashcatLog.d(`rum.withheld: released session=${sessionId} ${this.describe()} persisted=${persisted} failed=${ordered.length - persisted}`);
     this.clear();
   }
 
@@ -509,7 +509,7 @@ export class WithholdingFeatureScope implements FeatureScope {
     this.cancelTimer();
     this.buffer = null;
     this.delegate.withWriteContext((_context: FlashcatContext, writer: EventWriter) => {
-      buffer.release(writer, Date.now());
+      buffer.release(writer, Date.now(), this.sessionId);
     });
   }
 
