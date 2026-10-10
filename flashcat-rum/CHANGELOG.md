@@ -21,6 +21,12 @@
   session drawn dark at rate 0.
 - Revoking tracking consent now also discards what RUM holds in memory for a
   session that has not reached storage.
+- Known limitations of error-session capture: a crash replayed on a later
+  launch that nothing attributes to a session is not reported while the
+  current session is withheld; and the event mapper must be a pure function
+  of the event — an uncaught exception that terminates the process is mapped
+  once at crash time and again when it is replayed on the next launch, and
+  the two verdicts must agree.
 
 ## 0.6.0
 

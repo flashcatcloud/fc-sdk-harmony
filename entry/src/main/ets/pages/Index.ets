@@ -109,8 +109,9 @@ struct Index {
       const rcMode: string = AppStorage.get<string>('rcMode') ?? '';
       const rcInitRate: number = Number.parseInt(AppStorage.get<string>('rcInitRate') ?? '100', 10);
       const sessionOnError: boolean = (AppStorage.get<string>('soe') ?? '') === '1';
+      const jsCrashPolicy: string = AppStorage.get<string>('jsCrashPolicy') ?? '';
       DemoSdk.init(this.context, this.useProd, this.customEndpoint, false, trackErrors, pacing,
-        rcMode, rcInitRate, sessionOnError);
+        rcMode, rcInitRate, sessionOnError, jsCrashPolicy);
     } catch (e) {
       this.append(e instanceof Error ? e.message : 'SDK initialization failed');
       return;

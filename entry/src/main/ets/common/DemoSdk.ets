@@ -56,7 +56,8 @@ export class DemoSdk {
    */
   static init(context: common.Context, prod: boolean, customEndpoint: string,
     recover: boolean = false, trackErrors: boolean = true, pacing: string = 'demo',
-    remoteConfig: string = '', initSampleRate: number = 100, sessionOnError: boolean = false): void {
+    remoteConfig: string = '', initSampleRate: number = 100, sessionOnError: boolean = false,
+    jsCrashPolicy: string = ''): void {
     if (DemoSdk.initialized) {
       return;
     }
@@ -107,6 +108,8 @@ export class DemoSdk {
     const crashBuilder: CrashConfigurationBuilder = new CrashConfigurationBuilder();
     if (recover) {
       crashBuilder.setJsCrashPolicy(JsCrashPolicy.REPORT_AND_RECOVER);
+    } else if (jsCrashPolicy === 'observe_only') {
+      crashBuilder.setJsCrashPolicy(JsCrashPolicy.OBSERVE_ONLY);
     }
     FlashcatCrash.enable(crashBuilder.build());
 
