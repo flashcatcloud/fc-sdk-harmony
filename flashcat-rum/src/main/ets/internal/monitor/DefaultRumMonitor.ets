@@ -60,7 +60,8 @@ export class DefaultRumMonitor implements RumMonitor {
     this.applicationScope = new RumApplicationScope(
       featureScope, core, configuration.applicationId, configuration.sessionSampleRate,
       remoteConfig, configuration.beforeSampling,
-      controller === null ? null : (): void => controller.onSessionStarted());
+      controller === null ? null : (): void => controller.onSessionStarted(),
+      configuration.sessionOnError);
     this.startKeepAlive();
   }
 
@@ -70,6 +71,15 @@ export class DefaultRumMonitor implements RumMonitor {
     if (this.controller !== null) {
       this.controller.refreshIfStale();
     }
+  }
+
+  /**
+   * SDK stop. A release that earned its place was already written by the
+   * flush that precedes stop; one still waiting here (the flush is skipped
+   * under a refused consent) must not fire through a stopped core.
+   */
+  stopWithheld(): void {
+    this.applicationScope.stopWithheld();
   }
 
   /** Stop keeping the console's configuration fresh (SDK stop). */
@@ -198,6 +208,24 @@ export class DefaultRumMonitor implements RumMonitor {
   }
 
   /**
+   * The app is being flushed — backgrounded, about to exit, or asked to by the
+   * host. A session that already reported its error releases what it held now
+   * instead of after its jitter: the process may not live that long.
+   */
+  releaseScheduledWithheld(): void {
+    this.applicationScope.releaseScheduledWithheld();
+  }
+
+  /**
+   * Tracking consent was refused. The core wipes what it had collected; a
+   * session holding its events in memory must forget them the same way, or a
+   * consent granted again later would release what the refusal was meant to end.
+   */
+  forgetWithheld(): void {
+    this.applicationScope.forgetWithheld();
+  }
+
+  /**
    * Internal: a terminating crash was persisted for next-launch replay. Bump the
    * active view's error/crash counts now (only the crashing process can), so the
    * final view document feeds session_crash_count → crash-free rate. The error
@@ -255,8 +283,9 @@ export class DefaultRumMonitor implements RumMonitor {
   /** Internal: used by the unhandled-exception hook to flag errors as unhandled. */
   reportError(message: string, source: RumErrorSource, stack: string | undefined,
     isCrash: boolean, handling: string, attributes?: Record<string, Object>, timestampMs?: number,
-    countInView: boolean = true): void {
+    countInView: boolean = true, inherited: boolean = false): void {
     const e: RumRawEvent = this.raw('addError', attributes);
+    e.inherited = inherited;
     if (timestampMs !== undefined) {
       e.timestampMs = timestampMs;
     }
@@ -289,8 +318,15 @@ export class DefaultRumMonitor implements RumMonitor {
     this.globalAttributes.clear();
   }
 
+  /** Whether the running session is one kept on error that has not been released yet. */
+  isWithholding(): boolean {
+    return this.applicationScope.isWithholding();
+  }
+
   getCurrentSessionId(callback: (sessionId: string | undefined) => void): void {
-    callback(this.applicationScope.getCurrentSessionId());
+    // A session kept only on error has nothing on the backend until it is
+    // released: an id handed out before then could never be looked up.
+    callback(this.applicationScope.isWithholding() ? undefined : this.applicationScope.getCurrentSessionId());
   }
 
   stopSession(): void {

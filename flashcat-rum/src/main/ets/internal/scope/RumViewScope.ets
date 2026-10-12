@@ -29,6 +29,8 @@ export class RumViewScope implements RumScope {
   // event type the backend builds session rows from), so a session can be
   // traced back to the settings that decided whether to keep it.
   private readonly draw: DrawnConfiguration | null;
+  // Whether the session is kept only because it errors (`sessionOnError`).
+  private readonly sampledForError: boolean;
   private actionCount: number = 0;
   private errorCount: number = 0;
   private resourceCount: number = 0;
@@ -53,7 +55,8 @@ export class RumViewScope implements RumScope {
     viewId: string,
     startedAtMs: number,
     attributes: Record<string, Object>,
-    draw: DrawnConfiguration | null = null
+    draw: DrawnConfiguration | null = null,
+    sampledForError: boolean = false
   ) {
     this.featureScope = featureScope;
     this.core = core;
@@ -65,6 +68,7 @@ export class RumViewScope implements RumScope {
     this.startedAtMs = startedAtMs;
     this.attributes = attributes;
     this.draw = draw;
+    this.sampledForError = sampledForError;
     // Publish the active view so Logs/Trace/Crash can correlate. The URL is the
     // RESOLVED one (caller-supplied view.url, e.g. the nav tracker's route path),
     // not the opaque key — a crash incident snapshots this and must match the
@@ -273,7 +277,7 @@ export class RumViewScope implements RumScope {
       const event: Record<string, Object> = RumEventAssembler.view(
         context, this.applicationId, this.sessionId, this.viewId, this.viewName,
         this.startedAtMs, timeSpentNs, actions, errors, resources, crashes, version, isActive,
-        this.viewAttributes(), this.draw);
+        this.viewAttributes(), this.draw, this.sampledForError);
       writeMapped(writer, event, false);
     });
   }

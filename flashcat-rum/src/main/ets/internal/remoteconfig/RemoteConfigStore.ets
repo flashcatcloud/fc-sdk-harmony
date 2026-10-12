@@ -21,6 +21,7 @@ export class RemoteConfigValues {
   readonly etag: string | null;
   readonly ttlSeconds: number;
   readonly refreshOnForeground: boolean;
+  readonly sessionOnError: boolean | null;
 
   constructor(
     sessionSampleRate: number | null,
@@ -28,7 +29,8 @@ export class RemoteConfigValues {
     custom: string | null = null,
     etag: string | null = null,
     ttlSeconds: number = DEFAULT_TTL_SECONDS,
-    refreshOnForeground: boolean = false
+    refreshOnForeground: boolean = false,
+    sessionOnError: boolean | null = null
   ) {
     this.sessionSampleRate = sessionSampleRate;
     this.version = version;
@@ -36,25 +38,29 @@ export class RemoteConfigValues {
     this.etag = etag;
     this.ttlSeconds = ttlSeconds;
     this.refreshOnForeground = refreshOnForeground;
+    this.sessionOnError = sessionOnError;
   }
 }
 
 /**
  * The configuration a session was drawn under: the rate actually used at the
  * draw (the console's where it set one, the init value where it did not, the
- * hook's where it overrode both) and the settings version it came from. Events
- * carry these instead of the init values, so an audit lines up with the draw
- * that kept the session — a session is never re-judged, so the metadata must
- * come from its creation, not from whatever has arrived since.
+ * hook's where it overrode both), whether `sessionOnError` kept the sessions the
+ * rate missed, and the settings version they came from. Events carry these
+ * instead of the init values, so an audit lines up with the draw that kept the
+ * session — a session is never re-judged, so the metadata must come from its
+ * creation, not from whatever has arrived since.
  */
 export class DrawnConfiguration {
   /** 0 when no configuration was ever fetched. */
   readonly version: number;
   readonly sessionSampleRate: number;
+  readonly sessionOnError: boolean;
 
-  constructor(version: number, sessionSampleRate: number) {
+  constructor(version: number, sessionSampleRate: number, sessionOnError: boolean = false) {
     this.version = version;
     this.sessionSampleRate = sessionSampleRate;
+    this.sessionOnError = sessionOnError;
   }
 }
 
@@ -64,6 +70,15 @@ const FIELD_CUSTOM: string = 'custom';
 const FIELD_ETAG: string = 'etag';
 const FIELD_TTL: string = 'ttl';
 const FIELD_REFRESH_ON_FOREGROUND: string = 'refresh_on_foreground';
+const FIELD_SESSION_ON_ERROR: string = 'session_on_error';
+/**
+ * Which fields the entry was written with. An entry written by an SDK that did
+ * not read every field this one reads carries a validator for a response this
+ * SDK has never seen: its values are kept, its validator is not, so the next
+ * request asks for the whole body. Format 2 added `session_on_error`.
+ */
+const FIELD_FORMAT: string = 'format';
+const RECORD_FORMAT: number = 2;
 const MAX_RATE: number = 100;
 
 /**
@@ -120,8 +135,12 @@ export class RemoteConfigStore {
     if (values.etag !== null) {
       record[FIELD_ETAG] = values.etag;
     }
+    if (values.sessionOnError !== null) {
+      record[FIELD_SESSION_ON_ERROR] = values.sessionOnError;
+    }
     record[FIELD_TTL] = values.ttlSeconds;
     record[FIELD_REFRESH_ON_FOREGROUND] = values.refreshOnForeground;
+    record[FIELD_FORMAT] = RECORD_FORMAT;
     const serialized: string = JSON.stringify(record);
     if (!RemoteConfigStore.isWithinSizeLimit(serialized)) {
       return false;
@@ -166,7 +185,9 @@ export class RemoteConfigStore {
    * The SDK version is deliberately left out: including it would discard the
    * stored values on every SDK upgrade and put the first session after an
    * upgrade back on the init values. The storage FORMAT version lives in the
-   * prefix instead, so only a real format change orphans the cache.
+   * prefix instead, so only a real format change orphans the cache. A field
+   * added to the entry is not one: the entry's own `format` field retires the
+   * validator while the values stay in force.
    */
   static buildStoreKey(context: FlashcatContext, host: string, applicationId: string): string {
     const parts: string[] = [
@@ -189,16 +210,19 @@ export class RemoteConfigStore {
     }
     const ttl: number | null = RemoteConfigStore.intOf(record[FIELD_TTL]);
     const hasRefreshSettings: boolean = ttl !== null && ttl > 0
-      && typeof record[FIELD_REFRESH_ON_FOREGROUND] === 'boolean';
+      && typeof record[FIELD_REFRESH_ON_FOREGROUND] === 'boolean'
+      && RemoteConfigStore.intOf(record[FIELD_FORMAT]) === RECORD_FORMAT;
     // A validator can only be reused with the whole state it validates. If
-    // refresh settings are missing, keep the rates but ask for a full body.
+    // refresh settings are missing, or the entry predates a field this SDK
+    // reads, keep the rates but ask for a full body.
     return new RemoteConfigValues(
       RemoteConfigStore.rateOf(record[FIELD_RATE]),
       RemoteConfigStore.intOf(record[FIELD_VERSION]),
       RemoteConfigStore.stringOf(record[FIELD_CUSTOM]),
       hasRefreshSettings ? RemoteConfigStore.stringOf(record[FIELD_ETAG]) : null,
       ttl !== null && ttl > 0 ? ttl : DEFAULT_TTL_SECONDS,
-      record[FIELD_REFRESH_ON_FOREGROUND] === true
+      record[FIELD_REFRESH_ON_FOREGROUND] === true,
+      typeof record[FIELD_SESSION_ON_ERROR] === 'boolean' ? record[FIELD_SESSION_ON_ERROR] as boolean : null
     );
   }
 

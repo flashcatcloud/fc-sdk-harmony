@@ -34,6 +34,15 @@ export interface RumMonitor {
   /** Remove ALL global attributes. */
   clearAttributes(): void;
 
+  /**
+   * The id of the current session, or `undefined` when there is none. A session
+   * `sessionOnError` keeps only if it errors reports `undefined` until it has
+   * reported an error and its events have been released: before that the
+   * backend holds no session under its id, so the id could not be looked up.
+   * From the release on it reports its real id. A session `sessionSampleRate`
+   * did not draw still reports its id, as it always has: it exists in the SDK,
+   * even though the backend never sees it.
+   */
   getCurrentSessionId(callback: (sessionId: string | undefined) => void): void;
 
   /**

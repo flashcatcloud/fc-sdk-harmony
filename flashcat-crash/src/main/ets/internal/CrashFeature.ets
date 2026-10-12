@@ -54,6 +54,8 @@ export class CrashFeature implements Feature, FeatureEventReceiver {
   // Newest incident persisted with REPORT_AND_RECOVER this run, so a failed
   // restart can downgrade it before exit (crash.recovered must not lie).
   private lastRecoveryIncident: CrashIncidentRecord | null = null;
+  // The file the last pending write landed in, as the storage named it.
+  private lastPersistedFileName: string = '';
   // Incidents whose replay delivery FAILED this launch (retained on disk).
   // The in-process watcher must not report their crashes a second time — the
   // retained incident is the canonical carrier and replays next launch.
@@ -263,6 +265,14 @@ export class CrashFeature implements Feature, FeatureEventReceiver {
         }
       }
     }
+    if (written && this.droppedByRumMapper(this.lastRecoveryIncident ?? incident, fingerprint, nowMs)) {
+      this.lastRecoveryIncident = null;
+      event['suppressed'] = true;
+      event['pending_written'] = false;
+      event['report_async'] = false;
+      event['should_exit'] = true;
+      return;
+    }
     event['pending_written'] = written;
     // Termination is policy-driven, not write-driven: a rare pending-write
     // failure must not silently revert to keep-alive semantics. The report
@@ -322,7 +332,43 @@ export class CrashFeature implements Feature, FeatureEventReceiver {
       'success': false
     };
     this.sendStorageCommand(command);
-    return command['success'] === true;
+    if (command['success'] === true) {
+      this.lastPersistedFileName = CrashFeature.stringValue(command['file_name']);
+      return true;
+    }
+    return false;
+  }
+
+  /**
+   * RUM's event mapper has the last word on whether a persisted crash is an
+   * error at all, and in a session that withholds its events that word has to
+   * be spoken in this process: the crash counts on the view and releases what
+   * the session held here, while the error itself is only assembled on the next
+   * launch. RUM is asked with the very event the replay would deliver, built
+   * from the persisted record, so the mapper judges one event, not two. A crash
+   * it drops is removed again, remembered as consumed so the watcher's copy does
+   * not come back, and never reported.
+   */
+  private droppedByRumMapper(incident: CrashIncidentRecord, fingerprint: string, nowMs: number): boolean {
+    const rum: FeatureScope | null = this.core.getFeature(RUM_FEATURE_NAME);
+    if (rum === null) {
+      return false;
+    }
+    const probe: Record<string, Object> = CrashEventMapper.fromPendingIncident(incident);
+    probe['type'] = 'crash_mapper_probe';
+    probe['target'] = RUM_FEATURE_NAME;
+    rum.sendEvent(probe);
+    if (probe['kept'] !== false) {
+      return false;
+    }
+    if (this.lastPersistedFileName.length > 0) {
+      this.deletePending(this.lastPersistedFileName);
+    }
+    this.consumed.push(new ConsumedCrashIncident(incident.incidentId, fingerprint, nowMs, nowMs));
+    this.consumed = CrashDeduplication.retainRecent(this.consumed, nowMs, CONSUMED_RETENTION_MS);
+    this.persistConsumed();
+    FlashcatLog.d(`crash.js: event mapper dropped crash incident=${incident.incidentId}; not persisted, not reported`);
+    return true;
   }
 
   private enableRecovery(): void {

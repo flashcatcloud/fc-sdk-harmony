@@ -108,8 +108,10 @@ struct Index {
       const pacing: string = AppStorage.get<string>('netbenchPacing') ?? 'demo'; // SDK init only
       const rcMode: string = AppStorage.get<string>('rcMode') ?? '';
       const rcInitRate: number = Number.parseInt(AppStorage.get<string>('rcInitRate') ?? '100', 10);
+      const sessionOnError: boolean = (AppStorage.get<string>('soe') ?? '') === '1';
+      const jsCrashPolicy: string = AppStorage.get<string>('jsCrashPolicy') ?? '';
       DemoSdk.init(this.context, this.useProd, this.customEndpoint, false, trackErrors, pacing,
-        rcMode, rcInitRate);
+        rcMode, rcInitRate, sessionOnError, jsCrashPolicy);
     } catch (e) {
       this.append(e instanceof Error ? e.message : 'SDK initialization failed');
       return;
@@ -188,10 +190,24 @@ struct Index {
       this.runNetBench(`${endpoint}/e2e/echo`);
     } else if (name === 'remoteconfig') {
       this.runRemoteConfigScenario();
+    } else if (name.startsWith('soe')) {
+      this.runSessionOnErrorScenario(name);
+    } else if (name === 'native-crash') {
+      this.append('e2e: native crash in 800ms');
+      setTimeout(() => {
+        testNapi.triggerNativeCrash();
+      }, 800);
     } else if (name === 'crash') {
       this.append('e2e: crashing in 800ms');
       setTimeout(() => {
         throw new Error('E2E crash marker');
+      }, 800);
+    } else if (name === 'crash-secret') {
+      // A crash the demo mapper drops ("secret" in the message): it must not
+      // count, release, or be reported on the next launch.
+      this.append('e2e: secret crash in 800ms');
+      setTimeout(() => {
+        throw new Error('E2E secret crash');
       }, 800);
     }
   }
@@ -230,6 +246,44 @@ struct Index {
         after === null ? 'null' : JSON.stringify(after));
       this.append('e2e: remoteconfig — forced session emitted');
     }, 3000);
+  }
+
+  /**
+   * Error-session capture runs (launch with `--ps soe 1`). Every step is logged
+   * under FCSOE so a run can be lined up with what the intake received:
+   * - soe: activity, then an error 2 s later — the error releases the held minute;
+   * - soe-quiet: activity, then the session ends without an error;
+   * - soe-secret: activity, then an error the event mapper drops;
+   * - soe-quiet-native: the session ends without an error, then a native crash.
+   */
+  private runSessionOnErrorScenario(name: string): void {
+    const monitor: RumMonitor = DemoSdk.monitor();
+    monitor.addAction(RumActionType.TAP, 'soe-tap');
+    monitor.getCurrentSessionId((sessionId: string | undefined): void => {
+      hilog.info(0x0000, 'FCSOE', '%{public}s session=%{public}s', name, sessionId ?? 'none');
+    });
+    setTimeout(() => {
+      if (name === 'soe') {
+        monitor.addError('soe manual error', RumErrorSource.CUSTOM, 'at Index.soe');
+        hilog.info(0x0000, 'FCSOE', 'error at %{public}d', Date.now());
+      } else if (name === 'soe-secret') {
+        monitor.addError('soe secret error', RumErrorSource.CUSTOM, 'at Index.soe');
+        monitor.stopSession();
+        hilog.info(0x0000, 'FCSOE', 'dropped error, session stopped at %{public}d', Date.now());
+      } else if (name === 'soe-quiet-native') {
+        // The session is thrown away, then the process dies of a native crash
+        // before any view is written: the next launch must not rebuild it.
+        monitor.stopSession();
+        hilog.info(0x0000, 'FCSOE', 'session stopped at %{public}d; native crash in 1 s', Date.now());
+        setTimeout(() => {
+          testNapi.triggerNativeCrash();
+        }, 1000);
+      } else {
+        monitor.stopSession();
+        hilog.info(0x0000, 'FCSOE', 'session stopped at %{public}d', Date.now());
+      }
+      this.append(`e2e: ${name} done`);
+    }, 2000);
   }
 
   aboutToDisappear(): void {

@@ -64,6 +64,7 @@ const FIELD_REFRESH_ON_FOREGROUND: string = 'refresh_on_foreground';
 const FIELD_RUM: string = 'rum';
 const FIELD_CUSTOM: string = 'custom';
 const FIELD_SESSION_SAMPLE_RATE: string = 'sessionSampleRate';
+const FIELD_SESSION_ON_ERROR: string = 'sessionOnError';
 
 /**
  * Keeps the stored remote configuration in step with what the console says.
@@ -307,14 +308,14 @@ export class RemoteConfigController {
     const refreshOnForeground: boolean = json[FIELD_REFRESH_ON_FOREGROUND] === true;
 
     const before: number | null = this.storedRate();
-    const rate: number | null = enabled
-      ? RemoteConfigController.readRate(RemoteConfigController.objectOf(json[FIELD_RUM]))
-      : null;
+    const rumValues: Record<string, Object> | null = enabled ? RemoteConfigController.objectOf(json[FIELD_RUM]) : null;
+    const rate: number | null = RemoteConfigController.readRate(rumValues);
+    const sessionOnError: boolean | null = RemoteConfigController.readSwitch(rumValues, FIELD_SESSION_ON_ERROR);
     // Stored as the raw string: delivery is the platform's job, the meaning
     // belongs to the host application.
     const custom: string | null = enabled ? RemoteConfigController.rawObjectOf(json[FIELD_CUSTOM]) : null;
     const ttl: number = RemoteConfigController.positiveIntOf(json[FIELD_TTL]) ?? DEFAULT_TTL_SECONDS;
-    if (!this.store.write(new RemoteConfigValues(rate, version, custom, etag, ttl, refreshOnForeground))) {
+    if (!this.store.write(new RemoteConfigValues(rate, version, custom, etag, ttl, refreshOnForeground, sessionOnError))) {
       FlashcatLog.d('rum.remoteconfig: configuration exceeds the storage budget; keeping the values already in use');
       return ApplyOutcome.UNREADABLE;
     }
@@ -366,6 +367,12 @@ export class RemoteConfigController {
     return value as number;
   }
 
+  /** A switch the response did not send, or sent as anything but a boolean, stays
+   * absent so the value passed to init keeps applying. */
+  private static readSwitch(rum: Record<string, Object> | null, field: string): boolean | null {
+    const value: Object | undefined = rum === null ? undefined : rum[field];
+    return typeof value === 'boolean' ? value as boolean : null;
+  }
 
   private static objectOf(value: Object | undefined): Record<string, Object> | null {
     if (value === undefined || typeof value !== 'object' || value === null || Array.isArray(value)) {
