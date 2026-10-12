@@ -52,10 +52,12 @@ export class DemoSdk {
    * @param initSampleRate the rate this build ships with. Deliberately not 100
    *   for the remote-configuration runs: the event reports the rate actually
    *   drawn with, so a distinctive init value is what proves which one won.
+   * @param sessionOnError keep the sessions the rate misses when they error.
    */
   static init(context: common.Context, prod: boolean, customEndpoint: string,
     recover: boolean = false, trackErrors: boolean = true, pacing: string = 'demo',
-    remoteConfig: string = '', initSampleRate: number = 100): void {
+    remoteConfig: string = '', initSampleRate: number = 100, sessionOnError: boolean = false,
+    jsCrashPolicy: string = ''): void {
     if (DemoSdk.initialized) {
       return;
     }
@@ -93,6 +95,7 @@ export class DemoSdk {
       .setTrackNavigation(true)       // phase 2: auto View events on router push/pop (A1)
       .setTrackNetworkRequests(true)  // phase 2: auto Resource via FlashcatHttp wrapper (A2)
       .setTrackErrors(trackErrors)    // false → crash-only reporting (auto errors suppressed)
+      .setSessionOnError(sessionOnError)
       .setEventMapper(DemoSdk.demoEventMapper); // phase 2 R3: PII scrubbing / drop
     if (remoteConfig.length > 0) {
       rumBuilder.setRemoteConfigurationEnabled(true);
@@ -105,6 +108,8 @@ export class DemoSdk {
     const crashBuilder: CrashConfigurationBuilder = new CrashConfigurationBuilder();
     if (recover) {
       crashBuilder.setJsCrashPolicy(JsCrashPolicy.REPORT_AND_RECOVER);
+    } else if (jsCrashPolicy === 'observe_only') {
+      crashBuilder.setJsCrashPolicy(JsCrashPolicy.OBSERVE_ONLY);
     }
     FlashcatCrash.enable(crashBuilder.build());
 
@@ -149,7 +154,8 @@ export class DemoSdk {
   /**
    * Phase 2 R3 demo mapper. Two redactions you can verify in HiLog / NDJSON:
    * - resource events: strip the query string from `resource.url` (tokens, PII);
-   * - action events whose target name contains "secret": dropped entirely (null).
+   * - action events whose target name contains "secret": dropped entirely (null);
+   * - error events whose message contains "secret": dropped entirely (null).
    * Everything else passes through unchanged. Must never throw.
    */
   static demoEventMapper(event: Record<string, Object>): Record<string, Object> | null {
@@ -177,6 +183,14 @@ export class DemoSdk {
           if (typeof name === 'string' && name.indexOf('secret') >= 0) {
             return null; // drop secret-marked taps
           }
+        }
+      }
+    } else if (type === 'error') {
+      const error: Object | undefined = event['error'];
+      if (typeof error === 'object') {
+        const message: Object | undefined = (error as Record<string, Object>)['message'];
+        if (typeof message === 'string' && message.indexOf('secret') >= 0) {
+          return null; // drop secret-marked errors
         }
       }
     }

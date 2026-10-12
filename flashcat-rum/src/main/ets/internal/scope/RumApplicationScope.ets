@@ -18,6 +18,7 @@ export class RumApplicationScope implements RumScope {
   private readonly core: SdkCore;
   private readonly applicationId: string;
   private readonly sampleRate: number;
+  private readonly sessionOnError: boolean;
   private session: RumSessionScope | null = null;
   // View active when the previous session expired, restarted (once) in the
   // replacement session. Held here — not on the session — because a session
@@ -42,8 +43,8 @@ export class RumApplicationScope implements RumScope {
   // Process-lifetime, like the debugging decision it represents.
   private forced: boolean = false;
   // A deferred change need not match the running session's draw. Remember the
-  // last resolved rate so republishing it cannot turn a deferral into a redraw.
-  private lastResolvedRate: number | null = null;
+  // last resolved settings so republishing them cannot turn a deferral into a redraw.
+  private lastResolved: DrawnConfiguration | null = null;
   private invokingBeforeSampling: boolean = false;
 
   constructor(
@@ -53,12 +54,14 @@ export class RumApplicationScope implements RumScope {
     sampleRate: number,
     remoteConfig: RemoteConfigStore | null = null,
     beforeSampling: BeforeSamplingCallback | null = null,
-    onSessionStarted: (() => void) | null = null
+    onSessionStarted: (() => void) | null = null,
+    sessionOnError: boolean = false
   ) {
     this.featureScope = featureScope;
     this.core = core;
     this.applicationId = applicationId;
     this.sampleRate = sampleRate;
+    this.sessionOnError = sessionOnError;
     this.remoteConfig = remoteConfig;
     this.beforeSampling = beforeSampling;
     this.onSessionStarted = onSessionStarted;
@@ -218,6 +221,32 @@ export class RumApplicationScope implements RumScope {
     return this.session?.getSessionId();
   }
 
+  /** Whether the running session is one kept on error that has not been released yet. */
+  isWithholding(): boolean {
+    return this.session !== null && this.session.isWithholding();
+  }
+
+  /** The app may be going away: a release the session has earned leaves now. */
+  releaseScheduledWithheld(): void {
+    if (this.session !== null) {
+      this.session.releaseScheduledWithheld();
+    }
+  }
+
+  /** SDK stop: nothing held may be written through the core afterwards. */
+  stopWithheld(): void {
+    if (this.session !== null) {
+      this.session.stopWithheld();
+    }
+  }
+
+  /** Tracking consent was refused: nothing collected so far may be released later. */
+  forgetWithheld(): void {
+    if (this.session !== null) {
+      this.session.forgetWithheld();
+    }
+  }
+
   /**
    * Draws a new session under the settings that apply RIGHT NOW: what the
    * console published if anything, the init value otherwise, and finally
@@ -228,10 +257,8 @@ export class RumApplicationScope implements RumScope {
   private startNewSession(nowMs: number): RumSessionScope {
     const stored: RemoteConfigValues | null = this.remoteConfig !== null ? this.remoteConfig.read() : null;
     const publishedRate: number | null = stored !== null ? stored.sessionSampleRate : null;
-    const baseRate: number = publishedRate !== null ? publishedRate : this.sampleRate;
-    const rate: number = this.askBeforeSampling(baseRate, stored);
-    this.lastResolvedRate = rate;
-    const version: number = stored !== null && stored.version !== null ? stored.version : 0;
+    const resolved: DrawnConfiguration = this.resolve(publishedRate !== null ? publishedRate : this.sampleRate, stored);
+    this.lastResolved = resolved;
     // Carried on every session, whether or not the app opted into remote
     // configuration: the backend weights a session by the rate it reports, and
     // a session that reports none is counted once — the same as an SDK too old
@@ -241,11 +268,9 @@ export class RumApplicationScope implements RumScope {
     // A forced session reports neither the rate that would have dropped it nor
     // the version it ignored: it was not drawn by them. Reporting 3 there would
     // have the console weight one debugging visitor as thirty-three sessions.
-    const draw: DrawnConfiguration = this.forced
-      ? new DrawnConfiguration(0, FORCED_SAMPLE_RATE)
-      : new DrawnConfiguration(version, rate);
+    const draw: DrawnConfiguration = this.forced ? new DrawnConfiguration(0, FORCED_SAMPLE_RATE) : resolved;
     const session: RumSessionScope = new RumSessionScope(
-      this.featureScope, this.core, this.applicationId, rate, nowMs, this.forced, draw);
+      this.featureScope, this.core, this.applicationId, resolved.sessionSampleRate, nowMs, this.forced, draw);
     if (this.onSessionStarted !== null) {
       this.onSessionStarted();
     }
@@ -253,15 +278,31 @@ export class RumApplicationScope implements RumScope {
   }
 
   /**
-   * Asks the app's hook for the rate to draw with. Anything unusable — a throw,
-   * a non-number, a rate outside 0..100 — leaves the incoming rate alone: a
-   * mistake in the host application must never take a customer's collection
-   * down with it.
+   * The settings a draw would use right now: `rate` (the console's, or the init
+   * value), the console's `sessionOnError` over the init one, and the app's hook
+   * with the last word on the rate. A rate the hook sets to 0 switches
+   * `sessionOnError` off too: the hook's contract is that 0 never collects, and
+   * the switch must not quietly turn that into "collect on error". A rate it
+   * leaves alone keeps the switch.
    */
-  private askBeforeSampling(rate: number, stored: RemoteConfigValues | null): number {
+  private resolve(rate: number, stored: RemoteConfigValues | null): DrawnConfiguration {
+    const override: number | null = this.askBeforeSampling(rate, stored);
+    const publishedOnError: boolean | null = stored !== null ? stored.sessionOnError : null;
+    const onError: boolean = override === 0 ? false : (publishedOnError ?? this.sessionOnError);
+    const version: number = stored !== null && stored.version !== null ? stored.version : 0;
+    return new DrawnConfiguration(version, override ?? rate, onError);
+  }
+
+  /**
+   * Asks the app's hook for the rate to draw with: its override, or null to keep
+   * the incoming rate. Anything unusable — a throw, a non-number, a rate outside
+   * 0..100 — leaves the incoming rate alone: a mistake in the host application
+   * must never take a customer's collection down with it.
+   */
+  private askBeforeSampling(rate: number, stored: RemoteConfigValues | null): number | null {
     const hook: BeforeSamplingCallback | null = this.beforeSampling;
     if (hook === null) {
-      return rate;
+      return null;
     }
     // A hook may accidentally report a RUM event before the new session has
     // been assigned. Ignore reentrant events and session mutations until it
@@ -274,12 +315,12 @@ export class RumApplicationScope implements RumScope {
       const override: number | undefined = hook(context);
       if (override === undefined || typeof override !== 'number'
         || Number.isNaN(override) || override < 0 || override > 100) {
-        return rate;
+        return null;
       }
       return override as number;
     } catch (e) {
       FlashcatLog.e(`rum.app: beforeSampling threw, keeping ${rate}: ${e instanceof Error ? e.message : 'error'}`);
-      return rate;
+      return null;
     } finally {
       this.invokingBeforeSampling = false;
     }
@@ -306,6 +347,13 @@ export class RumApplicationScope implements RumScope {
    * case where a move between two non-zero rates is worth a new draw. Even
    * then a replacement that still cannot collect anything is not worth the
    * view it costs, so a dark session is left alone when the new rate is zero.
+   *
+   * `sessionOnError` takes part in both zero cases. A dark session drawn at
+   * zero is also owed a new draw when the switch turns on, since it would now
+   * be kept on error. And a zero rate does not stop a session the switch kept:
+   * zero plus the switch is the switch's ordinary setting, the one that keeps
+   * only error sessions — ending those on every first fetch would lose exactly
+   * the start-up errors the switch exists to catch.
    */
   onConfigurationChanged(activation: string, _before: number | null, after: number | null, nowMs: number): void {
     if (this.invokingBeforeSampling || this.session === null) {
@@ -321,14 +369,22 @@ export class RumApplicationScope implements RumScope {
     // does at a draw, so an allow-list answers this question too. Asked only
     // here, and only once: this is an announcement, not a draw.
     const stored: RemoteConfigValues | null = this.remoteConfig !== null ? this.remoteConfig.read() : null;
-    const resolvedRate: number = this.askBeforeSampling(nextRate, stored);
-    const previousResolvedRate: number | null = this.lastResolvedRate;
-    this.lastResolvedRate = resolvedRate;
-    if (resolvedRate === previousResolvedRate || resolvedRate === this.session.getDrawnRate()) {
+    const resolved: DrawnConfiguration = this.resolve(nextRate, stored);
+    const previous: DrawnConfiguration | null = this.lastResolved;
+    this.lastResolved = resolved;
+    if ((previous !== null && previous.sessionSampleRate === resolved.sessionSampleRate
+      && previous.sessionOnError === resolved.sessionOnError)
+      || this.session.wasDrawnWith(resolved.sessionSampleRate, resolved.sessionOnError)) {
       return; // unchanged effective settings must not cause another draw
     }
+    // A rate already announced for the next session has not moved in this
+    // publication, whatever else it carries: a switch that changed beside it
+    // must not turn that deferral into a redraw.
+    const rateMoved: boolean = (previous === null || previous.sessionSampleRate !== resolved.sessionSampleRate)
+      && resolved.sessionSampleRate !== this.session.getDrawnRate();
     if (RumApplicationScope.shouldEndSession(
-      this.session.isSampled(), this.session.getDrawnRate(), resolvedRate, activation)) {
+      this.session.isSampled(), this.session.getDrawnRate(), resolved.sessionSampleRate, activation,
+      this.session.isSampledOnError(), resolved.sessionOnError, rateMoved)) {
       this.stopCurrentSession(nowMs);
     }
   }
@@ -339,15 +395,33 @@ export class RumApplicationScope implements RumScope {
    * `drawnRate` is what that session was actually drawn with, which is the only
    * way to tell a session that could never have been collected from one that
    * lost a fair draw: only the first is owed another chance when collection is
-   * switched back on.
+   * switched back on. `rateMoved` says whether this publication is the one
+   * that changed the rate: a rate already announced for the next session and
+   * republished beside a changed switch has not.
    */
-  static shouldEndSession(sampled: boolean, drawnRate: number, nextRate: number, activation: string): boolean {
+  static shouldEndSession(sampled: boolean, drawnRate: number, nextRate: number, activation: string,
+    sampledOnError: boolean = false, nextOnError: boolean = false,
+    rateMoved: boolean = nextRate !== drawnRate): boolean {
     if (sampled) {
-      return nextRate === 0 || activation === ACTIVATION_IMMEDIATE;
+      if (nextRate === 0) {
+        // A session the switch kept is left running while the switch stays on;
+        // one drawn by the rate is still stopped — the switch shapes what the
+        // next draw keeps, it does not exempt a session already collected in full.
+        return !(sampledOnError && nextOnError);
+      }
+      // `immediate` re-decides on a rate that moved; a change to the switch
+      // alone says nothing about a session the rate already kept. A session the
+      // switch kept is left alone too: it holds the minute before an error that
+      // has not happened yet, and a re-draw at the new rate would throw that
+      // away on a path that is not an emergency stop.
+      return activation === ACTIVATION_IMMEDIATE && rateMoved && !sampledOnError;
     }
     // A dark session is worth replacing only by one that can collect something;
     // otherwise the replacement is just as dark and the visitor lost a view.
-    return nextRate > 0 && (drawnRate === 0 || activation === ACTIVATION_IMMEDIATE);
+    // `immediate` re-decides it on a rate that moved, as above: a session that
+    // lost a fair draw is not owed another one because the switch changed.
+    return (drawnRate === 0 && (nextRate > 0 || nextOnError))
+      || (nextRate > 0 && rateMoved && activation === ACTIVATION_IMMEDIATE);
   }
 
   /**
@@ -362,7 +436,10 @@ export class RumApplicationScope implements RumScope {
     }
     this.forced = true;
     if (this.session !== null && this.session.isSampled()) {
-      return; // already collecting — nothing to end
+      // Already collecting — nothing to end. A session kept only on error stops
+      // waiting for one: the app asked for this visitor now.
+      this.session.releaseWithheld();
+      return;
     }
     this.stopCurrentSession(nowMs);
   }

@@ -73,6 +73,11 @@ export class CrashPendingStore implements FeatureEventReceiver {
         CrashPendingStore.stringValue(event['incident_id']));
       const serialized: string = CrashPendingStore.stringValue(event['serialized']);
       event['success'] = this.writeIncident(incidentId, serialized);
+      if (event['success'] === true) {
+        // The name is this store's to choose; the writer gets it back so it can
+        // delete exactly what it wrote.
+        event['file_name'] = `${INCIDENT_PREFIX}${incidentId}${INCIDENT_SUFFIX}`;
+      }
     } else if (type === 'crash_storage_list') {
       event['files'] = this.readIncidents();
     } else if (type === 'crash_storage_delete') {

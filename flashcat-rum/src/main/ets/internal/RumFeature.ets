@@ -103,6 +103,12 @@ export class RumFeature implements Feature, FeatureEventReceiver {
         };
         this.sendStorageCommand(command);
         return RumFeature.asString(command['serialized']);
+      },
+      (): void => {
+        this.sendStorageCommand({
+          'type': 'crash_storage_delete_last_view',
+          'target': CRASH_STORAGE_TARGET
+        });
       });
 
     // Capture the PREVIOUS process's snapshot now, before this run writes any
@@ -228,6 +234,7 @@ export class RumFeature implements Feature, FeatureEventReceiver {
     if (this.monitor !== null) {
       this.monitor.stopKeepAlive(); // stop the keep-alive timer so it doesn't leak
       this.monitor.stopRemoteConfig(); // and the configuration refresh with it
+      this.monitor.stopWithheld(); // and any withheld release still waiting on its jitter
     }
     RumNavigationTracker.detach(); // remove the router observer
     RumAutoInstrumentation.reset(); // make tap/nav trackers inert after stop
@@ -260,6 +267,16 @@ export class RumFeature implements Feature, FeatureEventReceiver {
       }
     } else if (type === 'crash_report') {
       this.onCrashReport(event);
+    } else if (type === 'crash_mapper_probe') {
+      // The crash feature is about to let the process die of a persisted
+      // incident and asks whether the app's mapper keeps the error the next
+      // launch will replay from it. `event` is that very replay event, so both
+      // verdicts are on one and the same event. The answer only matters to a
+      // session that withholds its events — counting the crash and releasing
+      // the held minute happen in this process — so no other session asks the
+      // mapper now: for them it runs once, at the replay, as it always has.
+      const m: DefaultRumMonitor | null = this.monitor;
+      event['kept'] = m === null || !m.isWithholding() || this.keepsReplayedCrash(event);
     } else if (type === 'js_crash_policy') {
       const policy: string = RumFeature.asString(event['policy']);
       this.activeJsCrashPolicy = policy.length > 0 ? policy : null;
@@ -274,10 +291,19 @@ export class RumFeature implements Feature, FeatureEventReceiver {
       }
     } else if (type === 'keep_alive') {
       // App backgrounded — refresh the active view so its final time_spent is sent
-      // before the batch is flushed (published by the core on background).
+      // before the batch is flushed (published by the core on background, and by
+      // every flush, including the one before a crash policy exits the process).
       const m: DefaultRumMonitor | null = this.monitor;
       if (m !== null) {
         m.keepAlive();
+        m.releaseScheduledWithheld();
+      }
+    } else if (type === 'consent_revoked') {
+      // The core has wiped its batches; what a session still holds in memory
+      // goes the same way.
+      const m: DefaultRumMonitor | null = this.monitor;
+      if (m !== null) {
+        m.forgetWithheld();
       }
     }
   }
@@ -341,7 +367,8 @@ export class RumFeature implements Feature, FeatureEventReceiver {
       'unhandled',
       attributes,
       undefined,
-      !alreadyCounted);
+      !alreadyCounted,
+      true);
     // Known limitation: this path cannot observe the write result (the scope
     // tree has no return channel), so delivered=true is optimistic; and the
     // freshly minted session re-flips the sampling coin, which can drop the
@@ -372,21 +399,9 @@ export class RumFeature implements Feature, FeatureEventReceiver {
       FlashcatLog.d('rum.crash: dropped because rum feature scope is null');
       return false;
     }
-    const viewId: string = RumFeature.asString(event['original_view_id']);
-    const viewName: string = RumFeature.asString(event['original_view_name']);
-    const dateMs: number = RumFeature.optionalPositiveNumber(event['timestamp_ms']) ?? Date.now();
-    const attributes: Record<string, Object> = RumFeature.crashAttributes(event);
-    const applicationId: string = this.configuration.applicationId;
     let delivered: boolean = false;
     scope.withWriteContext((context: FlashcatContext, writer: EventWriter) => {
-      const errorEvent: Record<string, Object> = RumEventAssembler.error(
-        context, applicationId, sessionId,
-        viewId.length > 0 ? viewId : undefined,
-        viewId.length > 0 ? viewName : undefined,
-        RumFeature.asString(event['message']),
-        RumErrorSource.SOURCE as string,
-        RumFeature.asString(event['stack']),
-        true, 'unhandled', dateMs, attributes);
+      const errorEvent: Record<string, Object> = this.assembleReplayedCrash(context, event, sessionId);
       const mapped: Record<string, Object> | null = RumEventMapperHolder.apply(errorEvent);
       if (mapped === null) {
         delivered = true; // the app's mapper dropped it on purpose — handled
@@ -401,8 +416,35 @@ export class RumFeature implements Feature, FeatureEventReceiver {
     }
     FlashcatLog.d(
       `rum.crash: replayed crash into original session=${sessionId} ` +
-      `view=${viewId.length > 0 ? viewId : '(none)'} delivered=${delivered}`);
+      `view=${RumFeature.asString(event['original_view_id']).length > 0 ? RumFeature.asString(event['original_view_id']) : '(none)'} delivered=${delivered}`);
     return delivered;
+  }
+
+  /**
+   * The error a replayed incident becomes, stamped with the crashed run's
+   * session and view. One assembly for the replay and for the crash feature's
+   * question at crash time, so the app's mapper judges the same event twice.
+   */
+  private assembleReplayedCrash(context: FlashcatContext, event: Record<string, Object>,
+    sessionId: string): Record<string, Object> {
+    const viewId: string = RumFeature.asString(event['original_view_id']);
+    const viewName: string = RumFeature.asString(event['original_view_name']);
+    const dateMs: number = RumFeature.optionalPositiveNumber(event['timestamp_ms']) ?? Date.now();
+    return RumEventAssembler.error(
+      context, this.configuration.applicationId, sessionId,
+      viewId.length > 0 ? viewId : undefined,
+      viewId.length > 0 ? viewName : undefined,
+      RumFeature.asString(event['message']),
+      RumErrorSource.SOURCE as string,
+      RumFeature.asString(event['stack']),
+      true, 'unhandled', dateMs, RumFeature.crashAttributes(event));
+  }
+
+  /** Whether the app's mapper keeps the error `probe` would be replayed as. */
+  private keepsReplayedCrash(probe: Record<string, Object>): boolean {
+    const errorEvent: Record<string, Object> = this.assembleReplayedCrash(
+      this.core.getContext(), probe, RumFeature.asString(probe['original_session_id']));
+    return RumEventMapperHolder.apply(errorEvent) !== null;
   }
 
   /** Deliver a sidecar command to the core's crash storage over the bus. */
@@ -664,6 +706,16 @@ export class RumFeature implements Feature, FeatureEventReceiver {
           if (control['duplicate'] === true) {
             return;
           }
+          if (control['suppressed'] === true) {
+            // The crash feature asked (see `crash_mapper_probe`) and the app's
+            // mapper dropped the crash: it is not counted and not reported, and
+            // nothing was persisted for a replay.
+            FlashcatLog.d('rum.error: crash dropped by the event mapper; not counted, not reported');
+            if (control['should_exit'] === true) {
+              this.flushAndTerminate(control['recover'] === true);
+            }
+            return;
+          }
           // The incident was durably persisted: the error event arrives via
           // next-launch replay (bypassing the scope tree), so count the crash on
           // the active view here — this is the only process that can.
@@ -724,6 +776,9 @@ export class RumFeature implements Feature, FeatureEventReceiver {
       // Frames only: the labeled callback text is for fingerprinting; sending
       // it as error.stack made the backend title issues "Error name".
       m.reportError(message, RumErrorSource.SOURCE, RumFeature.stackFramesOnly(stackText), false, 'unhandled');
+      // An uncaught exception may be the last thing this process does: what the
+      // session held for it leaves now, not after a jitter it may not live out.
+      m.releaseScheduledWithheld();
     } else {
       FlashcatLog.d('rum.error: dropped because monitor is null');
     }

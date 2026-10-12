@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.7.0
+
+- Version bump to keep the SDK packages in lockstep (see `@flashcatcloud/rum`
+  0.7.0: error-session capture).
+
 ## 0.6.0
 
 - Version bump to keep the SDK packages in lockstep (see `@flashcatcloud/rum`
