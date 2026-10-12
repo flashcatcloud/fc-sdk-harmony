@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.7.0
+
+- Withdrawing tracking consent now also tells the RUM package, so that it
+  discards what it holds in memory for error-session capture (see
+  `@flashcatcloud/rum` 0.7.0).
+
 ## 0.6.0
 
 - `SdkCore` gains `getIntakeTarget()`, `readSetting()` and `writeSetting()`,
