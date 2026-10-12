@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.7.0
 
 - **Error-session capture.** `RumConfigurationBuilder.setSessionOnError(true)`
   also keeps the sessions `sessionSampleRate` does not draw, but only those

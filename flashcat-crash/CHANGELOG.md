@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.7.0
+
+- An uncaught exception that terminates the process, in a session that RUM is
+  holding back for error-session capture, is no longer persisted or reported
+  when the RUM event mapper drops it (see `@flashcatcloud/rum` 0.7.0:
+  error-session capture). Other sessions and policies are unchanged.
+
 ## 0.6.0
 
 - Version bump to keep the SDK packages in lockstep (see `@flashcatcloud/rum`
