@@ -384,14 +384,33 @@ export default function remoteConfigTests(): void {
       expect(store.read()).assertNull();
     });
 
-    it('separatesAppVersions', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+    it('keepsTheKeyAcrossAppVersions', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
       const first: string = RemoteConfigStore.buildStoreKey(testContext('1.0.0'), 'https://intake.example.com/', 'app-1');
       const same: string = RemoteConfigStore.buildStoreKey(testContext('1.0.0'), 'https://intake.example.com', 'app-1');
       const shipped: string = RemoteConfigStore.buildStoreKey(testContext('2.0.0'), 'https://intake.example.com', 'app-1');
-      const otherApp: string = RemoteConfigStore.buildStoreKey(testContext('1.0.0'), 'https://intake.example.com', 'app-2');
       expect(first).assertEqual(same); // a trailing slash is not a different host
-      expect(first === shipped).assertFalse();
-      expect(first === otherApp).assertFalse();
+      expect(first).assertEqual(shipped);
+    });
+
+    it('separatesApplicationsAndEnvironments', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+      const base: string = RemoteConfigStore.buildStoreKey(testContext('1.0.0'), 'https://intake.example.com', 'app-1');
+      const otherApp: string = RemoteConfigStore.buildStoreKey(testContext('1.0.0'), 'https://intake.example.com', 'app-2');
+      const staging: FlashcatContext = testContext('1.0.0');
+      staging.env = 'staging';
+      const otherEnv: string = RemoteConfigStore.buildStoreKey(staging, 'https://intake.example.com', 'app-1');
+      expect(base === otherApp).assertFalse();
+      expect(base === otherEnv).assertFalse();
+    });
+
+    it('readsValuesStoredBeforeTheAppVersionChanged', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+      const core: FakeCore = new FakeCore();
+      const key = (version: string): string =>
+        RemoteConfigStore.buildStoreKey(testContext(version), 'https://intake.example.com', 'app-1');
+      new RemoteConfigStore(core, key('1.0.0')).write(new RemoteConfigValues(40, 7, null, null));
+      const afterUpgrade: RemoteConfigValues | null = new RemoteConfigStore(core, key('2.0.0')).read();
+      expect(afterUpgrade === null).assertFalse();
+      expect((afterUpgrade as RemoteConfigValues).sessionSampleRate).assertEqual(40);
+      expect((afterUpgrade as RemoteConfigValues).version).assertEqual(7);
     });
   });
 

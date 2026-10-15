@@ -178,9 +178,15 @@ export class RemoteConfigStore {
 
   /**
    * Identifies whose configuration this is. It covers everything that can
-   * change the answer — which host is asked, which application, in which
-   * environment, at which app version — so an app that ships a new version, or
-   * two applications on one device, never read each other's values.
+   * change the answer — which host is asked, which application, which service,
+   * in which environment — so two applications on one device never read each
+   * other's values.
+   *
+   * The app version is deliberately left out. An installed app runs one version
+   * at a time, and keying on it would discard the stored values on every app
+   * upgrade, putting the first session after the upgrade on the init values
+   * with no settings version to report. The previous release's settings are the
+   * better answer until the new fetch is stored over them.
    *
    * The SDK version is deliberately left out: including it would discard the
    * stored values on every SDK upgrade and put the first session after an
@@ -191,7 +197,7 @@ export class RemoteConfigStore {
    */
   static buildStoreKey(context: FlashcatContext, host: string, applicationId: string): string {
     const parts: string[] = [
-      RemoteConfigStore.hostOf(host), applicationId, context.service, context.env, context.version
+      RemoteConfigStore.hostOf(host), applicationId, context.service, context.env
     ];
     return `_fc_rc_1_${parts.join('|')}`;
   }
