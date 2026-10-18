@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.7.1
+
+- Version bump to keep the SDK packages in lockstep (see `@flashcatcloud/rum`
+  0.7.1: remote configuration survives app upgrades).
+
 ## 0.7.0
 
 - Withdrawing tracking consent now also tells the RUM package, so that it
