@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.7.1
+
+- **Remote configuration survives app upgrades.** The stored settings were
+  keyed by the app version as well as the host, application, service and
+  environment, so the first session after every app upgrade found no stored
+  entry, was drawn on the values passed to init, and reported no settings
+  version. An installed app runs one version at a time, so the key no longer
+  includes it: the first session after an upgrade uses the settings the
+  previous version stored until the new fetch replaces them. The request still
+  sends `app_version`. Entries written by earlier SDK versions are no longer
+  read, so the first session after upgrading the SDK itself uses the init
+  values once.
+
 ## 0.7.0
 
 - **Error-session capture.** `RumConfigurationBuilder.setSessionOnError(true)`
