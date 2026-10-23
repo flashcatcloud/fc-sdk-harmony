@@ -339,10 +339,15 @@ export class ConsumedCrashIncident {
   }
 }
 
-/** Pure cross-launch window matching and retention helpers. */
-/** Upper bound on consumed entries kept (and persisted) at once. */
+/**
+ * Upper bound on consumed entries kept (and persisted) at once. The in-process
+ * APP_CRASH copy arrives within a fraction of a second of the fault, so only a
+ * burst of more than this many distinct faults inside that delay could evict
+ * an entry it still needs.
+ */
 export const MAX_CONSUMED_ENTRIES: number = 100;
 
+/** Pure cross-launch window matching and retention helpers. */
 export class CrashDeduplication {
   static serializeConsumed(consumed: ConsumedCrashIncident[]): string {
     const records: Array<Record<string, Object>> = [];

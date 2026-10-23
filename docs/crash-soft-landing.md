@@ -86,16 +86,16 @@ callback; under `REPORT_AND_CONTINUE` it reports the crash itself, and a later
 `onUnhandledException` of the same fault is suppressed.
 
 Under `OBSERVE_ONLY` and `REPORT_AND_CONTINUE` the process survives, so the
-in-process watcher receives the same `APP_CRASH` shortly after. The live
-callback records a consumed entry for it (for a
-repeating fault, one per 15 seconds), so that copy is skipped.
+in-process watcher receives the same `APP_CRASH` shortly after (60–170 ms on
+the verified emulator runtime). The live callback records a consumed entry for
+it (for a repeating fault, one per 15 seconds), so that copy is skipped.
 
 For a `REPORT_*` incident, the synchronously persisted record is replayed once
 on the next launch. After replay, crash writes its incident ID, fingerprint, and
 timestamp to the consumed sidecar. A matching JS `APP_CRASH` within the
 30-second correlation window is then skipped. Consumed entries are retained
-for 24 hours so delayed watcher delivery does not reintroduce the event. The
-result is one crash error event in the pipeline for one policy-managed crash.
+for 24 hours (at most the newest 100) so delayed watcher delivery does not
+reintroduce the event. The result is one crash error event in the pipeline for one policy-managed crash.
 
 The fingerprint uses normalized exception name, message, and first stack frame.
 It removes path and line/column differences that are unstable across the live
