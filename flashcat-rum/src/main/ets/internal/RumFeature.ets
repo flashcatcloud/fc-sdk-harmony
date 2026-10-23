@@ -740,6 +740,10 @@ export class RumFeature implements Feature, FeatureEventReceiver {
                 `rum.error: async crash report failed: ${RumFeature.errorText(reportError)}`);
             }
           }
+          if (control['report_crash'] === true) {
+            asyncReportAttempted = true;
+            this.reportLiveCrash(stackText, message);
+          }
           if (control['should_exit'] === true) {
             this.flushAndTerminate(control['recover'] === true);
           }
@@ -766,7 +770,7 @@ export class RumFeature implements Feature, FeatureEventReceiver {
   private reportUnhandledToMonitor(stackText: string, message: string): void {
     if (!this.configuration.trackErrors) {
       // trackErrors=false: suppress the non-crash live copy. The crash-flagged
-      // path (markCrash + durable replay) does not come through here.
+      // paths (markCrash + durable replay, reportLiveCrash) do not come through here.
       FlashcatLog.d('rum.error: non-crash report suppressed (trackErrors=false)');
       return;
     }
@@ -782,6 +786,22 @@ export class RumFeature implements Feature, FeatureEventReceiver {
     } else {
       FlashcatLog.d('rum.error: dropped because monitor is null');
     }
+  }
+
+  /**
+   * REPORT_AND_CONTINUE: the process survives the exception, so the crash is an
+   * is_crash error of the live session, counted in the active view. It is a
+   * crash, not an automatic error capture, so trackErrors does not gate it.
+   */
+  private reportLiveCrash(stackText: string, message: string): void {
+    const m: DefaultRumMonitor | null = this.monitor;
+    if (m === null) {
+      FlashcatLog.d('rum.crash: live crash dropped because monitor is null');
+      return;
+    }
+    FlashcatLog.d(`rum.crash: report live crash message="${message}"`);
+    m.reportError(message, RumErrorSource.SOURCE, RumFeature.stackFramesOnly(stackText), true, 'unhandled',
+      RumFeature.crashAttributes({}));
   }
 
   private reportUnhandledRejection(reason: Object): void {

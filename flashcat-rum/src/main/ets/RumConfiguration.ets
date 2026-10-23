@@ -112,7 +112,9 @@ export class RumConfigurationBuilder {
    *
    * Crash reporting is NOT affected: with the crash module enabled, uncaught
    * exceptions still follow the crash policy (persisted, counted, replayed as
-   * `is_crash` errors into the crashed session). Manual `addError` calls are
+   * `is_crash` errors into the crashed session). The one policy this does not
+   * hold for is `OBSERVE_ONLY`, which reports an uncaught exception as a non-crash error:
+   * with trackErrors=false it is not reported at all. Manual `addError` calls are
    * the app's explicit intent and also remain delivered — use the event
    * mapper to drop those too if needed.
    */

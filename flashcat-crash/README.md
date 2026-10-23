@@ -100,10 +100,23 @@ fails, the SDK degrades to exit behavior.
 The supported promise is: **synchronous crash report + automatic restart
 (+ best-effort state restore when the host implements `onSaveState`)**.
 
+### `REPORT_AND_CONTINUE`
+
+The SDK reports the exception as a crash (`is_crash: true`) into the current
+RUM session and view, and leaves the process running. Use it when the app keeps
+the process alive on purpose — for example alongside another crash reporter's
+JS crash protection — and the crash must still count toward the crash rate.
+
+Nothing is persisted: the report goes through the live RUM writers, and
+`setTrackErrors(false)` does not suppress it. The same caveat as `OBSERVE_ONLY`
+applies to the app's state after the exception.
+
 ### `OBSERVE_ONLY`
 
-The SDK reports the observed exception asynchronously and leaves the process
-running. This restores the legacy keep-alive behavior.
+The SDK reports the observed exception asynchronously as a non-crash error and
+leaves the process running. This restores the legacy keep-alive behavior. With
+`setTrackErrors(false)` in the RUM configuration, the exception is not reported
+at all.
 
 Use this only when retaining the process is intentional. The event loop may
 remain responsive, but the app may be left in a broken or inconsistent state
@@ -117,10 +130,12 @@ uncaught main-thread ArkTS exception
                   v
              select policy
        /                            \
-OBSERVE_ONLY                     REPORT_*
+OBSERVE_ONLY /                   REPORT_THEN_EXIT /
+REPORT_AND_CONTINUE              REPORT_AND_RECOVER
       |                             |
       v                             v
 async RUM report        synchronously persist incident
+(error / crash)                   |
 keep process running              |
                      +------------+-------------+
                      |                          |

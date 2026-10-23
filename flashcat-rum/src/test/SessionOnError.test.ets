@@ -181,6 +181,13 @@ class FakeCrashScope implements FeatureScope {
       return;
     }
     this.controls.push(event);
+    if (event['callback'] === 'unhandled' && this.policy === 'report_and_continue') {
+      // No incident: RUM reports the crash into the live session.
+      event['report_async'] = false;
+      event['report_crash'] = true;
+      event['should_exit'] = false;
+      return;
+    }
     if (event['callback'] !== 'unhandled' || this.policy === 'observe_only') {
       // No incident: the live report is the only report.
       event['report_async'] = true;
@@ -1789,6 +1796,43 @@ export default function sessionOnErrorTests(): void {
         } finally {
           RumEventMapperHolder.reset();
         }
+      });
+  });
+
+  describe('rum-js-crash-continue', (): void => {
+    /** A sampled RUM feature with error capture switched off, under the given crash policy. */
+    function trackErrorsOff(policy: string): CapturingScope {
+      const core: FakeCore = new FakeCore();
+      core.crashScope = new FakeCrashScope(core);
+      core.crashScope.policy = policy;
+      const scope: CapturingScope = new CapturingScope();
+      core.rumScope = scope;
+      const configuration: RumConfiguration =
+        new RumConfigurationBuilder('app-1').setSessionSampleRate(100).setTrackErrors(false).build();
+      const feature: RumFeature = new RumFeature(core, configuration);
+      feature.onInitialize();
+      const monitor: DefaultRumMonitor = new DefaultRumMonitor(core, scope, configuration);
+      monitor.stopKeepAlive();
+      feature.attachMonitor(monitor);
+      monitor.startView('home', 'home');
+      fireUnhandledException(CRASH_TEXT);
+      return scope;
+    }
+
+    it('aContinuedCrashIsACrashOfTheLiveViewEvenWithErrorCaptureOff',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        const scope: CapturingScope = trackErrorsOff('report_and_continue');
+        const errors: Array<Record<string, Object>> = scope.ofType('error');
+        expect(errors.length).assertEqual(1);
+        const error: Record<string, Object> = errors[0]['error'] as Record<string, Object>;
+        expect(error['is_crash']).assertEqual(true);
+        expect(error['message']).assertEqual('Error: fatal');
+        expect(error['category']).assertEqual('Exception');
+        const views: Array<Record<string, Object>> = scope.ofType('view');
+        const last: Record<string, Object> = views[views.length - 1]['view'] as Record<string, Object>;
+        expect((last['crash'] as Record<string, Object>)['count']).assertEqual(1);
+        // Negative control: OBSERVE_ONLY reports nothing once error capture is off.
+        expect(trackErrorsOff('observe_only').ofType('error').length).assertEqual(0);
       });
   });
 }
