@@ -3,6 +3,7 @@ import { JsCrashPolicy } from '../main/ets/CrashConfiguration';
 import {
   ConsumedCrashIncident,
   CrashDeduplication,
+  MAX_CONSUMED_ENTRIES,
   CrashFingerprint,
   CrashIncidentRecord,
   CrashLoopDecision,
@@ -125,6 +126,21 @@ export default function crashIncidentTests(): void {
 
         expect(recent.length).assertEqual(1);
         expect(recent[0].incidentId).assertEqual('recent');
+      });
+
+    it('keepsOnlyTheNewestConsumedEntriesBeyondTheCap',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        // A kept-alive app faulting in a loop with a new message each time.
+        const consumed: ConsumedCrashIncident[] = [];
+        for (let i: number = 0; i < MAX_CONSUMED_ENTRIES + 50; i++) {
+          consumed.push(new ConsumedCrashIncident(`id-${i}`, `fp-${i}`, 10000 + i));
+        }
+
+        const recent: ConsumedCrashIncident[] = CrashDeduplication.retainRecent(consumed, 20000, 60000);
+
+        expect(recent.length).assertEqual(MAX_CONSUMED_ENTRIES);
+        expect(recent[0].incidentId).assertEqual('id-50');
+        expect(recent[recent.length - 1].incidentId).assertEqual(`id-${MAX_CONSUMED_ENTRIES + 49}`);
       });
 
     it('stackSentToBackendContainsFramesOnlyNoLabelLines',

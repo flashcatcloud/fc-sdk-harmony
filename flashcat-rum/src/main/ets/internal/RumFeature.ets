@@ -742,7 +742,11 @@ export class RumFeature implements Feature, FeatureEventReceiver {
           }
           if (control['report_crash'] === true) {
             asyncReportAttempted = true;
-            this.reportLiveCrash(stackText, message);
+            try {
+              this.reportLiveCrash(stackText, message);
+            } catch (reportError) {
+              FlashcatLog.e(`rum.crash: live crash report failed: ${RumFeature.errorText(reportError)}`);
+            }
           }
           if (control['should_exit'] === true) {
             this.flushAndTerminate(control['recover'] === true);

@@ -13,7 +13,10 @@ repair arbitrary application state and continue safely. On the verified
 runtime, installing the observer also suppresses the platform's normal exit.
 
 Therefore a Bugly-style "anti-crash" promise that catches any failure and keeps
-the same process healthy is not implementable for HarmonyOS. CrashSight parity
+the same process healthy is not implementable for HarmonyOS. Apps that keep the
+process alive anyway (their own choice, or another reporter's JS crash
+protection) can use `OBSERVE_ONLY` or `REPORT_AND_CONTINUE`; the SDK then only
+reports and does not repair state. CrashSight parity
 is limited to crash observation and reporting. For supported main-thread ArkTS
 exceptions, HarmonyOS `appRecovery` provides the closest safe soft landing:
 persist the report synchronously, terminate the damaged process, and optionally
@@ -55,9 +58,10 @@ for the crash module's decision:
 
    Under `OBSERVE_ONLY` and `REPORT_AND_CONTINUE`, crash only sends
    `crash_storage_write_consumed` (see deduplication below).
-5. RUM follows the returned decision. It uses asynchronous reporting only as a
-   fallback, flushes current writers, then exits or asks `appRecovery` to save
-   state and restart.
+5. RUM follows the returned decision. For the exiting policies it uses
+   asynchronous reporting only as a fallback, flushes current writers, then
+   exits or asks `appRecovery` to save state and restart. For the keep-alive
+   policies it reports through the live writers and returns.
 6. On a later launch, crash lists pending incidents, maps each one to a
    `crash_report`, sends it to RUM, records it as consumed, and deletes the
    pending file.

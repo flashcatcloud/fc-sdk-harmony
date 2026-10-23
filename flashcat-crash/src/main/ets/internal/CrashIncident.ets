@@ -340,6 +340,9 @@ export class ConsumedCrashIncident {
 }
 
 /** Pure cross-launch window matching and retention helpers. */
+/** Upper bound on consumed entries kept (and persisted) at once. */
+export const MAX_CONSUMED_ENTRIES: number = 100;
+
 export class CrashDeduplication {
   static serializeConsumed(consumed: ConsumedCrashIncident[]): string {
     const records: Array<Record<string, Object>> = [];
@@ -432,7 +435,10 @@ export class CrashDeduplication {
         recent.push(incident);
       }
     }
-    return recent;
+    // Bound the list (and the sidecar rewritten with it): a kept-alive app can
+    // fault in a loop with a different message, so a different fingerprint,
+    // every time. The newest entries are the ones a pending watcher copy needs.
+    return recent.length > MAX_CONSUMED_ENTRIES ? recent.slice(recent.length - MAX_CONSUMED_ENTRIES) : recent;
   }
 
   private static stringValue(value: Object | undefined): string {
