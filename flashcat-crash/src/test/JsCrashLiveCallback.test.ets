@@ -126,6 +126,40 @@ export default function jsCrashLiveCallbackTests(): void {
         expect(again['report_crash']).assertEqual(true);
       });
 
+    it('reportAndContinueSuppressesOnUnhandledExceptionThatFollowsOnException',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        const feature: CrashFeature = featureWith(new FakeCore(), JsCrashPolicy.REPORT_AND_CONTINUE);
+        expect(liveCallback(feature, 'exception')['report_crash']).assertEqual(true);
+        const second: Record<string, Object> = liveCallback(feature, 'unhandled');
+
+        expect(second['duplicate']).assertEqual(true);
+        expect(second['report_crash'] === true).assertFalse();
+      });
+
+    it('reportAndContinueCountsARepeatWhenOnlyOnExceptionFires',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        const feature: CrashFeature = featureWith(new FakeCore(), JsCrashPolicy.REPORT_AND_CONTINUE);
+        liveCallback(feature, 'exception');
+        const again: Record<string, Object> = liveCallback(feature, 'exception');
+
+        expect(again['duplicate'] === true).assertFalse();
+        expect(again['report_crash']).assertEqual(true);
+      });
+
+    it('aFaultLoopKeepsOneConsumedEntryPerMatchWindow',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        const core: FakeCore = new FakeCore();
+        const feature: CrashFeature = featureWith(core, JsCrashPolicy.REPORT_AND_CONTINUE);
+        for (let i: number = 0; i < 20; i++) {
+          liveCallback(feature, 'unhandled');
+          liveCallback(feature, 'exception');
+        }
+
+        // Every repeat is reported, but one entry already dedups every
+        // watcher copy inside the window: the sidecar is written once.
+        expect(core.crashScope.ofType('crash_storage_write_consumed').length).assertEqual(1);
+      });
+
     it('otherPoliciesKeepTheOnExceptionFallbackAsAnError',
       TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
         const control: Record<string, Object> = liveCallback(

@@ -7,7 +7,8 @@ This package has two crash-reporting paths:
 - post-mortem capture of HarmonyOS `hiAppEvent` `APP_CRASH` and `APP_FREEZE`
   events, delivered through the RUM pipeline on a later launch; and
 - live handling of uncaught main-thread ArkTS exceptions, with an explicit
-  `JsCrashPolicy` that reports before the process exits or restarts.
+  `JsCrashPolicy` that reports before the process exits or restarts, or
+  reports and keeps it running.
 
 It depends on `@flashcatcloud/core` and requires `@flashcatcloud/rum` to publish
 crash error events.
@@ -107,8 +108,10 @@ RUM session and view, and leaves the process running. Use it when the app keeps
 the process alive on purpose — for example alongside another crash reporter's
 JS crash protection — and the crash must still count toward the crash rate.
 
-Nothing is persisted: the report goes through the live RUM writers, and
-`setTrackErrors(false)` does not suppress it. The same caveat as `OBSERVE_ONLY`
+No crash incident is persisted: the report goes through the live RUM writers
+(only the small dedup entry for the platform's `APP_CRASH` copy is written), and
+`setTrackErrors(false)` does not suppress it. A crash after the page was closed
+(for example while backgrounded) counts on the most recently closed view. The same caveat as `OBSERVE_ONLY`
 applies to the app's state after the exception.
 
 ### `OBSERVE_ONLY`
@@ -214,7 +217,7 @@ on physical devices.
 
 | Failure type | Capture and policy behavior |
 |---|---|
-| Uncaught ArkTS main-thread synchronous or asynchronous exception | ✅ Live capture. The selected `JsCrashPolicy` applies, including synchronous persistence and optional restart. |
+| Uncaught ArkTS main-thread synchronous or asynchronous exception | ✅ Live capture. The selected `JsCrashPolicy` applies: synchronous persistence and exit or restart, or a live report that keeps the process running. |
 | Unhandled Promise rejection | Captured by RUM as an ordinary, non-crashing error with `error.source_type: promise`. The process does not die and crash policies do not apply. |
 | TaskPool or Worker throw | Does not reach the error observer in the verified cases, is not fatal to the host process, and is not covered by crash policies. |
 | Native C/C++ signal crash | Cannot be prevented or restarted by any JS crash policy. It is captured post-mortem through `hiAppEvent.APP_CRASH` on a later launch. |

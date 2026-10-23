@@ -1801,7 +1801,7 @@ export default function sessionOnErrorTests(): void {
 
   describe('rum-js-crash-continue', (): void => {
     /** A sampled RUM feature with error capture switched off, under the given crash policy. */
-    function trackErrorsOff(policy: string): CapturingScope {
+    function trackErrorsOff(policy: string, viewClosed: boolean = false): CapturingScope {
       const core: FakeCore = new FakeCore();
       core.crashScope = new FakeCrashScope(core);
       core.crashScope.policy = policy;
@@ -1815,6 +1815,9 @@ export default function sessionOnErrorTests(): void {
       monitor.stopKeepAlive();
       feature.attachMonitor(monitor);
       monitor.startView('home', 'home');
+      if (viewClosed) {
+        monitor.stopView('home');
+      }
       fireUnhandledException(CRASH_TEXT);
       return scope;
     }
@@ -1833,6 +1836,20 @@ export default function sessionOnErrorTests(): void {
         expect((last['crash'] as Record<string, Object>)['count']).assertEqual(1);
         // Negative control: OBSERVE_ONLY reports nothing once error capture is off.
         expect(trackErrorsOff('observe_only').ofType('error').length).assertEqual(0);
+      });
+
+    it('aContinuedCrashAfterThePageClosedCountsOnTheLastClosedView',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        // e.g. a timer throwing after the page was hidden by backgrounding.
+        const scope: CapturingScope = trackErrorsOff('report_and_continue', true);
+        const errors: Array<Record<string, Object>> = scope.ofType('error');
+        expect(errors.length).assertEqual(1);
+        expect((errors[0]['error'] as Record<string, Object>)['is_crash']).assertEqual(true);
+        const views: Array<Record<string, Object>> = scope.ofType('view');
+        const last: Record<string, Object> = views[views.length - 1]['view'] as Record<string, Object>;
+        expect(last['name']).assertEqual('home');
+        expect((last['crash'] as Record<string, Object>)['count']).assertEqual(1);
+        expect((errors[0]['view'] as Record<string, Object>)['id']).assertEqual(last['id']);
       });
   });
 }

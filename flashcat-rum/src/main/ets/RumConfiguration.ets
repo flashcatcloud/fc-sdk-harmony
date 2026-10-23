@@ -111,9 +111,10 @@ export class RumConfigurationBuilder {
    * unhandled Promise rejections). Default true.
    *
    * Crash reporting is NOT affected: with the crash module enabled, uncaught
-   * exceptions still follow the crash policy (persisted, counted, replayed as
-   * `is_crash` errors into the crashed session). The one policy this does not
-   * hold for is `OBSERVE_ONLY`, which reports an uncaught exception as a non-crash error:
+   * exceptions still follow the crash policy and are reported as `is_crash`
+   * errors (persisted and replayed into the crashed session, or reported live
+   * under `REPORT_AND_CONTINUE`). The one policy this does not hold for is
+   * `OBSERVE_ONLY`, which reports an uncaught exception as a non-crash error:
    * with trackErrors=false it is not reported at all. Manual `addError` calls are
    * the app's explicit intent and also remain delivered — use the event
    * mapper to drop those too if needed.

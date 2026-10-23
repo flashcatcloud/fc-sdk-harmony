@@ -89,11 +89,13 @@ export default function crashIncidentTests(): void {
     it('suppressesMatchingLiveCallbackOnlyInsideWindow',
       TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
         const guard: LiveCrashIncidentGuard = new LiveCrashIncidentGuard(2000);
-        guard.remember('fp-1', 1000);
+        guard.remember('fp-1', 1000, 'unhandled');
 
-        expect(guard.isDuplicate('fp-1', 2999)).assertTrue();
-        expect(guard.isDuplicate('fp-2', 1500)).assertFalse();
-        expect(guard.isDuplicate('fp-1', 3001)).assertFalse();
+        expect(guard.isDuplicate('fp-1', 2999, 'exception')).assertTrue();
+        expect(guard.isDuplicate('fp-2', 1500, 'exception')).assertFalse();
+        expect(guard.isDuplicate('fp-1', 3001, 'exception')).assertFalse();
+        // The same callback again is a new fault, not the other half of this one.
+        expect(guard.isDuplicate('fp-1', 1500, 'unhandled')).assertFalse();
       });
 
     it('matchesConsumedIncidentInsideCrossLaunchWindow',

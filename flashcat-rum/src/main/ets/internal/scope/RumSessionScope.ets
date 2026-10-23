@@ -203,6 +203,13 @@ export class RumSessionScope implements RumScope {
       } else {
         FlashcatLog.d('rum.session: markCrash with no view — crash not counted in any view document');
       }
+    } else if (event.kind === 'addError' && event.isCrash === true && event.countInView !== false &&
+      this.lastStoppedView !== null) {
+      // A crash the process survives, in the gap between stopView and the next
+      // startView (e.g. a timer throwing while backgrounded): like markCrash,
+      // it belongs to the most recently closed view, or it never reaches
+      // session_crash_count.
+      this.lastStoppedView.handleEvent(event);
     } else if (event.kind === 'addError') {
       this.writeViewlessError(event); // error before any view started
     } else if (event.kind === 'addAction' || event.kind === 'startResource') {

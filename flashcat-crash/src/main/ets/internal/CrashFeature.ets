@@ -120,26 +120,28 @@ export class CrashFeature implements Feature, FeatureEventReceiver {
     const fingerprint: string = CrashFingerprint.fromText(text);
     event['fingerprint'] = fingerprint;
 
-    if (callback === 'exception') {
-      if (this.liveGuard.isDuplicate(fingerprint, nowMs)) {
-        event['duplicate'] = true;
-        event['report_async'] = false;
-        FlashcatLog.d(`crash.js: suppressed duplicate onException fingerprint=${fingerprint}`);
-        return;
-      }
-      if (this.activePolicy !== JsCrashPolicy.REPORT_AND_CONTINUE) {
-        // Defensive OS-build fallback: onException may be the only callback.
-        event['report_async'] = true;
-        return;
-      }
-      // REPORT_AND_CONTINUE: an OS build that only calls onException must still
-      // count the crash.
-    } else if (callback !== 'unhandled') {
+    if (callback !== 'exception' && callback !== 'unhandled') {
+      event['report_async'] = true;
+      return;
+    }
+    const continues: boolean = this.activePolicy === JsCrashPolicy.REPORT_AND_CONTINUE;
+    // onUnhandledException normally comes first and onException repeats it.
+    // REPORT_AND_CONTINUE counts a crash from either callback, so it must also
+    // catch the reverse order; the other policies only ever report from
+    // onUnhandledException.
+    if ((callback === 'exception' || continues) && this.liveGuard.isDuplicate(fingerprint, nowMs, callback)) {
+      event['duplicate'] = true;
+      event['report_async'] = false;
+      FlashcatLog.d(`crash.js: suppressed duplicate ${callback} callback fingerprint=${fingerprint}`);
+      return;
+    }
+    if (callback === 'exception' && !continues) {
+      // Defensive OS-build fallback: onException may be the only callback.
       event['report_async'] = true;
       return;
     }
 
-    this.liveGuard.remember(fingerprint, nowMs);
+    this.liveGuard.remember(fingerprint, nowMs, callback);
     event['policy'] = this.activePolicy as string;
     event['recover'] = false;
     if (this.activePolicy === JsCrashPolicy.OBSERVE_ONLY ||
@@ -151,24 +153,29 @@ export class CrashFeature implements Feature, FeatureEventReceiver {
       // REPORT_AND_CONTINUE keeps the process alive the same way but reports an
       // is_crash error into the LIVE session, matching crash reporters whose JS
       // crash protection keeps the app running yet still counts the crash.
-      // Nothing is persisted: the process survives to deliver the live report.
-      const continues: boolean = this.activePolicy === JsCrashPolicy.REPORT_AND_CONTINUE;
+      // No incident is persisted: the process survives to deliver the live report.
       event['report_async'] = !continues;
       event['report_crash'] = continues;
       event['should_exit'] = false;
       // The process survives, so hiAppEvent will deliver the SAME crash to the
       // in-process watcher shortly. Record it as consumed so the watcher's
-      // dedup can suppress it — nothing is ever persisted under these policies,
+      // dedup can suppress it — no incident is ever persisted under these policies,
       // which left the consumed set permanently empty and every observed crash
       // triple-reported (two live callbacks + the watcher event). The watcher
       // copy must not carry the report: it would attribute the crash to the
       // PREVIOUS run's last view.
-      this.consumed.push(new ConsumedCrashIncident(
-        util.generateRandomUUID(true), fingerprint, nowMs));
-      this.consumed = CrashDeduplication.retainRecent(
-        this.consumed, nowMs, CONSUMED_RETENTION_MS);
-      if (this.isDurableWriteAllowed()) {
-        this.persistConsumed();
+      // A fault that repeats (the process survives it) is already covered by
+      // the entry an earlier repeat left inside the watcher's match window;
+      // one entry per repeat would grow the list, and rewrite the sidecar, on
+      // every fault of a loop.
+      if (!CrashDeduplication.matchesConsumed(fingerprint, nowMs, this.consumed, CROSS_LAUNCH_WINDOW_MS)) {
+        this.consumed.push(new ConsumedCrashIncident(
+          util.generateRandomUUID(true), fingerprint, nowMs));
+        this.consumed = CrashDeduplication.retainRecent(
+          this.consumed, nowMs, CONSUMED_RETENTION_MS);
+        if (this.isDurableWriteAllowed()) {
+          this.persistConsumed();
+        }
       }
       return;
     }

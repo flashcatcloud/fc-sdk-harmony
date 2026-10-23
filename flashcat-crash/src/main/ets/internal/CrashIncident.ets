@@ -180,24 +180,30 @@ export class CrashFingerprint {
   }
 }
 
-/** The most recent live JS incident, used to collapse the two platform callbacks. */
+/**
+ * The most recent live JS incident, used to collapse the two platform callbacks
+ * of one fault. Only the OTHER callback can be the duplicate: the same callback
+ * firing again is a new fault (the process may survive and fault again at once).
+ */
 export class LiveCrashIncidentGuard {
   private readonly windowMs: number;
   private fingerprint: string = '';
   private timestampMs: number = 0;
+  private callback: string = '';
 
   constructor(windowMs: number) {
     this.windowMs = windowMs;
   }
 
-  remember(fingerprint: string, timestampMs: number): void {
+  remember(fingerprint: string, timestampMs: number, callback: string): void {
     this.fingerprint = fingerprint;
     this.timestampMs = timestampMs;
+    this.callback = callback;
   }
 
-  isDuplicate(fingerprint: string, timestampMs: number): boolean {
+  isDuplicate(fingerprint: string, timestampMs: number, callback: string): boolean {
     const elapsed: number = timestampMs - this.timestampMs;
-    return this.fingerprint.length > 0 && this.fingerprint === fingerprint &&
+    return this.fingerprint.length > 0 && this.fingerprint === fingerprint && this.callback !== callback &&
       elapsed >= 0 && elapsed <= this.windowMs;
   }
 }

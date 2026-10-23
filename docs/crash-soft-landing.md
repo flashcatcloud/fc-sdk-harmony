@@ -40,8 +40,11 @@ for the crash module's decision:
    `js_crash_callback` to crash with the callback kind, error text, and
    timestamp.
 3. Crash returns control fields on the same record: `fingerprint`,
-   `duplicate`, `report_async`, `should_exit`, and `recover`.
-4. For `REPORT_*`, crash sends synchronous `crash_storage_*` commands to the
+   `duplicate`, `report_async`, `report_crash`, `should_exit`, and `recover`.
+   `REPORT_AND_CONTINUE` answers `report_crash` instead: RUM reports an
+   `is_crash` error into the live session and the process keeps running;
+   no incident is persisted.
+4. For `REPORT_THEN_EXIT` and `REPORT_AND_RECOVER`, crash sends synchronous `crash_storage_*` commands to the
    core-owned store:
    - `crash_storage_write`, `crash_storage_list`, and
      `crash_storage_delete` manage pending incidents;
@@ -69,9 +72,16 @@ One uncaught ArkTS exception can produce three report paths:
 3. the later `hiAppEvent.APP_CRASH` replay.
 
 The first callback creates a normalized fingerprint and stores it in a
-two-second in-process guard. A matching second callback inside that window is
-suppressed. `onException` remains an asynchronous fallback on platform builds
-where it is the only callback.
+two-second in-process guard. A matching callback of the OTHER kind inside that
+window is suppressed; the same callback again is a new fault. `onException`
+remains an asynchronous fallback on platform builds where it is the only
+callback; under `REPORT_AND_CONTINUE` it reports the crash itself, and a later
+`onUnhandledException` of the same fault is suppressed.
+
+Under `OBSERVE_ONLY` and `REPORT_AND_CONTINUE` the process survives, so the
+in-process watcher receives the same `APP_CRASH` shortly after. The live
+callback records a consumed entry for it (one per 30-second window for a
+repeating fault), so that copy is skipped.
 
 For a `REPORT_*` incident, the synchronously persisted record is replayed once
 on the next launch. After replay, crash writes its incident ID, fingerprint, and
