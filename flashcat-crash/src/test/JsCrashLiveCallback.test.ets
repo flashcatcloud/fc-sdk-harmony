@@ -55,13 +55,13 @@ class FakeCore implements SdkCore {
   clearUserInfo(): void {}
 }
 
-function liveCallback(feature: CrashFeature, callback: string): Record<string, Object> {
+function liveCallback(feature: CrashFeature, callback: string, atMs: number = Date.now()): Record<string, Object> {
   const control: Record<string, Object> = {
     'type': 'js_crash_callback',
     'target': 'crash',
     'callback': callback,
     'text': CRASH_TEXT,
-    'timestamp_ms': Date.now(),
+    'timestamp_ms': atMs,
     'report_async': true,
     'should_exit': false
   };
@@ -136,6 +136,18 @@ export default function jsCrashLiveCallbackTests(): void {
         expect(second['report_crash'] === true).assertFalse();
       });
 
+    it('aCompletedCallbackPairDoesNotSwallowTheNextFault',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        const feature: CrashFeature = featureWith(new FakeCore(), JsCrashPolicy.REPORT_AND_CONTINUE);
+        liveCallback(feature, 'unhandled');
+        expect(liveCallback(feature, 'exception')['duplicate']).assertEqual(true);
+        // A new fault of the same kind, delivered through onException only.
+        const next: Record<string, Object> = liveCallback(feature, 'exception');
+
+        expect(next['duplicate'] === true).assertFalse();
+        expect(next['report_crash']).assertEqual(true);
+      });
+
     it('reportAndContinueCountsARepeatWhenOnlyOnExceptionFires',
       TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
         const feature: CrashFeature = featureWith(new FakeCore(), JsCrashPolicy.REPORT_AND_CONTINUE);
@@ -179,6 +191,20 @@ export default function jsCrashLiveCallbackTests(): void {
         expect(control['report_crash']).assertEqual(false);
         expect(control['should_exit']).assertEqual(false);
         expect(core.crashScope.ofType('crash_storage_write').length).assertEqual(0);
+      });
+
+    it('aRepeatPastHalfTheMatchWindowGetsItsOwnConsumedEntry',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        // The watcher matches on the platform's fault time, which may trail the
+        // callback: a repeat 20 s later must not rely on the first entry.
+        const core: FakeCore = new FakeCore();
+        const feature: CrashFeature = featureWith(core, JsCrashPolicy.REPORT_AND_CONTINUE);
+        const t0: number = Date.now();
+        liveCallback(feature, 'unhandled', t0);
+        liveCallback(feature, 'unhandled', t0 + 10000);
+        liveCallback(feature, 'unhandled', t0 + 20000);
+
+        expect(core.crashScope.ofType('crash_storage_write_consumed').length).assertEqual(2);
       });
   });
 }

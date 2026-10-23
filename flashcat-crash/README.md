@@ -111,7 +111,9 @@ JS crash protection — and the crash must still count toward the crash rate.
 No crash incident is persisted: the report goes through the live RUM writers
 (only the small dedup entry for the platform's `APP_CRASH` copy is written), and
 `setTrackErrors(false)` does not suppress it. A crash after the page was closed
-(for example while backgrounded) counts on the most recently closed view. The same caveat as `OBSERVE_ONLY`
+(for example while backgrounded) counts on the most recently closed view while
+the session is still active; once the session has expired it starts a new
+session, like any other event. The same caveat as `OBSERVE_ONLY`
 applies to the app's state after the exception.
 
 ### `OBSERVE_ONLY`

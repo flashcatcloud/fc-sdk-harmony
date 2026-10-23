@@ -132,6 +132,7 @@ export class CrashFeature implements Feature, FeatureEventReceiver {
     if ((callback === 'exception' || continues) && this.liveGuard.isDuplicate(fingerprint, nowMs, callback)) {
       event['duplicate'] = true;
       event['report_async'] = false;
+      this.liveGuard.forget();
       FlashcatLog.d(`crash.js: suppressed duplicate ${callback} callback fingerprint=${fingerprint}`);
       return;
     }
@@ -165,10 +166,11 @@ export class CrashFeature implements Feature, FeatureEventReceiver {
       // copy must not carry the report: it would attribute the crash to the
       // PREVIOUS run's last view.
       // A fault that repeats (the process survives it) is already covered by
-      // the entry an earlier repeat left inside the watcher's match window;
-      // one entry per repeat would grow the list, and rewrite the sidecar, on
-      // every fault of a loop.
-      if (!CrashDeduplication.matchesConsumed(fingerprint, nowMs, this.consumed, CROSS_LAUNCH_WINDOW_MS)) {
+      // the entry an earlier repeat left; one entry per repeat would grow the
+      // list, and rewrite the sidecar, on every fault of a loop. Only half the
+      // watcher's match window counts as covered: the watcher matches on the
+      // platform's fault time, which may trail this callback's time.
+      if (!CrashDeduplication.matchesConsumed(fingerprint, nowMs, this.consumed, CROSS_LAUNCH_WINDOW_MS / 2)) {
         this.consumed.push(new ConsumedCrashIncident(
           util.generateRandomUUID(true), fingerprint, nowMs));
         this.consumed = CrashDeduplication.retainRecent(

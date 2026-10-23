@@ -52,6 +52,9 @@ for the crash module's decision:
      the cross-launch dedup sidecar; and
    - `crash_storage_read_loop` and `crash_storage_write_loop` manage restart
      history.
+
+   Under `OBSERVE_ONLY` and `REPORT_AND_CONTINUE`, crash only sends
+   `crash_storage_write_consumed` (see deduplication below).
 5. RUM follows the returned decision. It uses asynchronous reporting only as a
    fallback, flushes current writers, then exits or asks `appRecovery` to save
    state and restart.
@@ -80,8 +83,8 @@ callback; under `REPORT_AND_CONTINUE` it reports the crash itself, and a later
 
 Under `OBSERVE_ONLY` and `REPORT_AND_CONTINUE` the process survives, so the
 in-process watcher receives the same `APP_CRASH` shortly after. The live
-callback records a consumed entry for it (one per 30-second window for a
-repeating fault), so that copy is skipped.
+callback records a consumed entry for it (for a
+repeating fault, one per 15 seconds), so that copy is skipped.
 
 For a `REPORT_*` incident, the synchronously persisted record is replayed once
 on the next launch. After replay, crash writes its incident ID, fingerprint, and

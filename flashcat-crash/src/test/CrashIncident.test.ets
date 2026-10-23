@@ -96,6 +96,9 @@ export default function crashIncidentTests(): void {
         expect(guard.isDuplicate('fp-1', 3001, 'exception')).assertFalse();
         // The same callback again is a new fault, not the other half of this one.
         expect(guard.isDuplicate('fp-1', 1500, 'unhandled')).assertFalse();
+        // Once the pair is complete, the next callback is a new fault too.
+        guard.forget();
+        expect(guard.isDuplicate('fp-1', 1500, 'exception')).assertFalse();
       });
 
     it('matchesConsumedIncidentInsideCrossLaunchWindow',

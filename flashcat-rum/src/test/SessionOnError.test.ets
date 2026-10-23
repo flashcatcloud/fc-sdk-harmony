@@ -1838,6 +1838,32 @@ export default function sessionOnErrorTests(): void {
         expect(trackErrorsOff('observe_only').ofType('error').length).assertEqual(0);
       });
 
+    it('aPreviousLaunchCrashInAViewGapStaysOffThisLaunchsViews',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        // A native crash of an earlier launch, delivered with no last-view
+        // snapshot, while this launch sits between two views.
+        const core: FakeCore = new FakeCore();
+        const scope: CapturingScope = new CapturingScope();
+        core.rumScope = scope;
+        const configuration: RumConfiguration = new RumConfigurationBuilder('app-1').setSessionSampleRate(100).build();
+        const feature: RumFeature = new RumFeature(core, configuration);
+        feature.onInitialize();
+        const monitor: DefaultRumMonitor = new DefaultRumMonitor(core, scope, configuration);
+        monitor.stopKeepAlive();
+        feature.attachMonitor(monitor);
+        monitor.startView('home', 'home');
+        monitor.stopView('home');
+        feature.onReceive({ 'type': 'crash_report', 'message': 'NativeCrash', 'stack': '#00 pc', 'crash_kind': 'crash',
+          'timestamp_ms': Date.now() - 1000 } as Record<string, Object>);
+
+        const errors: Array<Record<string, Object>> = scope.ofType('error');
+        expect(errors.length).assertEqual(1);
+        expect(errors[0]['view'] === undefined).assertTrue();
+        const views: Array<Record<string, Object>> = scope.ofType('view');
+        const last: Record<string, Object> = views[views.length - 1]['view'] as Record<string, Object>;
+        expect((last['crash'] as Record<string, Object>)['count']).assertEqual(0);
+      });
+
     it('aContinuedCrashAfterThePageClosedCountsOnTheLastClosedView',
       TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
         // e.g. a timer throwing after the page was hidden by backgrounding.

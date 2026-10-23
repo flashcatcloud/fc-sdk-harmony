@@ -201,6 +201,11 @@ export class LiveCrashIncidentGuard {
     this.callback = callback;
   }
 
+  /** The pair is complete: a later callback is a new fault. */
+  forget(): void {
+    this.fingerprint = '';
+  }
+
   isDuplicate(fingerprint: string, timestampMs: number, callback: string): boolean {
     const elapsed: number = timestampMs - this.timestampMs;
     return this.fingerprint.length > 0 && this.fingerprint === fingerprint && this.callback !== callback &&
