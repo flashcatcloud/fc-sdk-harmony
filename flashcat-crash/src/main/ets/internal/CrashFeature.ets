@@ -170,7 +170,9 @@ export class CrashFeature implements Feature, FeatureEventReceiver {
       // list, and rewrite the sidecar, on every fault of a loop. Only half the
       // watcher's match window counts as covered: the watcher matches on the
       // platform's fault time, which may trail this callback's time.
-      if (!CrashDeduplication.matchesConsumed(fingerprint, nowMs, this.consumed, CROSS_LAUNCH_WINDOW_MS / 2)) {
+      // With trackCrashes off there is no APP_CRASH watcher to dedup against.
+      if (this.configuration.trackCrashes &&
+        !CrashDeduplication.matchesConsumed(fingerprint, nowMs, this.consumed, CROSS_LAUNCH_WINDOW_MS / 2)) {
         this.consumed.push(new ConsumedCrashIncident(
           util.generateRandomUUID(true), fingerprint, nowMs));
         this.consumed = CrashDeduplication.retainRecent(

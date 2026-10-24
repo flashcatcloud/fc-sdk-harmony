@@ -1838,6 +1838,25 @@ export default function sessionOnErrorTests(): void {
         expect(trackErrorsOff('observe_only').ofType('error').length).assertEqual(0);
       });
 
+    it('aContinuedCrashInAWithheldSessionReleasesAtOnce',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        // Another observer (e.g. a crash reporter exiting from onException) may
+        // still end the process: what the session held must not wait for a jitter.
+        const core: FakeCore = new FakeCore();
+        core.crashScope = new FakeCrashScope(core);
+        core.crashScope.policy = 'report_and_continue';
+        const scope: CapturingScope = new CapturingScope();
+        const monitor: DefaultRumMonitor = onErrorFeature(core, scope);
+        monitor.startView('home', 'home');
+        monitor.addAction(RumActionType.TAP, 'before');
+        fireUnhandledException(CRASH_TEXT);
+
+        const errors: Array<Record<string, Object>> = scope.ofType('error');
+        expect(errors.length).assertEqual(1);
+        expect((errors[0]['error'] as Record<string, Object>)['is_crash']).assertEqual(true);
+        expect(scope.ofType('action').length).assertEqual(1);
+      });
+
     it('aPreviousLaunchCrashInAViewGapStaysOffThisLaunchsViews',
       TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
         // A native crash of an earlier launch, delivered with no last-view

@@ -193,6 +193,17 @@ export default function jsCrashLiveCallbackTests(): void {
         expect(core.crashScope.ofType('crash_storage_write').length).assertEqual(0);
       });
 
+    it('noConsumedEntryWhenNoWatcherCanDeliverACopy',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        const core: FakeCore = new FakeCore();
+        const feature: CrashFeature = new CrashFeature(core, new CrashConfigurationBuilder()
+          .setJsCrashPolicy(JsCrashPolicy.REPORT_AND_CONTINUE).setTrackCrashes(false).build());
+        const control: Record<string, Object> = liveCallback(feature, 'unhandled');
+
+        expect(control['report_crash']).assertEqual(true);
+        expect(core.crashScope.ofType('crash_storage_write_consumed').length).assertEqual(0);
+      });
+
     it('aRepeatPastHalfTheMatchWindowGetsItsOwnConsumedEntry',
       TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
         // The watcher matches on the platform's fault time, which may trail the

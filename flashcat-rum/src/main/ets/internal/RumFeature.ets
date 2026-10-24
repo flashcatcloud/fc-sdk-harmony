@@ -806,6 +806,10 @@ export class RumFeature implements Feature, FeatureEventReceiver {
     FlashcatLog.d(`rum.crash: report live crash message="${message}"`);
     m.reportError(message, RumErrorSource.SOURCE, RumFeature.stackFramesOnly(stackText), true, 'unhandled',
       RumFeature.crashAttributes({}));
+    // The policy keeps the process alive, but another observer of the same
+    // exception may still end it (e.g. a crash reporter exiting from its own
+    // onException): what the session held leaves now, not after a jitter.
+    m.releaseScheduledWithheld();
   }
 
   private reportUnhandledRejection(reason: Object): void {
