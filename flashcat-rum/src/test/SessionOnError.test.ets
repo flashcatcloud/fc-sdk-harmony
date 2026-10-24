@@ -181,6 +181,13 @@ class FakeCrashScope implements FeatureScope {
       return;
     }
     this.controls.push(event);
+    if (event['callback'] === 'unhandled' && this.policy === 'report_and_continue') {
+      // No incident: RUM reports the crash into the live session.
+      event['report_async'] = false;
+      event['report_crash'] = true;
+      event['should_exit'] = false;
+      return;
+    }
     if (event['callback'] !== 'unhandled' || this.policy === 'observe_only') {
       // No incident: the live report is the only report.
       event['report_async'] = true;
@@ -1789,6 +1796,105 @@ export default function sessionOnErrorTests(): void {
         } finally {
           RumEventMapperHolder.reset();
         }
+      });
+  });
+
+  describe('rum-js-crash-continue', (): void => {
+    /** A sampled RUM feature with error capture switched off, under the given crash policy. */
+    function trackErrorsOff(policy: string, viewClosed: boolean = false): CapturingScope {
+      const core: FakeCore = new FakeCore();
+      core.crashScope = new FakeCrashScope(core);
+      core.crashScope.policy = policy;
+      const scope: CapturingScope = new CapturingScope();
+      core.rumScope = scope;
+      const configuration: RumConfiguration =
+        new RumConfigurationBuilder('app-1').setSessionSampleRate(100).setTrackErrors(false).build();
+      const feature: RumFeature = new RumFeature(core, configuration);
+      feature.onInitialize();
+      const monitor: DefaultRumMonitor = new DefaultRumMonitor(core, scope, configuration);
+      monitor.stopKeepAlive();
+      feature.attachMonitor(monitor);
+      monitor.startView('home', 'home');
+      if (viewClosed) {
+        monitor.stopView('home');
+      }
+      fireUnhandledException(CRASH_TEXT);
+      return scope;
+    }
+
+    it('aContinuedCrashIsACrashOfTheLiveViewEvenWithErrorCaptureOff',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        const scope: CapturingScope = trackErrorsOff('report_and_continue');
+        const errors: Array<Record<string, Object>> = scope.ofType('error');
+        expect(errors.length).assertEqual(1);
+        const error: Record<string, Object> = errors[0]['error'] as Record<string, Object>;
+        expect(error['is_crash']).assertEqual(true);
+        expect(error['message']).assertEqual('Error: fatal');
+        expect(error['category']).assertEqual('Exception');
+        const views: Array<Record<string, Object>> = scope.ofType('view');
+        const last: Record<string, Object> = views[views.length - 1]['view'] as Record<string, Object>;
+        expect((last['crash'] as Record<string, Object>)['count']).assertEqual(1);
+        // Negative control: OBSERVE_ONLY reports nothing once error capture is off.
+        expect(trackErrorsOff('observe_only').ofType('error').length).assertEqual(0);
+      });
+
+    it('aContinuedCrashInAWithheldSessionReleasesAtOnce',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        // Another observer (e.g. a crash reporter exiting from onException) may
+        // still end the process: what the session held must not wait for a jitter.
+        const core: FakeCore = new FakeCore();
+        core.crashScope = new FakeCrashScope(core);
+        core.crashScope.policy = 'report_and_continue';
+        const scope: CapturingScope = new CapturingScope();
+        const monitor: DefaultRumMonitor = onErrorFeature(core, scope);
+        monitor.startView('home', 'home');
+        monitor.addAction(RumActionType.TAP, 'before');
+        fireUnhandledException(CRASH_TEXT);
+
+        const errors: Array<Record<string, Object>> = scope.ofType('error');
+        expect(errors.length).assertEqual(1);
+        expect((errors[0]['error'] as Record<string, Object>)['is_crash']).assertEqual(true);
+        expect(scope.ofType('action').length).assertEqual(1);
+      });
+
+    it('aPreviousLaunchCrashInAViewGapStaysOffThisLaunchsViews',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        // A native crash of an earlier launch, delivered with no last-view
+        // snapshot, while this launch sits between two views.
+        const core: FakeCore = new FakeCore();
+        const scope: CapturingScope = new CapturingScope();
+        core.rumScope = scope;
+        const configuration: RumConfiguration = new RumConfigurationBuilder('app-1').setSessionSampleRate(100).build();
+        const feature: RumFeature = new RumFeature(core, configuration);
+        feature.onInitialize();
+        const monitor: DefaultRumMonitor = new DefaultRumMonitor(core, scope, configuration);
+        monitor.stopKeepAlive();
+        feature.attachMonitor(monitor);
+        monitor.startView('home', 'home');
+        monitor.stopView('home');
+        feature.onReceive({ 'type': 'crash_report', 'message': 'NativeCrash', 'stack': '#00 pc', 'crash_kind': 'crash',
+          'timestamp_ms': Date.now() - 1000 } as Record<string, Object>);
+
+        const errors: Array<Record<string, Object>> = scope.ofType('error');
+        expect(errors.length).assertEqual(1);
+        expect(errors[0]['view'] === undefined).assertTrue();
+        const views: Array<Record<string, Object>> = scope.ofType('view');
+        const last: Record<string, Object> = views[views.length - 1]['view'] as Record<string, Object>;
+        expect((last['crash'] as Record<string, Object>)['count']).assertEqual(0);
+      });
+
+    it('aContinuedCrashAfterThePageClosedCountsOnTheLastClosedView',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        // e.g. a timer throwing after the page was hidden by backgrounding.
+        const scope: CapturingScope = trackErrorsOff('report_and_continue', true);
+        const errors: Array<Record<string, Object>> = scope.ofType('error');
+        expect(errors.length).assertEqual(1);
+        expect((errors[0]['error'] as Record<string, Object>)['is_crash']).assertEqual(true);
+        const views: Array<Record<string, Object>> = scope.ofType('view');
+        const last: Record<string, Object> = views[views.length - 1]['view'] as Record<string, Object>;
+        expect(last['name']).assertEqual('home');
+        expect((last['crash'] as Record<string, Object>)['count']).assertEqual(1);
+        expect((errors[0]['view'] as Record<string, Object>)['id']).assertEqual(last['id']);
       });
   });
 }
