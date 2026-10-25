@@ -17,6 +17,7 @@ import { LastViewSnapshot } from '../main/ets/internal/LastViewSnapshot';
 import { RumFeature } from '../main/ets/internal/RumFeature';
 import { BeforeSamplingContext } from '../main/ets/RumTypes';
 import { RumConfiguration, RumConfigurationBuilder } from '../main/ets/RumConfiguration';
+import { FlashcatRum } from '../main/ets/FlashcatRum';
 import { DefaultRumMonitor } from '../main/ets/internal/monitor/DefaultRumMonitor';
 import { RumActionType, RumErrorSource } from '../main/ets/RumTypes';
 import { errorManager } from '@kit.AbilityKit';
@@ -1898,6 +1899,37 @@ export default function sessionOnErrorTests(): void {
       });
   });
   describe('rum-host-safety', (): void => {
+    it('theGlobalErrorCallbacksNeverRaiseOnOddInput',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        const core: FakeCore = new FakeCore();
+        const scope: CapturingScope = new CapturingScope();
+        featureWith(core, scope, 100, false);
+        const observers: Record<string, Object> =
+          (errorManager as Object as Record<string, Object>)['lastObservers'] as Record<string, Object>;
+        const observer: errorManager.ErrorObserver = observers['error'] as errorManager.ErrorObserver;
+        let threw: boolean = false;
+        try {
+          // A non-Error throw can reach onException as a plain value.
+          (observer.onException as (e: Object) => void)(undefined as Object as Error);
+          (observer.onException as (e: Object) => void)('a string' as Object as Error);
+          observer.onUnhandledException(undefined as Object as string);
+        } catch (_e) {
+          threw = true;
+        }
+        expect(threw).assertFalse();
+      });
+
+    it('enableBeforeInitializeIsANoOp',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        let threw: boolean = false;
+        try {
+          FlashcatRum.enable(new RumConfigurationBuilder('app-1').build());
+        } catch (_e) {
+          threw = true;
+        }
+        expect(threw).assertFalse();
+      });
+
     it('aFailureInsideTheSdkNeverThrowsIntoTheHost',
       TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
         const core: FakeCore = new FakeCore();

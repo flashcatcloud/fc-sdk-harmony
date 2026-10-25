@@ -24,6 +24,16 @@ import { HttpRemoteConfigFetcher, buildConfigUrl } from './internal/remoteconfig
  */
 export class FlashcatRum {
   static enable(configuration: RumConfiguration, sdkCore?: SdkCore): void {
+    // Called from the host's startup path (and possibly before initialize): a
+    // failure leaves the app without RUM, never without the app.
+    try {
+      FlashcatRum.doEnable(configuration, sdkCore);
+    } catch (error) {
+      FlashcatLog.e(`FlashcatRum.enable failed: ${error instanceof Error ? error.message : 'error'}`);
+    }
+  }
+
+  private static doEnable(configuration: RumConfiguration, sdkCore?: SdkCore): void {
     const core: SdkCore = sdkCore ?? Flashcat.getInstance();
 
     // Idempotency guard (Android parity: "RUM feature is already enabled").

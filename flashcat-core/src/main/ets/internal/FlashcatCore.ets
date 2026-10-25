@@ -135,6 +135,12 @@ export class FlashcatCore implements SdkCore {
   }
 
   registerFeature(feature: Feature): void {
+    if (!this.isActive()) {
+      // A host holding on to a stopped core must not revive it: the feature's
+      // timers and writes would run with no upload scheduler behind them.
+      FlashcatLog.e(`registerFeature ignored: ${feature.name} — the SDK instance is stopped`);
+      return;
+    }
     if (this.features.has(feature.name)) {
       return; // already enabled — ignore the duplicate (avoids leaking a 2nd hook)
     }

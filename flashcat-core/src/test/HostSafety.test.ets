@@ -5,6 +5,34 @@ import { TrackingConsent } from '../main/ets/privacy/TrackingConsent';
 import { FlashcatCore } from '../main/ets/internal/FlashcatCore';
 import { EventWriter, Feature, FeatureScope } from '../main/ets/api/feature/Feature';
 import { FlashcatContext } from '../main/ets/api/context/FlashcatContext';
+import { Flashcat } from '../main/ets/Flashcat';
+import { UploadScheduler } from '../main/ets/internal/upload/UploadScheduler';
+import { UploadPersistence, Batch } from '../main/ets/internal/persistence/FilePersistenceStrategy';
+import { BatchUploader, UploadStatus } from '../main/ets/internal/upload/DataUploader';
+
+function delay(ms: number): Promise<void> {
+  return new Promise<void>((resolve: () => void) => setTimeout(resolve, ms));
+}
+
+/** Storage whose first read throws (a transient file-system failure), then is empty. */
+class FlakyPersistence implements UploadPersistence {
+  reads: number = 0;
+  readNextBatch(): Batch | null {
+    this.reads += 1;
+    if (this.reads === 1) {
+      throw new Error('EIO');
+    }
+    return null;
+  }
+  deleteBatch(_batchId: string): void {}
+  restoreBatch(_batch: Batch): void {}
+}
+
+class NeverUploader implements BatchUploader {
+  async upload(_batch: Batch): Promise<UploadStatus> {
+    return UploadStatus.SUCCESS;
+  }
+}
 
 let instanceSeq: number = 0;
 
@@ -62,6 +90,41 @@ export default function hostSafetyTests(): void {
         // Negative control: an ordinary event is still written.
         expect(write(core, { 'type': 'action', 'context': { 'k': 'v' } })).assertTrue();
         core.stop();
+      });
+
+    it('hostCallsOnAnInstanceThatDoesNotExistAreNoOps',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, async (): Promise<void> => {
+        let threw: boolean = false;
+        try {
+          Flashcat.setTrackingConsent(TrackingConsent.GRANTED, 'never-initialized');
+          Flashcat.flush('never-initialized');
+          await Flashcat.flushAndWait('never-initialized');
+          Flashcat.stopInstance('never-initialized');
+        } catch (_e) {
+          threw = true;
+        }
+        expect(threw).assertFalse();
+      });
+
+    it('aStoppedCoreAcceptsNoNewFeature',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        const core: FlashcatCore = new FlashcatCore(`hs-${instanceSeq++}`, fakeContext(),
+          new ConfigurationBuilder('token', 'prod').build(), TrackingConsent.GRANTED);
+        core.initialize();
+        core.stop();
+        core.registerFeature(new NoopFeature());
+        expect(core.getFeature('rum') === null).assertTrue();
+      });
+
+    it('aStorageFailureDoesNotEndTheUploadChain',
+      TestType.FUNCTION | Size.MEDIUMTEST | Level.LEVEL0, async (): Promise<void> => {
+        const persistence: FlakyPersistence = new FlakyPersistence();
+        const scheduler: UploadScheduler = new UploadScheduler(persistence, new NeverUploader(), 20, 10);
+        scheduler.start();
+        await delay(300);
+        scheduler.stop();
+        // The first drain threw; later drains still ran.
+        expect(persistence.reads >= 2).assertTrue();
       });
   });
 }

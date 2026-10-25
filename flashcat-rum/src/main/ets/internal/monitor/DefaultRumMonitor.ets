@@ -363,7 +363,8 @@ export class DefaultRumMonitor implements RumMonitor {
     this.globalAttributes.forEach((v: Object, k: string) => {
       attrs[k] = v;
     });
-    if (attributes !== undefined) {
+    // Untyped callers can pass null where attributes are optional.
+    if (attributes !== undefined && attributes !== null) {
       for (const k of Object.keys(attributes)) {
         attrs[k] = attributes[k];
       }

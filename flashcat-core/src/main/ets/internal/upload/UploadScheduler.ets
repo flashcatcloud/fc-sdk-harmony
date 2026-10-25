@@ -182,6 +182,15 @@ export class UploadScheduler {
         this.retryNotBeforeMs = Date.now() + this.currentDelayMs;
         this.scheduleNext(this.currentDelayMs);
       }
+    } catch (error) {
+      // Nothing may end the drain chain (uploads would stop for the rest of the
+      // process) or reject this un-awaited timer promise into the host: back off
+      // and try again, like a failed upload.
+      FlashcatLog.e(`drain: failed: ${error instanceof Error ? error.message : 'error'}`);
+      this.cycleCount = 0;
+      this.currentDelayMs = Math.min(this.currentDelayMs * 2, 60000);
+      this.retryNotBeforeMs = Date.now() + this.currentDelayMs;
+      this.scheduleNext(this.currentDelayMs);
     } finally {
       this.draining = false;
       if (this.retrigger) {

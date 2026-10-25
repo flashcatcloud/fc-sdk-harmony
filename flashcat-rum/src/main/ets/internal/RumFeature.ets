@@ -160,9 +160,16 @@ export class RumFeature implements Feature, FeatureEventReceiver {
     // raised while reporting an error must not be re-processed into a loop).
     try {
       this.errorObserverId = errorManager.on('error', {
+        // Both callbacks run inside the platform's global error handling: whatever
+        // the runtime hands over (a non-Error value, a getter that throws), the
+        // SDK must not raise a second exception from in here.
         onUnhandledException: (errMsg: string) => {
-          FlashcatLog.d(`rum.error: onUnhandledException len=${errMsg.length}`);
-          this.reportObservedError(errMsg, 'unhandled', RumFeature.errorMessageFromText(errMsg));
+          try {
+            FlashcatLog.d(`rum.error: onUnhandledException len=${errMsg.length}`);
+            this.reportObservedError(errMsg, 'unhandled', RumFeature.errorMessageFromText(errMsg));
+          } catch (e) {
+            FlashcatLog.e(`rum.error: onUnhandledException handling failed: ${RumFeature.errorText(e)}`);
+          }
         },
         onException: (errObject: Error) => {
           // Use the labeled three-part text (same shape onUnhandledException
@@ -172,9 +179,13 @@ export class RumFeature implements Feature, FeatureEventReceiver {
           // reported twice. The Error object's name/message also survive even
           // when the runtime replaced the stack with the "Cannot get SourceMap
           // info" banner.
-          const text: string = RumFeature.labeledErrorText(errObject);
-          FlashcatLog.d(`rum.error: onException len=${text.length}`);
-          this.reportObservedError(text, 'exception', RumFeature.messageFromError(errObject));
+          try {
+            const text: string = RumFeature.labeledErrorText(errObject);
+            FlashcatLog.d(`rum.error: onException len=${text.length}`);
+            this.reportObservedError(text, 'exception', RumFeature.messageFromError(errObject));
+          } catch (e) {
+            FlashcatLog.e(`rum.error: onException handling failed: ${RumFeature.errorText(e)}`);
+          }
         }
       });
       FlashcatLog.d(`rum.error: observer registered id=${this.errorObserverId}`);

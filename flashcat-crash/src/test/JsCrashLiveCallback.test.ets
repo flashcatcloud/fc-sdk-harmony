@@ -5,6 +5,8 @@ import {
 } from '@flashcatcloud/core';
 import { CrashConfigurationBuilder, JsCrashPolicy } from '../main/ets/CrashConfiguration';
 import { CrashFeature } from '../main/ets/internal/CrashFeature';
+import { CrashFingerprint, CrashExceptionParts } from '../main/ets/internal/CrashIncident';
+import { FlashcatCrash } from '../main/ets/FlashcatCrash';
 
 const CRASH_TEXT: string = 'Error name:Error\nError message:fatal\nStacktrace:\nat a (b.ets:1:1)';
 
@@ -205,6 +207,28 @@ export default function jsCrashLiveCallbackTests(): void {
         liveCallback(feature, 'unhandled', t0 + 20000);
 
         expect(core.crashScope.ofType('crash_storage_write_consumed').length).assertEqual(2);
+      });
+
+    it('aHugeExceptionMessageIsBoundedAndStillDeduplicates',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        const message: string = 'x'.repeat(2 * 1024 * 1024);
+        const stack: string = 'at a (b.ets:1:1)';
+        const text: string = `Error name:Error\nError message:${message}\nStacktrace:\n${stack}`;
+        const parts: CrashExceptionParts = CrashFingerprint.partsFromText(text);
+        expect(parts.message.length <= 4096).assertTrue();
+        // The APP_CRASH copy carries the full message; both sides must agree.
+        expect(CrashFingerprint.fromText(text)).assertEqual(CrashFingerprint.fromParts('Error', message, stack));
+      });
+
+    it('enableBeforeInitializeIsANoOp',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        let threw: boolean = false;
+        try {
+          FlashcatCrash.enable(new CrashConfigurationBuilder().build());
+        } catch (_e) {
+          threw = true;
+        }
+        expect(threw).assertFalse();
       });
   });
 }

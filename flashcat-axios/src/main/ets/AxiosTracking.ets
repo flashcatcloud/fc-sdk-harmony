@@ -1,4 +1,5 @@
 import { AxiosInstance, InternalAxiosRequestConfig, AxiosResponse, AxiosError } from '@ohos/axios';
+import { FlashcatLog } from '@flashcatcloud/core';
 import { FlashcatTrace, TracedResource } from '@flashcatcloud/trace';
 
 /**
@@ -8,6 +9,11 @@ import { FlashcatTrace, TracedResource } from '@flashcatcloud/trace';
  * interceptors.
  */
 const pending: Map<Object, string> = new Map();
+/**
+ * A config that never comes back (another interceptor swapped it, or an error
+ * carries none) would otherwise stay here, holding the request body, forever.
+ */
+const MAX_PENDING: number = 256;
 
 /**
  * Reports every request made through `instance` as a RUM resource, with the
@@ -30,49 +36,80 @@ const pending: Map<Object, string> = new Map();
  * `FlashcatRum.enable(...)` with `setTrackNetworkRequests(true)`.
  */
 export function trackAxios(instance: AxiosInstance): void {
+  // These interceptors sit on the host's requests: telemetry may fail, but the
+  // config, the response and the rejection always pass through unchanged.
   instance.interceptors.request.use((config: InternalAxiosRequestConfig) => {
-    // A request interceptor sees `config.url` as the relative path — axios
-    // joins it with `baseURL` further down, inside the adapter. Resolving it
-    // here is what lets the first-party host check match, and what puts a full
-    // url on the resource instead of a bare path.
-    const url: string = fullUrlOf(config);
-    // An inbound traceparent means this request already belongs to a trace.
-    const traced: TracedResource = FlashcatTrace.startTracedResource(
-      url, config.method ?? 'GET', !config.headers.has('traceparent'));
+    try {
+      // A request interceptor sees `config.url` as the relative path — axios
+      // joins it with `baseURL` further down, inside the adapter. Resolving it
+      // here is what lets the first-party host check match, and what puts a full
+      // url on the resource instead of a bare path.
+      const url: string = fullUrlOf(config);
+      // An inbound traceparent means this request already belongs to a trace.
+      const traced: TracedResource = FlashcatTrace.startTracedResource(
+        url, config.method ?? 'GET', !config.headers.has('traceparent'));
 
-    for (const name of Object.keys(traced.headers)) {
-      config.headers.set(name, traced.headers[name]);
+      for (const name of Object.keys(traced.headers)) {
+        config.headers.set(name, traced.headers[name]);
+      }
+      if (traced.key.length > 0) {
+        remember(config, traced.key);
+      }
+    } catch (error) {
+      logFailure('request', error);
     }
-    pending.set(config, traced.key);
     return config;
   });
 
   instance.interceptors.response.use(
     (response: AxiosResponse) => {
-      const key: string = takeKey(response.config);
-      if (key.length > 0) {
-        FlashcatTrace.stopTracedResource(key, response.status, sizeOf(response.data));
+      try {
+        const key: string = takeKey(response.config);
+        if (key.length > 0) {
+          FlashcatTrace.stopTracedResource(key, response.status, sizeOf(response.data));
+        }
+      } catch (error) {
+        logFailure('response', error);
       }
       return response;
     },
     (error: AxiosError) => {
-      // axios rejects on HTTP status, so this branch is not only transport
-      // failures. A response means the request completed, so it stays a
-      // resource carrying that status — matching how the rcp interceptor and
-      // FlashcatHttp report a 404. Only a request that never got a response
-      // becomes a network error.
-      const key: string = takeKey(error.config);
-      if (key.length > 0) {
-        const response: AxiosResponse | undefined = error.response;
-        if (response !== undefined) {
-          FlashcatTrace.stopTracedResource(key, response.status, sizeOf(response.data));
-        } else {
-          FlashcatTrace.failTracedResource(key, error.message);
+      try {
+        // axios rejects on HTTP status, so this branch is not only transport
+        // failures. A response means the request completed, so it stays a
+        // resource carrying that status — matching how the rcp interceptor and
+        // FlashcatHttp report a 404. Only a request that never got a response
+        // becomes a network error.
+        const key: string = takeKey(error.config);
+        if (key.length > 0) {
+          const response: AxiosResponse | undefined = error.response;
+          if (response !== undefined) {
+            FlashcatTrace.stopTracedResource(key, response.status, sizeOf(response.data));
+          } else {
+            FlashcatTrace.failTracedResource(key, error.message);
+          }
         }
+      } catch (telemetryError) {
+        logFailure('error response', telemetryError);
       }
       return Promise.reject(error);
     }
   );
+}
+
+function remember(config: Object, key: string): void {
+  if (pending.size >= MAX_PENDING) {
+    // Evict the oldest (Map keeps insertion order): its response never came back.
+    const oldest: IteratorResult<Object> = pending.keys().next();
+    if (!oldest.done) {
+      pending.delete(oldest.value);
+    }
+  }
+  pending.set(config, key);
+}
+
+function logFailure(what: string, error: Object): void {
+  FlashcatLog.e(`axios: ${what} telemetry failed: ${error instanceof Error ? error.message : 'error'}`);
 }
 
 /**
