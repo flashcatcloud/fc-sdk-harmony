@@ -169,6 +169,9 @@ export class RumFeature implements Feature, FeatureEventReceiver {
             this.reportObservedError(errMsg, 'unhandled', RumFeature.errorMessageFromText(errMsg));
           } catch (e) {
             FlashcatLog.e(`rum.error: onUnhandledException handling failed: ${RumFeature.errorText(e)}`);
+            // Still let the crash policy act (exit / restart): an uncaught exception
+            // must not survive just because its text could not be read.
+            this.reportObservedError('', 'unhandled', 'Unknown error');
           }
         },
         onException: (errObject: Error) => {

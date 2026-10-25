@@ -26,7 +26,7 @@ export class FlashcatCrash {
       }
       core.registerFeature(new CrashFeature(core, configuration));
     } catch (error) {
-      FlashcatLog.e(`FlashcatCrash.enable failed: ${error instanceof Error ? error.message : 'error'}`);
+      FlashcatLog.usage(`FlashcatCrash.enable failed: ${error instanceof Error ? error.message : 'error'}`);
     }
   }
 }

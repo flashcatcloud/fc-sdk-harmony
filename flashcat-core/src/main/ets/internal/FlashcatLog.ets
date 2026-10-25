@@ -31,4 +31,13 @@ export class FlashcatLog {
       hilog.error(DOMAIN, TAG, '%{public}s', message);
     }
   }
+
+  /**
+   * Always logged, verbose or not: the host called the SDK in a way it cannot
+   * honour (before initialize, after stop) or the SDK failed to start. Rare by
+   * construction, and the only way an integrator learns the SDK is not running.
+   */
+  static usage(message: string): void {
+    hilog.error(DOMAIN, TAG, '%{public}s', message);
+  }
 }

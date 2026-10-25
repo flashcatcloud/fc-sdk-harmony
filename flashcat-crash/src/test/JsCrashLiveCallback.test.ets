@@ -220,6 +220,22 @@ export default function jsCrashLiveCallbackTests(): void {
         expect(CrashFingerprint.fromText(text)).assertEqual(CrashFingerprint.fromParts('Error', message, stack));
       });
 
+    it('aCutOnWhitespaceStillDeduplicates',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        const message: string = 'x'.repeat(4095) + ' tail';
+        const stack: string = 'at a (b.ets:1:1)';
+        const text: string = `Error name:Error\nError message:${message}\nStacktrace:\n${stack}`;
+        expect(CrashFingerprint.fromText(text)).assertEqual(CrashFingerprint.fromParts('Error', message, stack));
+      });
+
+    it('aMessageQuotingTheStackMarkerStillDeduplicates',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        const message: string = 'bad input:\nStacktrace:\nnot a frame';
+        const stack: string = 'at a (b.ets:1:1)';
+        const text: string = `Error name:Error\nError message:${message}\nStacktrace:\n${stack}`;
+        expect(CrashFingerprint.fromText(text)).assertEqual(CrashFingerprint.fromParts('Error', message, stack));
+      });
+
     it('enableBeforeInitializeIsANoOp',
       TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
         let threw: boolean = false;

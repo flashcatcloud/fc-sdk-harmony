@@ -281,10 +281,19 @@ export class DefaultRumMonitor implements RumMonitor {
   }
 
   addError(message: string, source: RumErrorSource, stack?: string, attributes?: Record<string, Object>): void {
-    this.reportError(message, source, stack, false, 'handled', attributes);
+    try {
+      this.reportError(message, source, stack, false, 'handled', attributes);
+    } catch (error) {
+      DefaultRumMonitor.logFailure('addError', error);
+    }
   }
 
-  /** Internal: used by the unhandled-exception hook to flag errors as unhandled. */
+  /**
+   * Internal: used by the unhandled-exception hook and crash delivery to flag
+   * errors as unhandled. Unlike the public API this lets a failure propagate:
+   * crash replay reads a throw as "not delivered" and keeps the incident for
+   * the next launch instead of deleting it. Every internal caller contains it.
+   */
   reportError(message: string, source: RumErrorSource, stack: string | undefined,
     isCrash: boolean, handling: string, attributes?: Record<string, Object>, timestampMs?: number,
     countInView: boolean = true, inherited: boolean = false): void {
@@ -299,7 +308,7 @@ export class DefaultRumMonitor implements RumMonitor {
     e.isCrash = isCrash;
     e.countInView = countInView;
     e.errorHandling = handling;
-    this.dispatch(e);
+    this.applicationScope.handleEvent(e);
   }
 
   addAttribute(key: string, value: Object): void {

@@ -138,7 +138,7 @@ export class FlashcatCore implements SdkCore {
     if (!this.isActive()) {
       // A host holding on to a stopped core must not revive it: the feature's
       // timers and writes would run with no upload scheduler behind them.
-      FlashcatLog.e(`registerFeature ignored: ${feature.name} — the SDK instance is stopped`);
+      FlashcatLog.usage(`registerFeature ignored: ${feature.name} — the SDK instance is stopped`);
       return;
     }
     if (this.features.has(feature.name)) {
@@ -172,11 +172,11 @@ export class FlashcatCore implements SdkCore {
     try {
       feature.onInitialize();
     } catch (error) {
-      // A feature that cannot start is not registered: nothing would upload its
-      // events, and the failure must not reach the host's enable call.
-      this.features.delete(feature.name);
-      FlashcatLog.e(`registerFeature: ${feature.name} failed to initialize: ${error instanceof Error ? error.message : 'error'}`);
-      return;
+      // Contain, don't unwind: what the feature set up before failing (a
+      // published crash policy, recovery, receivers) stays consistent with it
+      // remaining registered, exactly as before this guard — only the throw
+      // into the host's enable call is gone.
+      FlashcatLog.usage(`registerFeature: ${feature.name} failed to initialize: ${error instanceof Error ? error.message : 'error'}`);
     }
     if (this.consent === TrackingConsent.GRANTED) {
       scheduler.start();

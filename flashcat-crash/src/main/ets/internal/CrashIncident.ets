@@ -32,7 +32,9 @@ export class CrashFingerprint {
 
   static fromParts(name: string, message: string, stack: string): string {
     const normalizedName: string = name.trim().toLowerCase();
-    const normalizedMessage: string = CrashFingerprint.truncate(message.trim(), MAX_MESSAGE_CHARS);
+    // Trim again after the cut: a prefix cut on whitespace must normalize the
+    // same whether it was cut here (APP_CRASH copy) or already when parsed (live).
+    const normalizedMessage: string = CrashFingerprint.truncate(message.trim(), MAX_MESSAGE_CHARS).trim();
     const frame: string = CrashFingerprint.normalizeFrame(CrashFingerprint.firstFrame(stack));
     return CrashFingerprint.fnv1a(`${normalizedName}\n${normalizedMessage}\n${frame}`);
   }
@@ -65,7 +67,9 @@ export class CrashFingerprint {
     // Take the stack from where it starts, not from the head of the text: a
     // long message would otherwise push every frame past the cut, and the
     // fingerprint (first frame) would no longer match the APP_CRASH copy's.
-    const stackAt: number = text.indexOf('\nStacktrace:\n');
+    // The last marker: the runtime appends the stack after the message, which
+    // may itself contain the marker text.
+    const stackAt: number = text.lastIndexOf('\nStacktrace:\n');
     const stack: string = CrashFingerprint.framesOnly(CrashFingerprint.truncate(
       stackAt >= 0 ? text.substring(stackAt + 1) : text, MAX_STACK_CHARS));
     const lines: string[] = CrashFingerprint.truncate(text, MAX_TEXT_CHARS).split('\n');
@@ -82,7 +86,7 @@ export class CrashFingerprint {
       const labeledName: string = lines[0].substring('Error name:'.length).trim();
       return new CrashExceptionParts(
         labeledName.length > 0 ? labeledName : 'Error',
-        CrashFingerprint.truncate(lines[1].substring('Error message:'.length).trim(), MAX_MESSAGE_CHARS),
+        CrashFingerprint.truncate(CrashFingerprint.labeledMessage(text, lines[0], stackAt), MAX_MESSAGE_CHARS),
         stack);
     }
     // Header = first line that is neither the runtime's "Cannot get SourceMap
@@ -111,6 +115,17 @@ export class CrashFingerprint {
       }
     }
     return new CrashExceptionParts('Error', CrashFingerprint.truncate(header, MAX_MESSAGE_CHARS), stack);
+  }
+
+  /**
+   * The message of the labeled format: everything between "Error message:" and
+   * the stack marker. It can span lines; the APP_CRASH copy carries all of it,
+   * so taking only the first line would fingerprint the two copies differently.
+   */
+  private static labeledMessage(text: string, nameLine: string, stackAt: number): string {
+    const start: number = nameLine.length + 1 + 'Error message:'.length;
+    const end: number = stackAt >= start ? stackAt : text.indexOf('\n', start);
+    return (end >= start ? text.substring(start, end) : text.substring(start)).trim();
   }
 
   private static firstFrame(stack: string): string {

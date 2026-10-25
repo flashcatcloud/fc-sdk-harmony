@@ -1919,6 +1919,30 @@ export default function sessionOnErrorTests(): void {
         expect(threw).assertFalse();
       });
 
+    it('aReplayedCrashThatCannotBeWrittenIsNotMarkedDelivered',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        // Crash replay deletes the persisted incident once RUM says it was
+        // delivered: a write that failed must not say so, or the crash is lost.
+        const core: FakeCore = new FakeCore();
+        const scope: CapturingScope = new CapturingScope();
+        const monitor: DefaultRumMonitor = featureWith(core, scope, 100, false);
+        const feature: RumFeature = new RumFeature(core, new RumConfigurationBuilder('app-1').build());
+        feature.onInitialize();
+        feature.attachMonitor(monitor);
+        monitor.startView('home', 'home');
+        const cyclic: Record<string, Object> = {};
+        cyclic['self'] = cyclic;
+        monitor.addAttribute('cyclic', cyclic); // every write now fails
+        const event: Record<string, Object> = { 'type': 'crash_report', 'message': 'NativeCrash',
+          'stack': '#00 pc', 'crash_kind': 'crash', 'timestamp_ms': Date.now() - 1000 };
+        try {
+          feature.onReceive(event);
+        } catch (_e) {
+          // the bus contains this in production
+        }
+        expect(event['delivered'] === true).assertFalse();
+      });
+
     it('enableBeforeInitializeIsANoOp',
       TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
         let threw: boolean = false;

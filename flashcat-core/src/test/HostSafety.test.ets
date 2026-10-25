@@ -28,6 +28,29 @@ class FlakyPersistence implements UploadPersistence {
   restoreBatch(_batch: Batch): void {}
 }
 
+/** Hands out one batch, then nothing; records what was handed back. */
+class OneBatchPersistence implements UploadPersistence {
+  private given: boolean = false;
+  readonly restored: string[] = [];
+  readNextBatch(): Batch | null {
+    if (this.given) {
+      return null;
+    }
+    this.given = true;
+    return { batchId: 'b-1', data: '{}', eventCount: 1 } as Object as Batch;
+  }
+  deleteBatch(_batchId: string): void {}
+  restoreBatch(batch: Batch): void {
+    this.restored.push(batch.batchId);
+  }
+}
+
+class ThrowingUploader implements BatchUploader {
+  async upload(_batch: Batch): Promise<UploadStatus> {
+    throw new Error('http unavailable');
+  }
+}
+
 class NeverUploader implements BatchUploader {
   async upload(_batch: Batch): Promise<UploadStatus> {
     return UploadStatus.SUCCESS;
@@ -149,8 +172,11 @@ export default function hostSafetyTests(): void {
         const failsToStop: FaultyFeature = new FaultyFeature('trace', false, true);
         const healthy: FaultyFeature = new FaultyFeature('crash', false, false);
         let threw: boolean = false;
+        let registeredAfterFailedStart: boolean = false;
         try {
           core.registerFeature(new FaultyFeature('rum', true, false));
+          // Kept registered: what it set up before failing stays consistent with it.
+          registeredAfterFailedStart = core.getFeature('rum') !== null;
           core.registerFeature(failsToStop);
           core.registerFeature(healthy);
           core.stop();
@@ -158,9 +184,19 @@ export default function hostSafetyTests(): void {
           threw = true;
         }
         expect(threw).assertFalse();
-        expect(core.getFeature('rum') === null).assertTrue(); // never started, not registered
+        expect(registeredAfterFailedStart).assertTrue();
         expect(failsToStop.stopped).assertTrue();
         expect(healthy.stopped).assertTrue(); // stopped although an earlier feature failed
+      });
+
+    it('aClaimedBatchIsHandedBackWhenTheUploadThrows',
+      TestType.FUNCTION | Size.MEDIUMTEST | Level.LEVEL0, async (): Promise<void> => {
+        const persistence: OneBatchPersistence = new OneBatchPersistence();
+        const scheduler: UploadScheduler = new UploadScheduler(persistence, new ThrowingUploader(), 20, 10);
+        scheduler.start();
+        await delay(150);
+        scheduler.stop();
+        expect(persistence.restored.length).assertEqual(1);
       });
 
     it('aStorageFailureDoesNotEndTheUploadChain',

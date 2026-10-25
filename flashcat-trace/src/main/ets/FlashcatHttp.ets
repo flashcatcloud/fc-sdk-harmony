@@ -73,7 +73,12 @@ export class FlashcatHttp {
       }
       throw e as Error; // the host's own error, unchanged
     } finally {
-      httpRequest.destroy();
+      try {
+        httpRequest.destroy();
+      } catch (error) {
+        // Cleanup must not replace the host's response or error.
+        FlashcatHttp.logFailure('request cleanup', error);
+      }
     }
     if (resourceKey.length > 0) {
       try {

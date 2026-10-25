@@ -91,6 +91,28 @@ export default function traceHostSafetyTests(): void {
         expect(options.header === undefined).assertTrue();
       });
 
+    it('aCleanupFailureNeverReplacesTheHostsResponse',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, async (): Promise<void> => {
+        const response: Record<string, Object> = { 'responseCode': 200, 'result': 'ok', 'header': {} };
+        const kit: Record<string, Object> = http as Object as Record<string, Object>;
+        const realCreate: Object = kit['createHttp'];
+        kit['createHttp'] = (): Object => {
+          return {
+            request: (): Promise<Object> => Promise.resolve(response),
+            destroy: (): void => {
+              throw new Error('destroy failed');
+            }
+          } as Object;
+        };
+        let result: Object | undefined = undefined;
+        try {
+          result = await FlashcatHttp.request('https://api.example.com/items', {});
+        } finally {
+          kit['createHttp'] = realCreate;
+        }
+        expect(result === response).assertTrue();
+      });
+
     it('enableBeforeInitializeIsANoOp',
       TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
         let threw: boolean = false;

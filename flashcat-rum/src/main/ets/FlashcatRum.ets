@@ -29,7 +29,7 @@ export class FlashcatRum {
     try {
       FlashcatRum.doEnable(configuration, sdkCore);
     } catch (error) {
-      FlashcatLog.e(`FlashcatRum.enable failed: ${error instanceof Error ? error.message : 'error'}`);
+      FlashcatLog.usage(`FlashcatRum.enable failed: ${error instanceof Error ? error.message : 'error'}`);
     }
   }
 

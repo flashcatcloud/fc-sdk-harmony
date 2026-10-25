@@ -53,7 +53,7 @@ export class Flashcat {
       Flashcat.registry.register(name, core);
       return core;
     } catch (error) {
-      FlashcatLog.e(`initialize failed: ${Flashcat.errorText(error)}`);
+      FlashcatLog.usage(`initialize failed: ${Flashcat.errorText(error)}`);
       return null;
     }
   }
@@ -82,11 +82,16 @@ export class Flashcat {
     if (Flashcat.registry.has(name)) {
       return Flashcat.registry.get(name);
     }
-    const core: FlashcatCore =
-      new FlashcatCore(name, context, configuration, TrackingConsent.NOT_GRANTED, true);
-    core.initialize();
-    Flashcat.registry.register(name, core);
-    return core;
+    try {
+      const core: FlashcatCore =
+        new FlashcatCore(name, context, configuration, TrackingConsent.NOT_GRANTED, true);
+      core.initialize();
+      Flashcat.registry.register(name, core);
+      return core;
+    } catch (error) {
+      FlashcatLog.usage(`initializeForDeferredUpload failed: ${Flashcat.errorText(error)}`);
+      return null;
+    }
   }
 
   /** Retrieve a previously initialized instance. Throws if not initialized. */
@@ -149,7 +154,7 @@ export class Flashcat {
   private static coreOrLog(what: string, instanceName?: string): FlashcatCore | null {
     const core: SdkCore | null = Flashcat.registry.get(instanceName ?? SdkCoreRegistry.DEFAULT_INSTANCE_NAME);
     if (core === null) {
-      FlashcatLog.e(`${what} ignored: the SDK instance is not initialized`);
+      FlashcatLog.usage(`${what} ignored: the SDK instance is not initialized`);
       return null;
     }
     return core as FlashcatCore;

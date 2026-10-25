@@ -49,11 +49,13 @@ export function trackAxios(instance: AxiosInstance): void {
       const traced: TracedResource = FlashcatTrace.startTracedResource(
         url, config.method ?? 'GET', !config.headers.has('traceparent'));
 
-      for (const name of Object.keys(traced.headers)) {
-        config.headers.set(name, traced.headers[name]);
-      }
+      // Remember first: the resource is open from here on, and a header write
+      // that fails must not leave it with no way to be closed.
       if (traced.key.length > 0) {
         remember(config, traced.key);
+      }
+      for (const name of Object.keys(traced.headers)) {
+        config.headers.set(name, traced.headers[name]);
       }
     } catch (error) {
       logFailure('request', error);

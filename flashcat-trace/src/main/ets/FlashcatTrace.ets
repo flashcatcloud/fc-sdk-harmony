@@ -39,7 +39,7 @@ export class FlashcatTrace {
       FlashcatTrace.configuration = configuration;
     } catch (error) {
       // Called before Flashcat.initialize: tracing stays off, the host goes on.
-      FlashcatTrace.logFailure('enable', error);
+      FlashcatLog.usage(`FlashcatTrace.enable failed: ${error instanceof Error ? error.message : 'error'}`);
     }
   }
 
