@@ -180,24 +180,35 @@ export class CrashFingerprint {
   }
 }
 
-/** The most recent live JS incident, used to collapse the two platform callbacks. */
+/**
+ * The most recent live JS incident, used to collapse the two platform callbacks
+ * of one fault. Only the OTHER callback can be the duplicate: the same callback
+ * firing again is a new fault (the process may survive and fault again at once).
+ */
 export class LiveCrashIncidentGuard {
   private readonly windowMs: number;
   private fingerprint: string = '';
   private timestampMs: number = 0;
+  private callback: string = '';
 
   constructor(windowMs: number) {
     this.windowMs = windowMs;
   }
 
-  remember(fingerprint: string, timestampMs: number): void {
+  remember(fingerprint: string, timestampMs: number, callback: string): void {
     this.fingerprint = fingerprint;
     this.timestampMs = timestampMs;
+    this.callback = callback;
   }
 
-  isDuplicate(fingerprint: string, timestampMs: number): boolean {
+  /** The pair is complete: a later callback is a new fault. */
+  forget(): void {
+    this.fingerprint = '';
+  }
+
+  isDuplicate(fingerprint: string, timestampMs: number, callback: string): boolean {
     const elapsed: number = timestampMs - this.timestampMs;
-    return this.fingerprint.length > 0 && this.fingerprint === fingerprint &&
+    return this.fingerprint.length > 0 && this.fingerprint === fingerprint && this.callback !== callback &&
       elapsed >= 0 && elapsed <= this.windowMs;
   }
 }
@@ -328,6 +339,14 @@ export class ConsumedCrashIncident {
   }
 }
 
+/**
+ * Upper bound on consumed entries kept (and persisted) at once. The in-process
+ * APP_CRASH copy arrives within a fraction of a second of the fault, so only a
+ * burst of more than this many distinct faults inside that delay could evict
+ * an entry it still needs.
+ */
+export const MAX_CONSUMED_ENTRIES: number = 100;
+
 /** Pure cross-launch window matching and retention helpers. */
 export class CrashDeduplication {
   static serializeConsumed(consumed: ConsumedCrashIncident[]): string {
@@ -421,7 +440,10 @@ export class CrashDeduplication {
         recent.push(incident);
       }
     }
-    return recent;
+    // Bound the list (and the sidecar rewritten with it): a kept-alive app can
+    // fault in a loop with a different message, so a different fingerprint,
+    // every time. The newest entries are the ones a pending watcher copy needs.
+    return recent.length > MAX_CONSUMED_ENTRIES ? recent.slice(recent.length - MAX_CONSUMED_ENTRIES) : recent;
   }
 
   private static stringValue(value: Object | undefined): string {

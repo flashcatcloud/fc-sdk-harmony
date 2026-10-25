@@ -13,7 +13,10 @@ repair arbitrary application state and continue safely. On the verified
 runtime, installing the observer also suppresses the platform's normal exit.
 
 Therefore a Bugly-style "anti-crash" promise that catches any failure and keeps
-the same process healthy is not implementable for HarmonyOS. CrashSight parity
+the same process healthy is not implementable for HarmonyOS. Apps that keep the
+process alive anyway (their own choice, or another reporter's JS crash
+protection) can use `OBSERVE_ONLY` or `REPORT_AND_CONTINUE`; the SDK then only
+reports and does not repair state. CrashSight parity
 is limited to crash observation and reporting. For supported main-thread ArkTS
 exceptions, HarmonyOS `appRecovery` provides the closest safe soft landing:
 persist the report synchronously, terminate the damaged process, and optionally
@@ -40,8 +43,11 @@ for the crash module's decision:
    `js_crash_callback` to crash with the callback kind, error text, and
    timestamp.
 3. Crash returns control fields on the same record: `fingerprint`,
-   `duplicate`, `report_async`, `should_exit`, and `recover`.
-4. For `REPORT_*`, crash sends synchronous `crash_storage_*` commands to the
+   `duplicate`, `report_async`, `report_crash`, `should_exit`, and `recover`.
+   `REPORT_AND_CONTINUE` answers `report_crash` instead: RUM reports an
+   `is_crash` error into the live session and the process keeps running;
+   no incident is persisted.
+4. For `REPORT_THEN_EXIT` and `REPORT_AND_RECOVER`, crash sends synchronous `crash_storage_*` commands to the
    core-owned store:
    - `crash_storage_write`, `crash_storage_list`, and
      `crash_storage_delete` manage pending incidents;
@@ -49,9 +55,13 @@ for the crash module's decision:
      the cross-launch dedup sidecar; and
    - `crash_storage_read_loop` and `crash_storage_write_loop` manage restart
      history.
-5. RUM follows the returned decision. It uses asynchronous reporting only as a
-   fallback, flushes current writers, then exits or asks `appRecovery` to save
-   state and restart.
+
+   Under `OBSERVE_ONLY` and `REPORT_AND_CONTINUE`, crash only sends
+   `crash_storage_write_consumed` (see deduplication below).
+5. RUM follows the returned decision. For the exiting policies it uses
+   asynchronous reporting only as a fallback, flushes current writers, then
+   exits or asks `appRecovery` to save state and restart. For the keep-alive
+   policies it reports through the live writers and returns.
 6. On a later launch, crash lists pending incidents, maps each one to a
    `crash_report`, sends it to RUM, records it as consumed, and deletes the
    pending file.
@@ -69,16 +79,23 @@ One uncaught ArkTS exception can produce three report paths:
 3. the later `hiAppEvent.APP_CRASH` replay.
 
 The first callback creates a normalized fingerprint and stores it in a
-two-second in-process guard. A matching second callback inside that window is
-suppressed. `onException` remains an asynchronous fallback on platform builds
-where it is the only callback.
+two-second in-process guard. A matching callback of the OTHER kind inside that
+window is suppressed; the same callback again is a new fault. `onException`
+remains an asynchronous fallback on platform builds where it is the only
+callback; under `REPORT_AND_CONTINUE` it reports the crash itself, and a later
+`onUnhandledException` of the same fault is suppressed.
+
+Under `OBSERVE_ONLY` and `REPORT_AND_CONTINUE` the process survives, so the
+in-process watcher receives the same `APP_CRASH` shortly after (60–170 ms on
+the verified emulator runtime). The live callback records a consumed entry for
+it (for a repeating fault, one per 15 seconds), so that copy is skipped.
 
 For a `REPORT_*` incident, the synchronously persisted record is replayed once
 on the next launch. After replay, crash writes its incident ID, fingerprint, and
 timestamp to the consumed sidecar. A matching JS `APP_CRASH` within the
 30-second correlation window is then skipped. Consumed entries are retained
-for 24 hours so delayed watcher delivery does not reintroduce the event. The
-result is one crash error event in the pipeline for one policy-managed crash.
+for 24 hours (at most the newest 100) so delayed watcher delivery does not
+reintroduce the event. The result is one crash error event in the pipeline for one policy-managed crash.
 
 The fingerprint uses normalized exception name, message, and first stack frame.
 It removes path and line/column differences that are unstable across the live

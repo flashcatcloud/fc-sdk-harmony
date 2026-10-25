@@ -110,6 +110,8 @@ export class DemoSdk {
       crashBuilder.setJsCrashPolicy(JsCrashPolicy.REPORT_AND_RECOVER);
     } else if (jsCrashPolicy === 'observe_only') {
       crashBuilder.setJsCrashPolicy(JsCrashPolicy.OBSERVE_ONLY);
+    } else if (jsCrashPolicy === 'report_and_continue') {
+      crashBuilder.setJsCrashPolicy(JsCrashPolicy.REPORT_AND_CONTINUE);
     }
     FlashcatCrash.enable(crashBuilder.build());
 

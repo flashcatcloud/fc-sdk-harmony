@@ -3,6 +3,7 @@ import { JsCrashPolicy } from '../main/ets/CrashConfiguration';
 import {
   ConsumedCrashIncident,
   CrashDeduplication,
+  MAX_CONSUMED_ENTRIES,
   CrashFingerprint,
   CrashIncidentRecord,
   CrashLoopDecision,
@@ -45,7 +46,7 @@ export default function crashIncidentTests(): void {
     it('roundTripsViewUrlThroughSerialization', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
       const record: CrashIncidentRecord = new CrashIncidentRecord(
         'inc-1', 1000, 'Error', 'boom', 'Error: boom\n    at f (a.ets:1:1)', 'fp-1',
-        JsCrashPolicy.REPORT_THEN_EXIT, '0.7.1', 's-1', 'v-1', 'Home', 'pages/Home');
+        JsCrashPolicy.REPORT_THEN_EXIT, '0.7.2', 's-1', 'v-1', 'Home', 'pages/Home');
 
       const parsed: CrashIncidentRecord | null = CrashIncidentRecord.parse(record.serialize());
 
@@ -89,11 +90,16 @@ export default function crashIncidentTests(): void {
     it('suppressesMatchingLiveCallbackOnlyInsideWindow',
       TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
         const guard: LiveCrashIncidentGuard = new LiveCrashIncidentGuard(2000);
-        guard.remember('fp-1', 1000);
+        guard.remember('fp-1', 1000, 'unhandled');
 
-        expect(guard.isDuplicate('fp-1', 2999)).assertTrue();
-        expect(guard.isDuplicate('fp-2', 1500)).assertFalse();
-        expect(guard.isDuplicate('fp-1', 3001)).assertFalse();
+        expect(guard.isDuplicate('fp-1', 2999, 'exception')).assertTrue();
+        expect(guard.isDuplicate('fp-2', 1500, 'exception')).assertFalse();
+        expect(guard.isDuplicate('fp-1', 3001, 'exception')).assertFalse();
+        // The same callback again is a new fault, not the other half of this one.
+        expect(guard.isDuplicate('fp-1', 1500, 'unhandled')).assertFalse();
+        // Once the pair is complete, the next callback is a new fault too.
+        guard.forget();
+        expect(guard.isDuplicate('fp-1', 1500, 'exception')).assertFalse();
       });
 
     it('matchesConsumedIncidentInsideCrossLaunchWindow',
@@ -120,6 +126,21 @@ export default function crashIncidentTests(): void {
 
         expect(recent.length).assertEqual(1);
         expect(recent[0].incidentId).assertEqual('recent');
+      });
+
+    it('keepsOnlyTheNewestConsumedEntriesBeyondTheCap',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        // A kept-alive app faulting in a loop with a new message each time.
+        const consumed: ConsumedCrashIncident[] = [];
+        for (let i: number = 0; i < MAX_CONSUMED_ENTRIES + 50; i++) {
+          consumed.push(new ConsumedCrashIncident(`id-${i}`, `fp-${i}`, 10000 + i));
+        }
+
+        const recent: ConsumedCrashIncident[] = CrashDeduplication.retainRecent(consumed, 20000, 60000);
+
+        expect(recent.length).assertEqual(MAX_CONSUMED_ENTRIES);
+        expect(recent[0].incidentId).assertEqual('id-50');
+        expect(recent[recent.length - 1].incidentId).assertEqual(`id-${MAX_CONSUMED_ENTRIES + 49}`);
       });
 
     it('stackSentToBackendContainsFramesOnlyNoLabelLines',
@@ -162,7 +183,7 @@ export default function crashIncidentTests(): void {
         'TypeError: boom\n    at run (Index.ets:1:2)',
         'fp-1',
         JsCrashPolicy.REPORT_THEN_EXIT,
-        '0.7.1',
+        '0.7.2',
         'session-1',
         'view-1',
         'Home');
@@ -178,7 +199,7 @@ export default function crashIncidentTests(): void {
         expect(parsed.stack.indexOf('Index.ets')).assertLarger(-1);
         expect(parsed.fingerprint).assertEqual('fp-1');
         expect(parsed.policy).assertEqual(JsCrashPolicy.REPORT_THEN_EXIT);
-        expect(parsed.sdkVersion).assertEqual('0.7.1');
+        expect(parsed.sdkVersion).assertEqual('0.7.2');
         expect(parsed.sessionId).assertEqual('session-1');
         expect(parsed.viewId).assertEqual('view-1');
         expect(parsed.viewName).assertEqual('Home');

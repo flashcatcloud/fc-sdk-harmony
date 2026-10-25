@@ -121,7 +121,7 @@ export default class EntryAbility extends UIAbility {
       EntryAbility.forwardParam(params, 'rc_init_rate', 'rcInitRate');
       // '1' keeps the sessions the rate misses when they error (sessionOnError).
       EntryAbility.forwardParam(params, 'soe', 'soe');
-      // 'observe_only' runs the crash feature's OBSERVE_ONLY policy.
+      // 'observe_only' / 'report_and_continue' select that crash policy.
       EntryAbility.forwardParam(params, 'crash_policy', 'jsCrashPolicy');
       hilog.info(DOMAIN, TAG, 'e2e params from %{public}s: endpoint=%{public}s scenario=%{public}s',
         from, e2eEndpoint, scenario);

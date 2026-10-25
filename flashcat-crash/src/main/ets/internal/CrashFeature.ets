@@ -101,11 +101,14 @@ export class CrashFeature implements Feature, FeatureEventReceiver {
         this.downgradeRecoveryIncident();
       }
     } catch (error) {
-      // Never let a policy failure keep a process alive after a REPORT_* crash.
-      event['report_async'] = true;
+      // Never let a policy failure keep a process alive after a REPORT_* crash
+      // whose policy exits.
+      const continues: boolean = this.activePolicy === JsCrashPolicy.REPORT_AND_CONTINUE;
+      event['report_async'] = !continues;
+      event['report_crash'] = continues;
       event['policy'] = this.activePolicy as string;
       event['recover'] = false;
-      event['should_exit'] = this.activePolicy !== JsCrashPolicy.OBSERVE_ONLY;
+      event['should_exit'] = !continues && this.activePolicy !== JsCrashPolicy.OBSERVE_ONLY;
       FlashcatLog.e(`crash.js: live callback failed: ${CrashFeature.errorText(error)}`);
     }
   }
@@ -117,45 +120,64 @@ export class CrashFeature implements Feature, FeatureEventReceiver {
     const fingerprint: string = CrashFingerprint.fromText(text);
     event['fingerprint'] = fingerprint;
 
-    if (callback === 'exception') {
-      if (this.liveGuard.isDuplicate(fingerprint, nowMs)) {
-        event['duplicate'] = true;
-        event['report_async'] = false;
-        FlashcatLog.d(`crash.js: suppressed duplicate onException fingerprint=${fingerprint}`);
-      } else {
-        // Defensive OS-build fallback: onException may be the only callback.
-        event['report_async'] = true;
-      }
+    if (callback !== 'exception' && callback !== 'unhandled') {
+      event['report_async'] = true;
       return;
     }
-
-    if (callback !== 'unhandled') {
+    const continues: boolean = this.activePolicy === JsCrashPolicy.REPORT_AND_CONTINUE;
+    // onUnhandledException normally comes first and onException repeats it.
+    // REPORT_AND_CONTINUE counts a crash from either callback, so it must also
+    // catch the reverse order; the other policies only ever report from
+    // onUnhandledException.
+    if ((callback === 'exception' || continues) && this.liveGuard.isDuplicate(fingerprint, nowMs, callback)) {
+      event['duplicate'] = true;
+      event['report_async'] = false;
+      this.liveGuard.forget();
+      FlashcatLog.d(`crash.js: suppressed duplicate ${callback} callback fingerprint=${fingerprint}`);
+      return;
+    }
+    if (callback === 'exception' && !continues) {
+      // Defensive OS-build fallback: onException may be the only callback.
       event['report_async'] = true;
       return;
     }
 
-    this.liveGuard.remember(fingerprint, nowMs);
+    this.liveGuard.remember(fingerprint, nowMs, callback);
     event['policy'] = this.activePolicy as string;
     event['recover'] = false;
-    if (this.activePolicy === JsCrashPolicy.OBSERVE_ONLY) {
+    if (this.activePolicy === JsCrashPolicy.OBSERVE_ONLY ||
+      this.activePolicy === JsCrashPolicy.REPORT_AND_CONTINUE) {
       // Deliberate semantics: OBSERVE_ONLY reports the fault as a NON-crash
       // error (is_crash=false, via the async live path) — the app claims its
       // own recovery handling, so the process may survive and counting it as a
-      // crash would poison crash-free rate for handled faults. The suppressed
-      // watcher copy is the only is_crash variant; losing it is intentional.
-      event['report_async'] = true;
+      // crash would poison crash-free rate for handled faults.
+      // REPORT_AND_CONTINUE keeps the process alive the same way but reports an
+      // is_crash error into the LIVE session, matching crash reporters whose JS
+      // crash protection keeps the app running yet still counts the crash.
+      // No incident is persisted: the process survives to deliver the live report.
+      event['report_async'] = !continues;
+      event['report_crash'] = continues;
       event['should_exit'] = false;
       // The process survives, so hiAppEvent will deliver the SAME crash to the
       // in-process watcher shortly. Record it as consumed so the watcher's
-      // dedup can suppress it — under OBSERVE_ONLY nothing is ever persisted,
+      // dedup can suppress it — no incident is ever persisted under these policies,
       // which left the consumed set permanently empty and every observed crash
-      // triple-reported (two live callbacks + the watcher event).
-      this.consumed.push(new ConsumedCrashIncident(
-        util.generateRandomUUID(true), fingerprint, nowMs));
-      this.consumed = CrashDeduplication.retainRecent(
-        this.consumed, nowMs, CONSUMED_RETENTION_MS);
-      if (this.isDurableWriteAllowed()) {
-        this.persistConsumed();
+      // triple-reported (two live callbacks + the watcher event). The watcher
+      // copy must not carry the report: it would attribute the crash to the
+      // PREVIOUS run's last view.
+      // A fault that repeats (the process survives it) is already covered by
+      // the entry an earlier repeat left; one entry per repeat would grow the
+      // list, and rewrite the sidecar, on every fault of a loop. Only half the
+      // watcher's match window counts as covered: the watcher matches on the
+      // platform's fault time, which may trail this callback's time.
+      if (!CrashDeduplication.matchesConsumed(fingerprint, nowMs, this.consumed, CROSS_LAUNCH_WINDOW_MS / 2)) {
+        this.consumed.push(new ConsumedCrashIncident(
+          util.generateRandomUUID(true), fingerprint, nowMs));
+        this.consumed = CrashDeduplication.retainRecent(
+          this.consumed, nowMs, CONSUMED_RETENTION_MS);
+        if (this.isDurableWriteAllowed()) {
+          this.persistConsumed();
+        }
       }
       return;
     }
