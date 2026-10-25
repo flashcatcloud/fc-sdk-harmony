@@ -55,6 +55,31 @@ class NoopFeature implements Feature {
   onStop(): void {}
 }
 
+/** A feature that fails at start or at stop, and records whether it was stopped. */
+class FaultyFeature implements Feature {
+  readonly name: string;
+  private readonly failInit: boolean;
+  private readonly failStop: boolean;
+  stopped: boolean = false;
+
+  constructor(name: string, failInit: boolean, failStop: boolean) {
+    this.name = name;
+    this.failInit = failInit;
+    this.failStop = failStop;
+  }
+  onInitialize(): void {
+    if (this.failInit) {
+      throw new Error('init failed');
+    }
+  }
+  onStop(): void {
+    this.stopped = true;
+    if (this.failStop) {
+      throw new Error('stop failed');
+    }
+  }
+}
+
 function write(core: FlashcatCore, event: Record<string, Object>): boolean {
   const scope: FeatureScope | null = core.getFeature('rum');
   let written: boolean = false;
@@ -114,6 +139,28 @@ export default function hostSafetyTests(): void {
         core.stop();
         core.registerFeature(new NoopFeature());
         expect(core.getFeature('rum') === null).assertTrue();
+      });
+
+    it('aFeatureThatFailsToStartOrStopNeverReachesTheHost',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        const core: FlashcatCore = new FlashcatCore(`hs-${instanceSeq++}`, fakeContext(),
+          new ConfigurationBuilder('token', 'prod').build(), TrackingConsent.GRANTED);
+        core.initialize();
+        const failsToStop: FaultyFeature = new FaultyFeature('trace', false, true);
+        const healthy: FaultyFeature = new FaultyFeature('crash', false, false);
+        let threw: boolean = false;
+        try {
+          core.registerFeature(new FaultyFeature('rum', true, false));
+          core.registerFeature(failsToStop);
+          core.registerFeature(healthy);
+          core.stop();
+        } catch (_e) {
+          threw = true;
+        }
+        expect(threw).assertFalse();
+        expect(core.getFeature('rum') === null).assertTrue(); // never started, not registered
+        expect(failsToStop.stopped).assertTrue();
+        expect(healthy.stopped).assertTrue(); // stopped although an earlier feature failed
       });
 
     it('aStorageFailureDoesNotEndTheUploadChain',

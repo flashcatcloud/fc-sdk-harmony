@@ -169,7 +169,15 @@ export class FlashcatCore implements SdkCore {
 
     this.features.set(feature.name, { feature, scope, scheduler, persistence });
     FlashcatLog.d(`registerFeature: ${feature.name}`);
-    feature.onInitialize();
+    try {
+      feature.onInitialize();
+    } catch (error) {
+      // A feature that cannot start is not registered: nothing would upload its
+      // events, and the failure must not reach the host's enable call.
+      this.features.delete(feature.name);
+      FlashcatLog.e(`registerFeature: ${feature.name} failed to initialize: ${error instanceof Error ? error.message : 'error'}`);
+      return;
+    }
     if (this.consent === TrackingConsent.GRANTED) {
       scheduler.start();
     }
@@ -308,9 +316,15 @@ export class FlashcatCore implements SdkCore {
       this.bus.send(RUM_FEATURE_NAME, { 'type': 'keep_alive' } as Record<string, Object>);
     }
     this.features.forEach((r: RegisteredFeature) => {
-      r.persistence.rollActive(); // close buffered events so they're recovered next launch
-      r.scheduler.stop();
-      r.feature.onStop();
+      // One feature failing to stop must not leave the others (and the rest of
+      // this teardown) running, nor throw out of the host's stopInstance.
+      try {
+        r.persistence.rollActive(); // close buffered events so they're recovered next launch
+        r.scheduler.stop();
+        r.feature.onStop();
+      } catch (error) {
+        FlashcatLog.e(`stop: ${r.feature.name} failed: ${error instanceof Error ? error.message : 'error'}`);
+      }
     });
     this.features.clear();
     this.bus.removeReceiver(CRASH_STORAGE_TARGET);

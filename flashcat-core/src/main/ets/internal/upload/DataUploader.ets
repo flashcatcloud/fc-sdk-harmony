@@ -98,8 +98,9 @@ export class DataUploader implements BatchUploader {
   }
 
   async upload(batch: Batch): Promise<UploadStatus> {
-    const request = http.createHttp();
+    let request: http.HttpRequest | null = null;
     try {
+      request = http.createHttp();
       const header: Record<string, string> = {
         'Content-Type': 'text/plain;charset=UTF-8',
         'DD-API-KEY': this.configuration.clientToken,
@@ -129,7 +130,13 @@ export class DataUploader implements BatchUploader {
       FlashcatLog.e(`upload: POST ${this.trackPath} failed: ${e instanceof Error ? e.message : 'network error'}`);
       return UploadStatus.RETRY; // network error
     } finally {
-      request.destroy();
+      if (request !== null) {
+        try {
+          request.destroy();
+        } catch (_e) {
+          // Nothing left to release.
+        }
+      }
     }
   }
 
