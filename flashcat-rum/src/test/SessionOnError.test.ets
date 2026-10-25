@@ -1897,4 +1897,33 @@ export default function sessionOnErrorTests(): void {
         expect((errors[0]['view'] as Record<string, Object>)['id']).assertEqual(last['id']);
       });
   });
+  describe('rum-host-safety', (): void => {
+    it('aFailureInsideTheSdkNeverThrowsIntoTheHost',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        const core: FakeCore = new FakeCore();
+        const scope: CapturingScope = new CapturingScope();
+        const monitor: DefaultRumMonitor = featureWith(core, scope, 100, false);
+        // A host attribute holding a cycle: serializing any event that carries it throws.
+        const cyclic: Record<string, Object> = {};
+        cyclic['self'] = cyclic;
+        let threw: boolean = false;
+        try {
+          monitor.startView('home', 'home');
+          monitor.addAttribute('cyclic', cyclic);
+          monitor.addAction(RumActionType.TAP, 'tap');
+          monitor.addError('boom', RumErrorSource.SOURCE);
+          monitor.stopView('home');
+          monitor.stopSession();
+        } catch (_e) {
+          threw = true;
+        }
+
+        expect(threw).assertFalse();
+        // The SDK keeps working once the bad attribute is gone.
+        monitor.removeAttribute('cyclic');
+        monitor.startView('next', 'next');
+        monitor.addAction(RumActionType.TAP, 'after');
+        expect(scope.ofType('action').length >= 1).assertTrue();
+      });
+  });
 }

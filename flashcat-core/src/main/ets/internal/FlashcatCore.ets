@@ -562,15 +562,23 @@ class PersistenceEventWriter implements EventWriter {
     if (consent === TrackingConsent.NOT_GRANTED) {
       return false;
     }
-    const line: string = JSON.stringify(event);
-    if (consent === TrackingConsent.PENDING) {
-      return this.persistence.writePending(line);
+    // Every event passes through here, often on the host's own call stack: an
+    // event that cannot be serialized (a circular or BigInt attribute the host
+    // passed in) or stored is dropped, never thrown into the host.
+    try {
+      const line: string = JSON.stringify(event);
+      if (consent === TrackingConsent.PENDING) {
+        return this.persistence.writePending(line);
+      }
+      const force: boolean = forceFlush === true;
+      const ok: boolean = this.persistence.write(line, force);
+      if (ok && force) {
+        this.flushTrigger();
+      }
+      return ok;
+    } catch (error) {
+      FlashcatLog.e(`write: dropped type=${typeof eventType === 'string' ? eventType : '?'}: ${error instanceof Error ? error.message : 'error'}`);
+      return false;
     }
-    const force: boolean = forceFlush === true;
-    const ok: boolean = this.persistence.write(line, force);
-    if (ok && force) {
-      this.flushTrigger();
-    }
-    return ok;
   }
 }
