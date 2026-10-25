@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.7.3
+
+- **Behavior change:** with no `setFirstPartyHosts` configured, trace headers
+  are injected nowhere (previously: into every request, third parties
+  included). List the hosts that should receive them.
+- The rcp interceptor and `FlashcatHttp` never stop, fail or alter the host's
+  request: telemetry failures are contained, the host's rejection is passed
+  through unchanged (non-Error values included), and `FlashcatHttp` no
+  longer writes headers into the caller's options.
+- `FlashcatTrace.enable`, `startTracedResource`, `stopTracedResource`,
+  `failTracedResource` and `getHeaders` never throw.
+
 ## 0.7.2
 
 - Version bump to keep the SDK packages in lockstep (see `@flashcatcloud/crash`

@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.7.3
+
+- The SDK no longer throws into the host app: an event that cannot be
+  serialized or stored (e.g. a circular or BigInt attribute) is dropped;
+  `Flashcat.initialize` / `initializeForDeferredUpload` return null on
+  failure; `setTrackingConsent`, `flush`, `flushAndWait` and `stopInstance`
+  are no-ops (always logged) when the instance does not exist.
+- A feature that fails to start or stop no longer aborts the others or
+  throws out of `enable` / `stopInstance`; a stopped instance accepts no new
+  feature.
+- A storage or HTTP-setup failure in the upload loop retries with backoff
+  instead of ending uploads for the process; a claimed batch is handed back.
+- Host misuse (calls before initialize or after stop, failed initialize or
+  enable) is always logged, verbose or not.
+
 ## 0.7.2
 
 - Version bump to keep the SDK packages in lockstep (see `@flashcatcloud/crash`

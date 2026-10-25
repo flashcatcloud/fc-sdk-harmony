@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.7.3
+
+- **Behavior change:** without `@flashcatcloud/crash`, an uncaught
+  main-thread ArkTS exception is now reported as a crash of the live session
+  and the process exits, as it would without the SDK (it previously kept
+  running). Apps that keep themselves alive on purpose must enable the crash
+  module with `REPORT_AND_CONTINUE` or `OBSERVE_ONLY`.
+- The public monitor API never throws into the host: a failure inside the
+  SDK drops the event. The error callbacks tolerate non-Error values.
+- A crash replayed from an earlier launch whose write fails is no longer
+  marked delivered (and deleted).
+
 ## 0.7.2
 
 - Reports `REPORT_AND_CONTINUE` crashes (see `@flashcatcloud/crash` 0.7.2) into

@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.7.3
+
+- The axios interceptors never fail or alter the host's request: telemetry
+  failures are contained and the config, response and rejection pass through
+  unchanged. In-flight tracking is capped at 256 requests per process.
+- Trace headers follow `@flashcatcloud/trace` 0.7.3: none unless first-party
+  hosts are configured.
+
 ## 0.7.2
 
 - Version bump to keep the SDK packages in lockstep (see `@flashcatcloud/crash`
