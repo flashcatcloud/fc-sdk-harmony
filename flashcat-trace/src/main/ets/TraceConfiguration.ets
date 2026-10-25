@@ -17,10 +17,14 @@ export class TraceConfiguration {
     this.firstPartyHosts = firstPartyHosts;
   }
 
-  /** Whether `host` is a configured first-party host (empty config = all hosts). */
+  /**
+   * Whether `host` is a configured first-party host. With none configured no
+   * host is: trace headers change the request on the wire and carry
+   * correlatable ids, so they go only where the app opted in.
+   */
   isFirstParty(host: string): boolean {
     if (this.firstPartyHosts.length === 0) {
-      return true;
+      return false;
     }
     const h: string = host.toLowerCase();
     for (const entry of this.firstPartyHosts) {

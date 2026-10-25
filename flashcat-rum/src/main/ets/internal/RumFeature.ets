@@ -769,8 +769,19 @@ export class RumFeature implements Feature, FeatureEventReceiver {
         }
       }
 
+      // No crash module owns the policy. Keeping the process alive here would
+      // change the host's crash behaviour just because RUM is enabled (the
+      // observer alone suppresses the platform's exit), so RUM applies the
+      // default policy itself: the fault is a crash of the live session, written
+      // synchronously, and the process exits as it would without the SDK.
       asyncReportAttempted = true;
-      this.reportUnhandledToMonitor(stackText, message);
+      try {
+        this.reportLiveCrash(stackText, message);
+      } catch (reportError) {
+        // Reporting failure must never bypass the exit.
+        FlashcatLog.e(`rum.error: crash report failed: ${RumFeature.errorText(reportError)}`);
+      }
+      this.flushAndTerminate(false);
     } catch (e) {
       FlashcatLog.e(`rum.error: policy path failed: ${RumFeature.errorText(e)}`);
       if (!asyncReportAttempted) {

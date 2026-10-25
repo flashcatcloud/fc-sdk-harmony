@@ -21,6 +21,7 @@ import { FlashcatRum } from '../main/ets/FlashcatRum';
 import { DefaultRumMonitor } from '../main/ets/internal/monitor/DefaultRumMonitor';
 import { RumActionType, RumErrorSource } from '../main/ets/RumTypes';
 import { errorManager } from '@kit.AbilityKit';
+import { process } from '@kit.ArkTS';
 
 const MIN_15: number = 15 * 60 * 1000;
 
@@ -1941,6 +1942,24 @@ export default function sessionOnErrorTests(): void {
           // the bus contains this in production
         }
         expect(event['delivered'] === true).assertFalse();
+      });
+
+    it('withoutTheCrashModuleAnUncaughtExceptionIsACrashAndTheAppExits',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        // Enabling RUM alone must not keep a crashed app alive: the observer it
+        // registers suppresses the platform's exit, so RUM restores it.
+        const core: FakeCore = new FakeCore(); // no crash feature
+        const scope: CapturingScope = new CapturingScope();
+        const monitor: DefaultRumMonitor = featureWith(core, scope, 100, false);
+        monitor.startView('home', 'home');
+        const shim: Record<string, Object> = process as Object as Record<string, Object>;
+        const before: number = shim['exitRequests'] as number;
+        fireUnhandledException(CRASH_TEXT);
+
+        expect((shim['exitRequests'] as number) - before).assertEqual(1);
+        const errors: Array<Record<string, Object>> = scope.ofType('error');
+        expect(errors.length).assertEqual(1);
+        expect((errors[0]['error'] as Record<string, Object>)['is_crash']).assertEqual(true);
       });
 
     it('enableBeforeInitializeIsANoOp',

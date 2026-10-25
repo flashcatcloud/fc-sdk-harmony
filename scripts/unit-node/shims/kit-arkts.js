@@ -4,8 +4,9 @@ const util = {
   TextEncoder: class { encodeInto(s) { return new TextEncoder().encode(s); } }
 };
 class ProcessManager {
-  exit() { /* never exit the test runner */ }
+  // Never exit the test runner; count the requests so tests can assert them.
+  exit() { processShim.exitRequests += 1; }
   kill() {}
 }
-const processShim = { ProcessManager };
+const processShim = { ProcessManager, exitRequests: 0 };
 module.exports = { util, process: processShim };
