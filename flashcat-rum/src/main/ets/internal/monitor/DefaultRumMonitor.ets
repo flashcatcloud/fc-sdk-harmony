@@ -333,13 +333,25 @@ export class DefaultRumMonitor implements RumMonitor {
 
   /** Whether the running session is one kept on error that has not been released yet. */
   isWithholding(): boolean {
-    return this.applicationScope.isWithholding();
+    try {
+      return this.applicationScope.isWithholding();
+    } catch (error) {
+      DefaultRumMonitor.logFailure('isWithholding', error);
+      return false;
+    }
   }
 
   getCurrentSessionId(callback: (sessionId: string | undefined) => void): void {
     // A session kept only on error has nothing on the backend until it is
     // released: an id handed out before then could never be looked up.
-    callback(this.applicationScope.isWithholding() ? undefined : this.applicationScope.getCurrentSessionId());
+    let sessionId: string | undefined = undefined;
+    try {
+      sessionId = this.applicationScope.isWithholding() ? undefined : this.applicationScope.getCurrentSessionId();
+    } catch (error) {
+      DefaultRumMonitor.logFailure('getCurrentSessionId', error);
+    }
+    // The host's own callback runs outside the guard: its exceptions are its own.
+    callback(sessionId);
   }
 
   stopSession(): void {

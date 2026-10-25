@@ -5,10 +5,10 @@ export class TraceConfiguration {
   /** 0..100 — fraction of requests marked sampled in the traceparent flags. */
   readonly sampleRate: number;
   /**
-   * Hosts to inject `traceparent` into via the FlashcatHttp auto-capture wrapper.
-   * Empty → inject for ALL hosts (back-compat with the rcp interceptor). Non-empty
-   * → only matching hosts get the header, so trace ids never leak to third parties.
-   * A host matches if it equals an entry or is a subdomain of one.
+   * Hosts that receive `traceparent` / `tracestate` (rcp interceptor,
+   * FlashcatHttp, axios, startTracedResource, getHeaders). Empty → no host
+   * does. A host matches if it equals an entry or is a subdomain of one, so
+   * trace ids never leak to third parties.
    */
   readonly firstPartyHosts: string[];
 

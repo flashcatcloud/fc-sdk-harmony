@@ -101,7 +101,9 @@ export function trackAxios(instance: AxiosInstance): void {
 
 function remember(config: Object, key: string): void {
   if (pending.size >= MAX_PENDING) {
-    // Evict the oldest (Map keeps insertion order): its response never came back.
+    // Evict the oldest (Map keeps insertion order). Usually its response never
+    // came back; with more than MAX_PENDING requests truly in flight it may
+    // still arrive, and that resource then stays open (RUM caps those per view).
     const oldest: IteratorResult<Object> = pending.keys().next();
     if (!oldest.done) {
       pending.delete(oldest.value);
