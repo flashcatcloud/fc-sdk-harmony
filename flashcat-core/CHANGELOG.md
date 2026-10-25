@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.7.2
+
+- Version bump to keep the SDK packages in lockstep (see `@flashcatcloud/crash`
+  0.7.2: `REPORT_AND_CONTINUE` crash policy).
+
 ## 0.7.1
 
 - Version bump to keep the SDK packages in lockstep (see `@flashcatcloud/rum`

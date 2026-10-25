@@ -19,9 +19,13 @@ export default function jsCrashPolicyTests(): void {
       const observe: CrashConfiguration = new CrashConfigurationBuilder()
         .setJsCrashPolicy(JsCrashPolicy.OBSERVE_ONLY)
         .build();
+      const continues: CrashConfiguration = new CrashConfigurationBuilder()
+        .setJsCrashPolicy(JsCrashPolicy.REPORT_AND_CONTINUE)
+        .build();
 
       expect(recover.jsCrashPolicy).assertEqual(JsCrashPolicy.REPORT_AND_RECOVER);
       expect(observe.jsCrashPolicy).assertEqual(JsCrashPolicy.OBSERVE_ONLY);
+      expect(continues.jsCrashPolicy).assertEqual(JsCrashPolicy.REPORT_AND_CONTINUE);
     });
 
     it('builderConfiguresCrashLoopProtection',

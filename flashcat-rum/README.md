@@ -51,7 +51,8 @@ enter the crash-policy path.
 When `@flashcatcloud/crash` is enabled, that module governs the behavior of
 uncaught main-thread ArkTS exceptions. See the
 [crash module documentation](../flashcat-crash/README.md) for
-`REPORT_THEN_EXIT`, `REPORT_AND_RECOVER`, and `OBSERVE_ONLY`.
+`REPORT_THEN_EXIT`, `REPORT_AND_RECOVER`, `REPORT_AND_CONTINUE`, and
+`OBSERVE_ONLY`.
 
 `REPORT_THEN_EXIT` is now the default. This is a behavior change: initializing
 the SDK previously suppressed the host app's exit after an uncaught ArkTS

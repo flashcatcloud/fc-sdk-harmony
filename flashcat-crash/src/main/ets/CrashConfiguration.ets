@@ -4,6 +4,8 @@ export enum JsCrashPolicy {
   REPORT_THEN_EXIT = 'REPORT_THEN_EXIT',
   /** Persist synchronously, then restart unless crash-loop protection blocks it. */
   REPORT_AND_RECOVER = 'REPORT_AND_RECOVER',
+  /** Report a crash into the live session and leave the process running. */
+  REPORT_AND_CONTINUE = 'REPORT_AND_CONTINUE',
   /** Legacy behavior: report asynchronously and leave the process running. */
   OBSERVE_ONLY = 'OBSERVE_ONLY'
 }

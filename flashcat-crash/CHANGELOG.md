@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.7.2
+
+- New `JsCrashPolicy.REPORT_AND_CONTINUE`: an uncaught main-thread ArkTS
+  exception keeps the process running, like `OBSERVE_ONLY`, but is reported as
+  a crash (`is_crash: true`) into the live RUM session and counted in the view's
+  crash count. It is not gated by `setTrackErrors(false)` and persists no crash
+  incident. Use it when the app keeps the process alive on purpose (for example
+  next to another crash reporter's JS crash protection) and the crash must still
+  count toward the crash rate.
+- The two live error callbacks of one fault are deduplicated in either order; a
+  fault that repeats after a completed pair is reported again.
+- Consumed crash entries are capped at the newest 100, and a fault repeating in
+  a loop no longer rewrites the dedup file on every repeat.
+
 ## 0.7.1
 
 - Version bump to keep the SDK packages in lockstep (see `@flashcatcloud/rum`
