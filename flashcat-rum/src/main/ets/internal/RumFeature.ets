@@ -50,6 +50,8 @@ export class RumFeature implements Feature, FeatureEventReceiver {
   private rejectionObserver: errorManager.UnhandledRejectionObserver | null = null;
   private activeJsCrashPolicy: string | null = null;
   private handlingError: boolean = false;
+  // Set once RUM, without the crash module, has asked the process to exit.
+  private terminating: boolean = false;
   // The last view the PREVIOUS process wrote, loaded once at init. Held for the
   // whole run because a hiAppEvent replay can arrive well after startup.
   private previousRunView: Record<string, Object> | null = null;
@@ -701,8 +703,8 @@ export class RumFeature implements Feature, FeatureEventReceiver {
     let asyncReportAttempted: boolean = false;
     try {
       // The crash policy is active only after FlashcatCrash.enable publishes an
-      // owner. Without that owner, this branch is skipped and RUM retains its
-      // pre-policy observe-and-report behavior for backward compatibility.
+      // owner. Without the crash module RUM applies the default policy itself
+      // (below).
       if (this.activeJsCrashPolicy !== null) {
         const crash: FeatureScope | null = this.core.getFeature(CRASH_FEATURE_NAME);
         if (crash !== null) {
@@ -769,12 +771,24 @@ export class RumFeature implements Feature, FeatureEventReceiver {
         }
       }
 
-      // No crash module owns the policy. Keeping the process alive here would
-      // change the host's crash behaviour just because RUM is enabled (the
-      // observer alone suppresses the platform's exit), so RUM applies the
-      // default policy itself: the fault is a crash of the live session, written
-      // synchronously, and the process exits as it would without the SDK.
+      if (this.core.getFeature(CRASH_FEATURE_NAME) !== null) {
+        // The crash module is there but its policy never reached RUM: its
+        // policy, not RUM's default, decides about exiting — report only.
+        asyncReportAttempted = true;
+        this.reportUnhandledToMonitor(stackText, message);
+        return;
+      }
+      // No crash module. Keeping the process alive here would change the host's
+      // crash behaviour just because RUM is enabled (the observer alone
+      // suppresses the platform's exit), so RUM applies the default policy
+      // itself: the fault is a crash of the live session, written synchronously,
+      // and the process exits as it would without the SDK. (An app that keeps
+      // itself alive on purpose enables the crash module with a keep-alive policy.)
       asyncReportAttempted = true;
+      if (this.terminating) {
+        return; // the other callback of the fault whose exit is already under way
+      }
+      this.terminating = true;
       try {
         this.reportLiveCrash(stackText, message);
       } catch (reportError) {
@@ -984,9 +998,30 @@ export class RumFeature implements Feature, FeatureEventReceiver {
    * cross-launch consumed matching) agree across channels.
    */
   static labeledErrorText(errObject: Error): string {
-    const name: string = errObject.name.length > 0 ? errObject.name : 'Error';
-    const stack: string = errObject.stack ?? '';
-    return `Error name:${name}\nError message:${errObject.message}\nStacktrace:\n${stack}`;
+    const rawName: string = RumFeature.errorField(errObject, 'name');
+    const name: string = rawName.length > 0 ? rawName : 'Error';
+    const stack: string = RumFeature.errorField(errObject, 'stack');
+    return `Error name:${name}\nError message:${RumFeature.errorField(errObject, 'message')}\nStacktrace:\n${stack}`;
+  }
+
+  /**
+   * A field of whatever the runtime handed the error callback — an Error, a
+   * thrown string, undefined, an object whose getter throws — read without
+   * ever throwing (this runs inside the platform's global error handling).
+   */
+  private static errorField(value: Object | undefined, key: string): string {
+    try {
+      if (value === undefined || value === null) {
+        return '';
+      }
+      if (typeof value === 'string') {
+        return key === 'message' ? value : '';
+      }
+      const field: Object | undefined = (value as Record<string, Object>)[key];
+      return typeof field === 'string' ? field : '';
+    } catch (_e) {
+      return '';
+    }
   }
 
   /**
@@ -1059,8 +1094,10 @@ export class RumFeature implements Feature, FeatureEventReceiver {
   /** "Name: message" from an Error object, independent of its stack text.
    *  Name alone when the message is empty — no dangling "Error: ". */
   static messageFromError(errObject: Error): string {
-    const name: string = errObject.name.length > 0 ? errObject.name : 'Error';
-    return errObject.message.length > 0 ? `${name}: ${errObject.message}` : name;
+    const rawName: string = RumFeature.errorField(errObject, 'name');
+    const name: string = rawName.length > 0 ? rawName : 'Error';
+    const message: string = RumFeature.errorField(errObject, 'message');
+    return message.length > 0 ? `${name}: ${message}` : name;
   }
 
   /**

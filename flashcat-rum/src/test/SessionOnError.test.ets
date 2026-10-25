@@ -1962,6 +1962,39 @@ export default function sessionOnErrorTests(): void {
         expect((errors[0]['error'] as Record<string, Object>)['is_crash']).assertEqual(true);
       });
 
+    it('withoutTheCrashModuleOneFaultExitsOnceAndCountsOnce',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        const core: FakeCore = new FakeCore();
+        const scope: CapturingScope = new CapturingScope();
+        const monitor: DefaultRumMonitor = featureWith(core, scope, 100, false);
+        monitor.startView('home', 'home');
+        const shim: Record<string, Object> = process as Object as Record<string, Object>;
+        const before: number = shim['exitRequests'] as number;
+        // The test runner does not really exit, so the second callback of the
+        // same fault arrives: it must not count the crash again.
+        fireUnhandledException(CRASH_TEXT);
+        const observers: Record<string, Object> =
+          (errorManager as Object as Record<string, Object>)['lastObservers'] as Record<string, Object>;
+        (observers['error'] as errorManager.ErrorObserver).onException(new Error('fatal'));
+
+        expect((shim['exitRequests'] as number) - before).assertEqual(1);
+        expect(scope.ofType('error').length).assertEqual(1);
+      });
+
+    it('aCrashModuleWithoutAPublishedPolicyDecidesNotRum',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        const core: FakeCore = new FakeCore();
+        core.crashScope = new FakeCrashScope(core);
+        core.crashScope.policy = ''; // registered, but no policy reached RUM
+        const scope: CapturingScope = new CapturingScope();
+        const monitor: DefaultRumMonitor = featureWith(core, scope, 100, false);
+        monitor.startView('home', 'home');
+        const shim: Record<string, Object> = process as Object as Record<string, Object>;
+        const before: number = shim['exitRequests'] as number;
+        fireUnhandledException(CRASH_TEXT);
+        expect((shim['exitRequests'] as number) - before).assertEqual(0);
+      });
+
     it('enableBeforeInitializeIsANoOp',
       TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
         let threw: boolean = false;

@@ -63,6 +63,11 @@ main-thread ArkTS exception is reported as a crash (`is_crash: true`) into the
 current session and the process exits, as it would without the SDK. (Before
 0.7.3 the app kept running after the exception.)
 
+An app that keeps itself running after an uncaught exception on purpose — its
+own `errorManager` observer, or another crash reporter's JS crash protection —
+must enable `@flashcatcloud/crash` with `REPORT_AND_CONTINUE` or `OBSERVE_ONLY`;
+RUM cannot see another observer and otherwise ends the process.
+
 ## License
 
 Apache-2.0

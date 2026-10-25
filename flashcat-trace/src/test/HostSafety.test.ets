@@ -1,7 +1,7 @@
 import { describe, expect, it, Level, Size, TestType } from '@ohos/hypium';
 import { rcp } from '@kit.RemoteCommunicationKit';
 import { http } from '@kit.NetworkKit';
-import { SdkCore } from '@flashcatcloud/core';
+import { SdkCore, TrackingConsent } from '@flashcatcloud/core';
 import { FlashcatTrace } from '../main/ets/FlashcatTrace';
 import { FlashcatHttp } from '../main/ets/FlashcatHttp';
 import { TraceConfiguration } from '../main/ets/TraceConfiguration';
@@ -26,6 +26,16 @@ function brokenCore(): SdkCore {
     throw new Error('sdk failure');
   };
   return { isActive: fail, getTrackingConsent: fail, getFeature: fail, updateFeatureContext: fail } as Object as SdkCore;
+}
+
+/** A live core with the given consent; context updates are ignored. */
+function coreWithConsent(consent: TrackingConsent): SdkCore {
+  return {
+    isActive: (): boolean => true,
+    getTrackingConsent: (): TrackingConsent => consent,
+    getFeature: (): null => null,
+    updateFeatureContext: (): void => {}
+  } as Object as SdkCore;
 }
 
 export default function traceHostSafetyTests(): void {
@@ -111,6 +121,21 @@ export default function traceHostSafetyTests(): void {
           kit['createHttp'] = realCreate;
         }
         expect(result === response).assertTrue();
+      });
+
+    it('noTraceHeadersAnywhereUnlessHostsAreConfigured',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        try {
+          FlashcatTrace.enable(new TraceConfiguration(100, []), coreWithConsent(TrackingConsent.GRANTED));
+          expect(Object.keys(FlashcatTrace.getHeaders()).length).assertEqual(0);
+          expect(Object.keys(FlashcatTrace.getHeaders('https://api.example.com/a')).length).assertEqual(0);
+          // Negative control: a configured host gets them.
+          FlashcatTrace.enable(new TraceConfiguration(100, ['api.example.com']), coreWithConsent(TrackingConsent.GRANTED));
+          expect(FlashcatTrace.getHeaders('https://api.example.com/a')['traceparent'] !== undefined).assertTrue();
+        } finally {
+          // Leave no granted core behind for the other test files.
+          FlashcatTrace.enable(new TraceConfiguration(100), coreWithConsent(TrackingConsent.PENDING));
+        }
       });
 
     it('enableBeforeInitializeIsANoOp',

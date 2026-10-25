@@ -64,7 +64,8 @@ export class FlashcatTrace {
    *
    * Pass the request `url` so the configured `firstPartyHosts` gate applies —
    * without it the caller takes over that responsibility, and trace ids
-   * attached to third-party hosts leak correlation identifiers.
+   * attached to third-party hosts leak correlation identifiers. With no hosts
+   * configured nothing is returned either way.
    */
   /**
    * Registers an outgoing request as a RUM resource and returns the trace
@@ -156,6 +157,10 @@ export class FlashcatTrace {
     const headers: Record<string, string> = {};
     try {
       if (!isInjectionAllowed(FlashcatTrace.core)) {
+        return headers;
+      }
+      // No first-party hosts configured: no headers anywhere, with or without a url.
+      if (FlashcatTrace.configuration.firstPartyHosts.length === 0) {
         return headers;
       }
       if (url !== undefined && !FlashcatTrace.configuration.isFirstParty(hostOfUrl(url))) {

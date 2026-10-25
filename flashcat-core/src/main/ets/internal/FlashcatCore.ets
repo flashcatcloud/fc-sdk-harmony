@@ -318,9 +318,19 @@ export class FlashcatCore implements SdkCore {
     this.features.forEach((r: RegisteredFeature) => {
       // One feature failing to stop must not leave the others (and the rest of
       // this teardown) running, nor throw out of the host's stopInstance.
+      // Each step on its own: a failing one must not skip the next (onStop
+      // releases the feature's own timers and subscriptions).
       try {
         r.persistence.rollActive(); // close buffered events so they're recovered next launch
+      } catch (error) {
+        FlashcatLog.e(`stop: ${r.feature.name} roll failed: ${error instanceof Error ? error.message : 'error'}`);
+      }
+      try {
         r.scheduler.stop();
+      } catch (error) {
+        FlashcatLog.e(`stop: ${r.feature.name} scheduler failed: ${error instanceof Error ? error.message : 'error'}`);
+      }
+      try {
         r.feature.onStop();
       } catch (error) {
         FlashcatLog.e(`stop: ${r.feature.name} failed: ${error instanceof Error ? error.message : 'error'}`);

@@ -26,7 +26,8 @@ const traceConfig = new TraceConfigurationBuilder()
 
 FlashcatTrace.enable(traceConfig);
 // Pass the target URL so the firstPartyHosts allow-list is applied; calling
-// getHeaders() without a URL skips that gate (the caller takes responsibility).
+// getHeaders() without a URL skips the per-host check (the caller takes
+// responsibility), but still returns nothing when no hosts are configured.
 const headers = FlashcatTrace.getHeaders('https://api.example.com');
 ```
 

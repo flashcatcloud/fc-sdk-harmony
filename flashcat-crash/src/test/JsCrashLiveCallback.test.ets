@@ -57,6 +57,13 @@ class FakeCore implements SdkCore {
   clearUserInfo(): void {}
 }
 
+/** A core a persisting policy can snapshot (the keep-alive policies never ask). */
+class PersistingCore extends FakeCore {
+  getContext(): FlashcatContext {
+    return { featureContext: {}, sdkVersion: '0.7.2' } as Object as FlashcatContext;
+  }
+}
+
 function liveCallback(feature: CrashFeature, callback: string, atMs: number = Date.now()): Record<string, Object> {
   const control: Record<string, Object> = {
     'type': 'js_crash_callback',
@@ -172,6 +179,19 @@ export default function jsCrashLiveCallbackTests(): void {
         // Every repeat is reported, but one entry already dedups every
         // watcher copy inside the window: the sidecar is written once.
         expect(core.crashScope.ofType('crash_storage_write_consumed').length).assertEqual(1);
+      });
+
+    it('reportThenExitAppliesToAnOnExceptionOnlyDelivery',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        // An OS build delivering only onException must not leave the crashed
+        // process alive under an exiting policy.
+        const core: PersistingCore = new PersistingCore();
+        const control: Record<string, Object> = liveCallback(
+          featureWith(core, JsCrashPolicy.REPORT_THEN_EXIT), 'exception');
+
+        expect(control['should_exit']).assertEqual(true);
+        expect(control['pending_written']).assertEqual(true);
+        expect(core.crashScope.ofType('crash_storage_write').length).assertEqual(1);
       });
 
     it('otherPoliciesKeepTheOnExceptionFallbackAsAnError',
