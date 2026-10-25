@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.7.2
+
+- Reports `REPORT_AND_CONTINUE` crashes (see `@flashcatcloud/crash` 0.7.2) into
+  the live session, independently of `setTrackErrors`.
+- A crash the process survives between `stopView` and the next `startView` (for
+  example a timer throwing while backgrounded) is counted on the most recently
+  closed view instead of being written without a view. Crashes inherited from a
+  previous launch are unchanged.
+- Docs: with `OBSERVE_ONLY`, `setTrackErrors(false)` drops uncaught exceptions
+  entirely.
+
 ## 0.7.1
 
 - **Remote configuration survives app upgrades.** The stored settings were
