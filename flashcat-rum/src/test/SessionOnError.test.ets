@@ -1981,6 +1981,29 @@ export default function sessionOnErrorTests(): void {
         expect(scope.ofType('error').length).assertEqual(1);
       });
 
+    it('withoutTheCrashModuleALaterFaultIsANewCrash',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        // If the exit did not take (the runner never exits), a fault outside the
+        // first one's callback window is a new crash: reported, and exited again.
+        const core: FakeCore = new FakeCore();
+        const scope: CapturingScope = new CapturingScope();
+        const monitor: DefaultRumMonitor = featureWith(core, scope, 100, false);
+        monitor.startView('home', 'home');
+        const shim: Record<string, Object> = process as Object as Record<string, Object>;
+        const before: number = shim['exitRequests'] as number;
+        fireUnhandledException(CRASH_TEXT);
+        // The window is time based: age the first exit past it.
+        const realNow: () => number = Date.now;
+        Date.now = (): number => realNow() + 5000;
+        try {
+          fireUnhandledException('Error name:Error\nError message:another\nStacktrace:\nat c (d.ets:2:2)');
+        } finally {
+          Date.now = realNow;
+        }
+        expect((shim['exitRequests'] as number) - before).assertEqual(2);
+        expect(scope.ofType('error').length).assertEqual(2);
+      });
+
     it('aCrashModuleWithoutAPublishedPolicyDecidesNotRum',
       TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
         const core: FakeCore = new FakeCore();

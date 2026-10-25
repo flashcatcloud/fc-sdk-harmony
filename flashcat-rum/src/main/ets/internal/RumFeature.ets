@@ -41,6 +41,9 @@ const MAX_REJECTION_REASON_CHARS: number = 500;
  * consumes bus events: network requests published by the Trace interceptor (auto
  * Resource capture), crash events (phase 2). Equivalent to Android's RumFeature.
  */
+// The two error callbacks of one fault are delivered back to back.
+const SAME_FAULT_WINDOW_MS: number = 2000;
+
 export class RumFeature implements Feature, FeatureEventReceiver {
   readonly name: string = RUM_FEATURE_NAME;
   private readonly core: SdkCore;
@@ -50,8 +53,10 @@ export class RumFeature implements Feature, FeatureEventReceiver {
   private rejectionObserver: errorManager.UnhandledRejectionObserver | null = null;
   private activeJsCrashPolicy: string | null = null;
   private handlingError: boolean = false;
-  // Set once RUM, without the crash module, has asked the process to exit.
-  private terminating: boolean = false;
+  // When RUM, without the crash module, last asked the process to exit. The
+  // fault's other callback arrives right after; a later fault in a process
+  // whose exit failed is a new crash.
+  private terminatingAtMs: number = 0;
   // The last view the PREVIOUS process wrote, loaded once at init. Held for the
   // whole run because a hiAppEvent replay can arrive well after startup.
   private previousRunView: Record<string, Object> | null = null;
@@ -785,10 +790,11 @@ export class RumFeature implements Feature, FeatureEventReceiver {
       // and the process exits as it would without the SDK. (An app that keeps
       // itself alive on purpose enables the crash module with a keep-alive policy.)
       asyncReportAttempted = true;
-      if (this.terminating) {
+      const nowMs: number = Date.now();
+      if (nowMs - this.terminatingAtMs < SAME_FAULT_WINDOW_MS) {
         return; // the other callback of the fault whose exit is already under way
       }
-      this.terminating = true;
+      this.terminatingAtMs = nowMs;
       try {
         this.reportLiveCrash(stackText, message);
       } catch (reportError) {
