@@ -5,6 +5,8 @@ import {
 } from '@flashcatcloud/core';
 import { CrashConfigurationBuilder, JsCrashPolicy } from '../main/ets/CrashConfiguration';
 import { CrashFeature } from '../main/ets/internal/CrashFeature';
+import { CrashFingerprint, CrashExceptionParts } from '../main/ets/internal/CrashIncident';
+import { FlashcatCrash } from '../main/ets/FlashcatCrash';
 
 const CRASH_TEXT: string = 'Error name:Error\nError message:fatal\nStacktrace:\nat a (b.ets:1:1)';
 
@@ -53,6 +55,13 @@ class FakeCore implements SdkCore {
   writeSetting(_key: string, _value: string | null): void {}
   setUserInfo(_user: UserInfo): void {}
   clearUserInfo(): void {}
+}
+
+/** A core a persisting policy can snapshot (the keep-alive policies never ask). */
+class PersistingCore extends FakeCore {
+  getContext(): FlashcatContext {
+    return { featureContext: {}, sdkVersion: '0.7.3' } as Object as FlashcatContext;
+  }
 }
 
 function liveCallback(feature: CrashFeature, callback: string, atMs: number = Date.now()): Record<string, Object> {
@@ -172,6 +181,19 @@ export default function jsCrashLiveCallbackTests(): void {
         expect(core.crashScope.ofType('crash_storage_write_consumed').length).assertEqual(1);
       });
 
+    it('reportThenExitAppliesToAnOnExceptionOnlyDelivery',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        // An OS build delivering only onException must not leave the crashed
+        // process alive under an exiting policy.
+        const core: PersistingCore = new PersistingCore();
+        const control: Record<string, Object> = liveCallback(
+          featureWith(core, JsCrashPolicy.REPORT_THEN_EXIT), 'exception');
+
+        expect(control['should_exit']).assertEqual(true);
+        expect(control['pending_written']).assertEqual(true);
+        expect(core.crashScope.ofType('crash_storage_write').length).assertEqual(1);
+      });
+
     it('otherPoliciesKeepTheOnExceptionFallbackAsAnError',
       TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
         const control: Record<string, Object> = liveCallback(
@@ -205,6 +227,44 @@ export default function jsCrashLiveCallbackTests(): void {
         liveCallback(feature, 'unhandled', t0 + 20000);
 
         expect(core.crashScope.ofType('crash_storage_write_consumed').length).assertEqual(2);
+      });
+
+    it('aHugeExceptionMessageIsBoundedAndStillDeduplicates',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        const message: string = 'x'.repeat(2 * 1024 * 1024);
+        const stack: string = 'at a (b.ets:1:1)';
+        const text: string = `Error name:Error\nError message:${message}\nStacktrace:\n${stack}`;
+        const parts: CrashExceptionParts = CrashFingerprint.partsFromText(text);
+        expect(parts.message.length <= 4096).assertTrue();
+        // The APP_CRASH copy carries the full message; both sides must agree.
+        expect(CrashFingerprint.fromText(text)).assertEqual(CrashFingerprint.fromParts('Error', message, stack));
+      });
+
+    it('aCutOnWhitespaceStillDeduplicates',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        const message: string = 'x'.repeat(4095) + ' tail';
+        const stack: string = 'at a (b.ets:1:1)';
+        const text: string = `Error name:Error\nError message:${message}\nStacktrace:\n${stack}`;
+        expect(CrashFingerprint.fromText(text)).assertEqual(CrashFingerprint.fromParts('Error', message, stack));
+      });
+
+    it('aMessageQuotingTheStackMarkerStillDeduplicates',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        const message: string = 'bad input:\nStacktrace:\nnot a frame';
+        const stack: string = 'at a (b.ets:1:1)';
+        const text: string = `Error name:Error\nError message:${message}\nStacktrace:\n${stack}`;
+        expect(CrashFingerprint.fromText(text)).assertEqual(CrashFingerprint.fromParts('Error', message, stack));
+      });
+
+    it('enableBeforeInitializeIsANoOp',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        let threw: boolean = false;
+        try {
+          FlashcatCrash.enable(new CrashConfigurationBuilder().build());
+        } catch (_e) {
+          threw = true;
+        }
+        expect(threw).assertFalse();
       });
   });
 }

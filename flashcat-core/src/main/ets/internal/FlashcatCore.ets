@@ -135,6 +135,12 @@ export class FlashcatCore implements SdkCore {
   }
 
   registerFeature(feature: Feature): void {
+    if (!this.isActive()) {
+      // A host holding on to a stopped core must not revive it: the feature's
+      // timers and writes would run with no upload scheduler behind them.
+      FlashcatLog.usage(`registerFeature ignored: ${feature.name} — the SDK instance is stopped`);
+      return;
+    }
     if (this.features.has(feature.name)) {
       return; // already enabled — ignore the duplicate (avoids leaking a 2nd hook)
     }
@@ -159,11 +165,19 @@ export class FlashcatCore implements SdkCore {
         this.configuration.batchProcessingLevel);
     const scope: CoreFeatureScope = new CoreFeatureScope(
       this.contextProvider, this.bus, feature.name, persistence,
-      () => this.consent, () => scheduler.triggerNow());
+      () => this.consent, () => scheduler.triggerNow(), () => scheduler.isBackingOff());
 
     this.features.set(feature.name, { feature, scope, scheduler, persistence });
     FlashcatLog.d(`registerFeature: ${feature.name}`);
-    feature.onInitialize();
+    try {
+      feature.onInitialize();
+    } catch (error) {
+      // Contain, don't unwind: what the feature set up before failing (a
+      // published crash policy, recovery, receivers) stays consistent with it
+      // remaining registered, exactly as before this guard — only the throw
+      // into the host's enable call is gone.
+      FlashcatLog.usage(`registerFeature: ${feature.name} failed to initialize: ${error instanceof Error ? error.message : 'error'}`);
+    }
     if (this.consent === TrackingConsent.GRANTED) {
       scheduler.start();
     }
@@ -302,9 +316,25 @@ export class FlashcatCore implements SdkCore {
       this.bus.send(RUM_FEATURE_NAME, { 'type': 'keep_alive' } as Record<string, Object>);
     }
     this.features.forEach((r: RegisteredFeature) => {
-      r.persistence.rollActive(); // close buffered events so they're recovered next launch
-      r.scheduler.stop();
-      r.feature.onStop();
+      // One feature failing to stop must not leave the others (and the rest of
+      // this teardown) running, nor throw out of the host's stopInstance.
+      // Each step on its own: a failing one must not skip the next (onStop
+      // releases the feature's own timers and subscriptions).
+      try {
+        r.persistence.rollActive(); // close buffered events so they're recovered next launch
+      } catch (error) {
+        FlashcatLog.e(`stop: ${r.feature.name} roll failed: ${error instanceof Error ? error.message : 'error'}`);
+      }
+      try {
+        r.scheduler.stop();
+      } catch (error) {
+        FlashcatLog.e(`stop: ${r.feature.name} scheduler failed: ${error instanceof Error ? error.message : 'error'}`);
+      }
+      try {
+        r.feature.onStop();
+      } catch (error) {
+        FlashcatLog.e(`stop: ${r.feature.name} failed: ${error instanceof Error ? error.message : 'error'}`);
+      }
     });
     this.features.clear();
     this.bus.removeReceiver(CRASH_STORAGE_TARGET);
@@ -518,12 +548,13 @@ class CoreFeatureScope implements FeatureScope {
     featureName: string,
     persistence: FilePersistenceStrategy,
     consentSupplier: () => TrackingConsent,
-    flushTrigger: () => void
+    flushTrigger: () => void,
+    backingOff: () => boolean
   ) {
     this.contextProvider = contextProvider;
     this.bus = bus;
     this.featureName = featureName;
-    this.writer = new PersistenceEventWriter(persistence, consentSupplier, flushTrigger);
+    this.writer = new PersistenceEventWriter(persistence, consentSupplier, flushTrigger, backingOff);
   }
 
   withWriteContext(callback: (context: FlashcatContext, writer: EventWriter) => void): void {
@@ -544,15 +575,18 @@ class PersistenceEventWriter implements EventWriter {
   private readonly persistence: FilePersistenceStrategy;
   private readonly consentSupplier: () => TrackingConsent;
   private readonly flushTrigger: () => void;
+  private readonly backingOff: () => boolean;
 
   constructor(
     persistence: FilePersistenceStrategy,
     consentSupplier: () => TrackingConsent,
-    flushTrigger: () => void
+    flushTrigger: () => void,
+    backingOff: () => boolean
   ) {
     this.persistence = persistence;
     this.consentSupplier = consentSupplier;
     this.flushTrigger = flushTrigger;
+    this.backingOff = backingOff;
   }
 
   write(event: Record<string, Object>, forceFlush?: boolean): boolean {
@@ -562,15 +596,27 @@ class PersistenceEventWriter implements EventWriter {
     if (consent === TrackingConsent.NOT_GRANTED) {
       return false;
     }
-    const line: string = JSON.stringify(event);
-    if (consent === TrackingConsent.PENDING) {
-      return this.persistence.writePending(line);
+    // Every event passes through here, often on the host's own call stack: an
+    // event that cannot be serialized (a circular or BigInt attribute the host
+    // passed in) or stored is dropped, never thrown into the host.
+    try {
+      const line: string = JSON.stringify(event);
+      if (consent === TrackingConsent.PENDING) {
+        return this.persistence.writePending(line);
+      }
+      // A force-flush asks for an immediate upload. While the intake is failing
+      // none can happen, so the event joins the active batch (which still rolls
+      // on age) instead of closing it: offline, every failed request would
+      // otherwise open a new batch file and trigger a doomed upload.
+      const force: boolean = forceFlush === true && !this.backingOff();
+      const ok: boolean = this.persistence.write(line, force);
+      if (ok && force) {
+        this.flushTrigger();
+      }
+      return ok;
+    } catch (error) {
+      FlashcatLog.e(`write: dropped type=${typeof eventType === 'string' ? eventType : '?'}: ${error instanceof Error ? error.message : 'error'}`);
+      return false;
     }
-    const force: boolean = forceFlush === true;
-    const ok: boolean = this.persistence.write(line, force);
-    if (ok && force) {
-      this.flushTrigger();
-    }
-    return ok;
   }
 }

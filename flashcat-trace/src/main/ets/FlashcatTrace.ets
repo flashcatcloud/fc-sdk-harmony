@@ -1,6 +1,6 @@
 import { rcp } from '@kit.RemoteCommunicationKit';
 import { util } from '@kit.ArkTS';
-import { Flashcat, SdkCore } from '@flashcatcloud/core';
+import { Flashcat, FlashcatLog, SdkCore } from '@flashcatcloud/core';
 import { TraceConfiguration } from './TraceConfiguration';
 import { TracedResource } from './TracedResource';
 import { TraceContext } from './internal/TraceContext';
@@ -34,8 +34,13 @@ export class FlashcatTrace {
   private static configuration: TraceConfiguration = new TraceConfiguration(100);
 
   static enable(configuration: TraceConfiguration, sdkCore?: SdkCore): void {
-    FlashcatTrace.configuration = configuration;
-    FlashcatTrace.core = sdkCore ?? Flashcat.getInstance();
+    try {
+      FlashcatTrace.core = sdkCore ?? Flashcat.getInstance();
+      FlashcatTrace.configuration = configuration;
+    } catch (error) {
+      // Called before Flashcat.initialize: tracing stays off, the host goes on.
+      FlashcatLog.usage(`FlashcatTrace.enable failed: ${error instanceof Error ? error.message : 'error'}`);
+    }
   }
 
   /** rcp interceptor for automatic injection on a session. */
@@ -59,7 +64,8 @@ export class FlashcatTrace {
    *
    * Pass the request `url` so the configured `firstPartyHosts` gate applies —
    * without it the caller takes over that responsibility, and trace ids
-   * attached to third-party hosts leak correlation identifiers.
+   * attached to third-party hosts leak correlation identifiers. With no hosts
+   * configured nothing is returned either way.
    */
   /**
    * Registers an outgoing request as a RUM resource and returns the trace
@@ -87,33 +93,47 @@ export class FlashcatTrace {
    *        tied to a trace the caller never sent.
    */
   static startTracedResource(url: string, method: string, injectTrace: boolean = true): TracedResource {
-    const core: SdkCore | null = FlashcatTrace.core;
-    const config: TraceConfiguration = FlashcatTrace.configuration;
-    const key: string = util.generateRandomUUID(true);
-    const headers: Record<string, string> = {};
-    let traceId: string | undefined = undefined;
-    let spanId: string | undefined = undefined;
+    // Runs on the host's request path: on any failure the request goes out
+    // untraced and untracked (an empty key makes stop/fail no-ops).
+    try {
+      const core: SdkCore | null = FlashcatTrace.core;
+      const config: TraceConfiguration = FlashcatTrace.configuration;
+      const key: string = util.generateRandomUUID(true);
+      const headers: Record<string, string> = {};
+      let traceId: string | undefined = undefined;
+      let spanId: string | undefined = undefined;
 
-    if (injectTrace && isInjectionAllowed(core) && config.isFirstParty(hostOfUrl(url))) {
-      const tc: TraceContext = TraceContext.generate(config.sampleRate);
-      headers['traceparent'] = tc.traceparent();
-      headers['tracestate'] = tc.tracestate();
-      // An unsampled trace is dropped by the APM backend — correlate only when
-      // it will actually exist there.
-      if (tc.sampled) {
-        publishTraceId(core, tc.traceId);
-        traceId = tc.traceId;
-        spanId = tc.spanId;
+      if (injectTrace && isInjectionAllowed(core) && config.isFirstParty(hostOfUrl(url))) {
+        const tc: TraceContext = TraceContext.generate(config.sampleRate);
+        headers['traceparent'] = tc.traceparent();
+        headers['tracestate'] = tc.tracestate();
+        // An unsampled trace is dropped by the APM backend — correlate only when
+        // it will actually exist there.
+        if (tc.sampled) {
+          publishTraceId(core, tc.traceId);
+          traceId = tc.traceId;
+          spanId = tc.spanId;
+        }
       }
-    }
 
-    publishResourceStarted(core, key, url, method, traceId, spanId);
-    return new TracedResource(key, headers);
+      publishResourceStarted(core, key, url, method, traceId, spanId);
+      return new TracedResource(key, headers);
+    } catch (error) {
+      FlashcatTrace.logFailure('startTracedResource', error);
+      return new TracedResource('', {});
+    }
   }
 
   /** Closes a traced resource that got a response, whatever its status. */
   static stopTracedResource(key: string, statusCode: number, size: number, mimeType: string = ''): void {
-    publishResourceCompleted(FlashcatTrace.core, key, statusCode, size, mimeType);
+    if (key.length === 0) {
+      return;
+    }
+    try {
+      publishResourceCompleted(FlashcatTrace.core, key, statusCode, size, mimeType);
+    } catch (error) {
+      FlashcatTrace.logFailure('stopTracedResource', error);
+    }
   }
 
   /**
@@ -123,23 +143,43 @@ export class FlashcatTrace {
    * stays a resource with that status.
    */
   static failTracedResource(key: string, message: string): void {
-    publishResourceFailed(FlashcatTrace.core, key, message);
+    if (key.length === 0) {
+      return;
+    }
+    try {
+      publishResourceFailed(FlashcatTrace.core, key, message);
+    } catch (error) {
+      FlashcatTrace.logFailure('failTracedResource', error);
+    }
   }
 
   static getHeaders(url?: string): Record<string, string> {
     const headers: Record<string, string> = {};
-    if (!isInjectionAllowed(FlashcatTrace.core)) {
+    try {
+      if (!isInjectionAllowed(FlashcatTrace.core)) {
+        return headers;
+      }
+      // No first-party hosts configured: no headers anywhere, with or without a url.
+      if (FlashcatTrace.configuration.firstPartyHosts.length === 0) {
+        return headers;
+      }
+      if (url !== undefined && !FlashcatTrace.configuration.isFirstParty(hostOfUrl(url))) {
+        return headers;
+      }
+      const tc: TraceContext = TraceContext.generate(FlashcatTrace.configuration.sampleRate);
+      if (tc.sampled) {
+        publishTraceId(FlashcatTrace.core, tc.traceId);
+      }
+      headers['traceparent'] = tc.traceparent();
+      headers['tracestate'] = tc.tracestate();
       return headers;
+    } catch (error) {
+      FlashcatTrace.logFailure('getHeaders', error);
+      return {};
     }
-    if (url !== undefined && !FlashcatTrace.configuration.isFirstParty(hostOfUrl(url))) {
-      return headers;
-    }
-    const tc: TraceContext = TraceContext.generate(FlashcatTrace.configuration.sampleRate);
-    if (tc.sampled) {
-      publishTraceId(FlashcatTrace.core, tc.traceId);
-    }
-    headers['traceparent'] = tc.traceparent();
-    headers['tracestate'] = tc.tracestate();
-    return headers;
+  }
+
+  private static logFailure(what: string, error: Object): void {
+    FlashcatLog.e(`trace: ${what} failed: ${error instanceof Error ? error.message : 'error'}`);
   }
 }

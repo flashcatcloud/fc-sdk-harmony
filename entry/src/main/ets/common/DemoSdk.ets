@@ -104,7 +104,8 @@ export class DemoSdk {
       rumBuilder.setBeforeSampling(DemoSdk.vipAllowList);
     }
     FlashcatRum.enable(rumBuilder.build());
-    FlashcatTrace.enable(new TraceConfigurationBuilder().setSampleRate(100).build());
+    FlashcatTrace.enable(new TraceConfigurationBuilder().setSampleRate(100)
+      .setFirstPartyHosts(['httpbingo.org']).build());
     const crashBuilder: CrashConfigurationBuilder = new CrashConfigurationBuilder();
     if (recover) {
       crashBuilder.setJsCrashPolicy(JsCrashPolicy.REPORT_AND_RECOVER);

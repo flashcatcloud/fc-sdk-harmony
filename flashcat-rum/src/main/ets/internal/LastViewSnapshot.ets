@@ -18,7 +18,16 @@ import { FlashcatLog } from '@flashcatcloud/core';
  *
  * Writes are best-effort and must never disturb event delivery — a failing
  * snapshot degrades crash attribution, it does not drop data.
+ *
+ * Writes are coalesced: a view is re-emitted after every action, resource and
+ * error, and rewriting the file each time cost the host a synchronous write per
+ * event. The latest view lands at most WRITE_DELAY_MS later, and immediately
+ * when the core flushes (background, explicit flush, pre-exit, stop) — the
+ * moments a process is about to go away. A fault that kills the process without
+ * warning loses at most that delay of view updates.
  */
+const WRITE_DELAY_MS: number = 1000;
+
 export type LastViewWriter = (serialized: string) => void;
 export type LastViewReader = () => string;
 export type LastViewDeleter = () => void;
@@ -29,6 +38,9 @@ export class LastViewSnapshot {
   private static deleter: LastViewDeleter | null = null;
   /** The session of the view last recorded by this process, '' when none is on file. */
   private static recordedSessionId: string = '';
+  /** The latest view not yet on file, and its pending write. */
+  private static pending: Record<string, Object> | null = null;
+  private static timerId: number = -1;
 
   /** @internal wired by RumFeature.onInitialize to the core's crash storage. */
   static configure(writer: LastViewWriter, reader: LastViewReader, deleter: LastViewDeleter): void {
@@ -36,6 +48,7 @@ export class LastViewSnapshot {
     LastViewSnapshot.reader = reader;
     LastViewSnapshot.deleter = deleter;
     LastViewSnapshot.recordedSessionId = '';
+    LastViewSnapshot.cancelPending();
   }
 
   /** @internal cleared on SDK stop so a torn-down core is never written to. */
@@ -44,6 +57,7 @@ export class LastViewSnapshot {
     LastViewSnapshot.reader = null;
     LastViewSnapshot.deleter = null;
     LastViewSnapshot.recordedSessionId = '';
+    LastViewSnapshot.cancelPending();
   }
 
   /**
@@ -53,8 +67,28 @@ export class LastViewSnapshot {
    * backend already has.
    */
   static record(event: Record<string, Object>): void {
+    if (LastViewSnapshot.writer === null) {
+      return;
+    }
+    LastViewSnapshot.pending = event;
+    if (LastViewSnapshot.timerId === -1) {
+      LastViewSnapshot.timerId = setTimeout((): void => {
+        LastViewSnapshot.timerId = -1;
+        LastViewSnapshot.flush();
+      }, WRITE_DELAY_MS);
+    }
+  }
+
+  /** Write the latest view now. The core's flush points call this. */
+  static flush(): void {
+    if (LastViewSnapshot.timerId !== -1) {
+      clearTimeout(LastViewSnapshot.timerId);
+      LastViewSnapshot.timerId = -1;
+    }
+    const event: Record<string, Object> | null = LastViewSnapshot.pending;
+    LastViewSnapshot.pending = null;
     const w: LastViewWriter | null = LastViewSnapshot.writer;
-    if (w === null) {
+    if (event === null || w === null) {
       return;
     }
     try {
@@ -67,13 +101,34 @@ export class LastViewSnapshot {
     }
   }
 
+  /** Drop the queued view without writing it (consent refused). */
+  static discardPending(): void {
+    LastViewSnapshot.cancelPending();
+  }
+
+  private static cancelPending(): void {
+    if (LastViewSnapshot.timerId !== -1) {
+      clearTimeout(LastViewSnapshot.timerId);
+      LastViewSnapshot.timerId = -1;
+    }
+    LastViewSnapshot.pending = null;
+  }
+
   /**
    * Forget the snapshot if it describes `sessionId`. A session thrown away
    * without ever reaching the backend must not be rebuilt by a crash replayed
    * against its last view; the snapshot of any other session stays.
    */
   static invalidateFor(sessionId: string): void {
-    if (sessionId.length === 0 || LastViewSnapshot.recordedSessionId !== sessionId) {
+    if (sessionId.length === 0) {
+      return;
+    }
+    // A pending (not yet written) view of that session goes too.
+    const pending: Record<string, Object> | null = LastViewSnapshot.pending;
+    if (pending !== null && LastViewSnapshot.sessionIdOf(pending) === sessionId) {
+      LastViewSnapshot.cancelPending();
+    }
+    if (LastViewSnapshot.recordedSessionId !== sessionId) {
       return;
     }
     LastViewSnapshot.recordedSessionId = '';

@@ -1,4 +1,4 @@
-import { SdkCore, FeatureScope } from '@flashcatcloud/core';
+import { SdkCore, FeatureScope, FlashcatLog } from '@flashcatcloud/core';
 import { util } from '@kit.ArkTS';
 import { RumMonitor } from '../../RumMonitor';
 import { RumConfiguration } from '../../RumConfiguration';
@@ -99,7 +99,11 @@ export class DefaultRumMonitor implements RumMonitor {
   }
 
   setForcedSession(): void {
-    this.applicationScope.forceSession(Date.now());
+    try {
+      this.applicationScope.forceSession(Date.now());
+    } catch (error) {
+      DefaultRumMonitor.logFailure('setForcedSession', error);
+    }
   }
 
   getRemoteConfig(): Record<string, Object> | null {
@@ -120,13 +124,13 @@ export class DefaultRumMonitor implements RumMonitor {
     const e: RumRawEvent = this.raw('startView', attributes);
     e.key = key;
     e.name = name;
-    this.applicationScope.handleEvent(e);
+    this.dispatch(e);
   }
 
   stopView(key: string, attributes?: Record<string, Object>): void {
     const e: RumRawEvent = this.raw('stopView', attributes);
     e.key = key;
-    this.applicationScope.handleEvent(e);
+    this.dispatch(e);
   }
 
   /** Instantaneous action — emits an ActionEvent with loading_time 0. */
@@ -195,7 +199,7 @@ export class DefaultRumMonitor implements RumMonitor {
     e.actionType = type as string;
     e.actionId = util.generateRandomUUID(true);
     e.actionDurationNs = durationNs;
-    this.applicationScope.handleEvent(e);
+    this.dispatch(e);
   }
 
   private static actionKey(type: RumActionType, name: string): string {
@@ -204,7 +208,7 @@ export class DefaultRumMonitor implements RumMonitor {
 
   /** Re-emit the active view (keep its time_spent / the session duration current). */
   keepAlive(): void {
-    this.applicationScope.handleEvent({ kind: 'keepAlive', attributes: {}, timestampMs: Date.now() });
+    this.dispatch({ kind: 'keepAlive', attributes: {}, timestampMs: Date.now() });
   }
 
   /**
@@ -232,7 +236,7 @@ export class DefaultRumMonitor implements RumMonitor {
    * event itself is written by the replay.
    */
   markCrash(): void {
-    this.applicationScope.handleEvent({ kind: 'markCrash', attributes: {}, timestampMs: Date.now() });
+    this.dispatch({ kind: 'markCrash', attributes: {}, timestampMs: Date.now() });
   }
 
   private startKeepAlive(): void {
@@ -254,7 +258,7 @@ export class DefaultRumMonitor implements RumMonitor {
     e.key = key;
     e.method = method as string;
     e.url = url;
-    this.applicationScope.handleEvent(e);
+    this.dispatch(e);
   }
 
   stopResource(key: string, statusCode: number, size: number, kind: RumResourceKind,
@@ -264,7 +268,7 @@ export class DefaultRumMonitor implements RumMonitor {
     e.statusCode = statusCode;
     e.sizeBytes = size;
     e.resourceKind = kind as string;
-    this.applicationScope.handleEvent(e);
+    this.dispatch(e);
   }
 
   stopResourceWithError(key: string, message: string, statusCode?: number,
@@ -273,14 +277,23 @@ export class DefaultRumMonitor implements RumMonitor {
     e.key = key;
     e.errorMessage = message;
     e.statusCode = statusCode;
-    this.applicationScope.handleEvent(e);
+    this.dispatch(e);
   }
 
   addError(message: string, source: RumErrorSource, stack?: string, attributes?: Record<string, Object>): void {
-    this.reportError(message, source, stack, false, 'handled', attributes);
+    try {
+      this.reportError(message, source, stack, false, 'handled', attributes);
+    } catch (error) {
+      DefaultRumMonitor.logFailure('addError', error);
+    }
   }
 
-  /** Internal: used by the unhandled-exception hook to flag errors as unhandled. */
+  /**
+   * Internal: used by the unhandled-exception hook and crash delivery to flag
+   * errors as unhandled. Unlike the public API this lets a failure propagate:
+   * crash replay reads a throw as "not delivered" and keeps the incident for
+   * the next launch instead of deleting it. Every internal caller contains it.
+   */
   reportError(message: string, source: RumErrorSource, stack: string | undefined,
     isCrash: boolean, handling: string, attributes?: Record<string, Object>, timestampMs?: number,
     countInView: boolean = true, inherited: boolean = false): void {
@@ -320,17 +333,50 @@ export class DefaultRumMonitor implements RumMonitor {
 
   /** Whether the running session is one kept on error that has not been released yet. */
   isWithholding(): boolean {
-    return this.applicationScope.isWithholding();
+    try {
+      return this.applicationScope.isWithholding();
+    } catch (error) {
+      DefaultRumMonitor.logFailure('isWithholding', error);
+      return false;
+    }
   }
 
   getCurrentSessionId(callback: (sessionId: string | undefined) => void): void {
     // A session kept only on error has nothing on the backend until it is
     // released: an id handed out before then could never be looked up.
-    callback(this.applicationScope.isWithholding() ? undefined : this.applicationScope.getCurrentSessionId());
+    let sessionId: string | undefined = undefined;
+    try {
+      sessionId = this.applicationScope.isWithholding() ? undefined : this.applicationScope.getCurrentSessionId();
+    } catch (error) {
+      DefaultRumMonitor.logFailure('getCurrentSessionId', error);
+    }
+    // The host's own callback runs outside the guard: its exceptions are its own.
+    callback(sessionId);
   }
 
   stopSession(): void {
-    this.applicationScope.stopCurrentSession(Date.now());
+    try {
+      this.applicationScope.stopCurrentSession(Date.now());
+    } catch (error) {
+      DefaultRumMonitor.logFailure('stopSession', error);
+    }
+  }
+
+  /**
+   * Every event enters the scope tree here, on the host's call stack or a
+   * timer's: a failure inside the SDK drops the event and is logged, never
+   * thrown into the host (where an uncaught exception would crash the app).
+   */
+  private dispatch(e: RumRawEvent): void {
+    try {
+      this.applicationScope.handleEvent(e);
+    } catch (error) {
+      DefaultRumMonitor.logFailure(e.kind, error);
+    }
+  }
+
+  private static logFailure(what: string, error: Object): void {
+    FlashcatLog.e(`rum.monitor: ${what} failed: ${error instanceof Error ? error.message : 'error'}`);
   }
 
   private raw(kind: string, attributes?: Record<string, Object>): RumRawEvent {
@@ -338,7 +384,8 @@ export class DefaultRumMonitor implements RumMonitor {
     this.globalAttributes.forEach((v: Object, k: string) => {
       attrs[k] = v;
     });
-    if (attributes !== undefined) {
+    // Untyped callers can pass null where attributes are optional.
+    if (attributes !== undefined && attributes !== null) {
       for (const k of Object.keys(attributes)) {
         attrs[k] = attributes[k];
       }

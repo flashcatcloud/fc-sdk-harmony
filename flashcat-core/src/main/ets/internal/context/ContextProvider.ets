@@ -104,10 +104,15 @@ export class ContextProvider {
       // sticky capability delivery (the snapshot covers it, but only until
       // the first change this handler would have caught).
       conn.on('netCapabilitiesChange', (info: connection.NetCapabilityInfo) => {
-        this.network = {
-          status: 'connected',
-          interfaces: ContextProvider.interfacesFrom(info.netCap)
-        };
+        // A system callback: a malformed delivery must not raise in the host.
+        try {
+          this.network = {
+            status: 'connected',
+            interfaces: ContextProvider.interfacesFrom(info.netCap)
+          };
+        } catch (_e) {
+          // keep the previous network state
+        }
       });
       conn.on('netLost', (_net: connection.NetHandle) => {
         this.network = { status: 'not_connected', interfaces: [] };

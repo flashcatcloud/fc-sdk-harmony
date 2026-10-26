@@ -17,9 +17,11 @@ import { LastViewSnapshot } from '../main/ets/internal/LastViewSnapshot';
 import { RumFeature } from '../main/ets/internal/RumFeature';
 import { BeforeSamplingContext } from '../main/ets/RumTypes';
 import { RumConfiguration, RumConfigurationBuilder } from '../main/ets/RumConfiguration';
+import { FlashcatRum } from '../main/ets/FlashcatRum';
 import { DefaultRumMonitor } from '../main/ets/internal/monitor/DefaultRumMonitor';
 import { RumActionType, RumErrorSource } from '../main/ets/RumTypes';
 import { errorManager } from '@kit.AbilityKit';
+import { process } from '@kit.ArkTS';
 
 const MIN_15: number = 15 * 60 * 1000;
 
@@ -35,7 +37,7 @@ function testContext(): FlashcatContext {
     version: '1.0.0',
     bundleId: 'com.example.demo',
     source: 'harmony',
-    sdkVersion: '0.7.2',
+    sdkVersion: '0.7.3',
     device: {
       brand: 'HUAWEI', model: 'Pura', osName: 'HarmonyOS', osVersion: 'NEXT',
       apiVersion: 18, deviceType: 'phone'
@@ -1507,6 +1509,7 @@ export default function sessionOnErrorTests(): void {
           const scope: CapturingScope = new CapturingScope();
           const app: RumApplicationScope = onErrorApp(scope);
           startView(app, Date.now());
+          LastViewSnapshot.flush(); // writes are coalesced; a flush puts the latest on file
           expect(scope.written.length).assertEqual(0); // nothing uploaded...
           const snapshot: Record<string, Object> = LastViewSnapshot.read() as Record<string, Object>;
           expect(snapshot['type']).assertEqual('view'); // ...but the local snapshot is kept
@@ -1536,6 +1539,7 @@ export default function sessionOnErrorTests(): void {
           const scope: CapturingScope = new CapturingScope();
           const app: RumApplicationScope = onErrorApp(scope);
           startView(app, Date.now());
+          LastViewSnapshot.flush(); // writes are coalesced; a flush puts the latest on file
           expect(stored.length > 0).assertTrue();
           app.stopCurrentSession(Date.now()); // ended without an error: discarded
           expect(stored).assertEqual('');
@@ -1547,6 +1551,7 @@ export default function sessionOnErrorTests(): void {
           startView(app2, Date.now());
           addError(app2, Date.now());
           app2.stopCurrentSession(Date.now());
+          LastViewSnapshot.flush();
           expect(stored.length > 0).assertTrue();
           expect(deletes).assertEqual(1);
           // ...and a discard never touches another session's snapshot: app4 is
@@ -1555,6 +1560,7 @@ export default function sessionOnErrorTests(): void {
           const other: CapturingScope = new CapturingScope();
           const app3: RumApplicationScope = onErrorApp(other);
           startView(app3, Date.now());
+          LastViewSnapshot.flush();
           const otherView: string = stored;
           const stale: CapturingScope = new CapturingScope();
           const app4: RumApplicationScope = onErrorApp(stale);
@@ -1580,6 +1586,7 @@ export default function sessionOnErrorTests(): void {
         const monitor: DefaultRumMonitor = onErrorFeature(core, scope);
         monitor.startView('home', 'home');
         const discarded: string = core.featureContext['session.id'] as string;
+        LastViewSnapshot.flush(); // writes are coalesced; a flush puts the latest on file
         expect(scope.lastView.length > 0).assertTrue();
         monitor.stopSession();
         expect(scope.written.length).assertEqual(0);
@@ -1606,6 +1613,7 @@ export default function sessionOnErrorTests(): void {
         const released: string = core2.featureContext['session.id'] as string;
         monitor3.addError('boom', RumErrorSource.SOURCE);
         monitor3.stopSession();
+        LastViewSnapshot.flush();
         const snapshot: string = scope2.lastView;
         expect(snapshot.length > 0).assertTrue();
         const next2: CapturingScope = new CapturingScope();
@@ -1895,6 +1903,241 @@ export default function sessionOnErrorTests(): void {
         expect(last['name']).assertEqual('home');
         expect((last['crash'] as Record<string, Object>)['count']).assertEqual(1);
         expect((errors[0]['view'] as Record<string, Object>)['id']).assertEqual(last['id']);
+      });
+  });
+  describe('rum-host-safety', (): void => {
+    it('theGlobalErrorCallbacksNeverRaiseOnOddInput',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        const core: FakeCore = new FakeCore();
+        const scope: CapturingScope = new CapturingScope();
+        featureWith(core, scope, 100, false);
+        const observers: Record<string, Object> =
+          (errorManager as Object as Record<string, Object>)['lastObservers'] as Record<string, Object>;
+        const observer: errorManager.ErrorObserver = observers['error'] as errorManager.ErrorObserver;
+        let threw: boolean = false;
+        try {
+          // A non-Error throw can reach onException as a plain value.
+          (observer.onException as (e: Object) => void)(undefined as Object as Error);
+          (observer.onException as (e: Object) => void)('a string' as Object as Error);
+          observer.onUnhandledException(undefined as Object as string);
+        } catch (_e) {
+          threw = true;
+        }
+        expect(threw).assertFalse();
+      });
+
+    it('aReplayedCrashThatCannotBeWrittenIsNotMarkedDelivered',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        // Crash replay deletes the persisted incident once RUM says it was
+        // delivered: a write that failed must not say so, or the crash is lost.
+        const core: FakeCore = new FakeCore();
+        const scope: CapturingScope = new CapturingScope();
+        const monitor: DefaultRumMonitor = featureWith(core, scope, 100, false);
+        const feature: RumFeature = new RumFeature(core, new RumConfigurationBuilder('app-1').build());
+        feature.onInitialize();
+        feature.attachMonitor(monitor);
+        monitor.startView('home', 'home');
+        const cyclic: Record<string, Object> = {};
+        cyclic['self'] = cyclic;
+        monitor.addAttribute('cyclic', cyclic); // every write now fails
+        const event: Record<string, Object> = { 'type': 'crash_report', 'message': 'NativeCrash',
+          'stack': '#00 pc', 'crash_kind': 'crash', 'timestamp_ms': Date.now() - 1000 };
+        try {
+          feature.onReceive(event);
+        } catch (_e) {
+          // the bus contains this in production
+        }
+        expect(event['delivered'] === true).assertFalse();
+      });
+
+    it('withoutTheCrashModuleAnUncaughtExceptionIsACrashAndTheAppExits',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        // Enabling RUM alone must not keep a crashed app alive: the observer it
+        // registers suppresses the platform's exit, so RUM restores it.
+        const core: FakeCore = new FakeCore(); // no crash feature
+        const scope: CapturingScope = new CapturingScope();
+        const monitor: DefaultRumMonitor = featureWith(core, scope, 100, false);
+        monitor.startView('home', 'home');
+        const shim: Record<string, Object> = process as Object as Record<string, Object>;
+        const before: number = shim['exitRequests'] as number;
+        fireUnhandledException(CRASH_TEXT);
+
+        expect((shim['exitRequests'] as number) - before).assertEqual(1);
+        const errors: Array<Record<string, Object>> = scope.ofType('error');
+        expect(errors.length).assertEqual(1);
+        expect((errors[0]['error'] as Record<string, Object>)['is_crash']).assertEqual(true);
+      });
+
+    it('withoutTheCrashModuleOneFaultExitsOnceAndCountsOnce',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        const core: FakeCore = new FakeCore();
+        const scope: CapturingScope = new CapturingScope();
+        const monitor: DefaultRumMonitor = featureWith(core, scope, 100, false);
+        monitor.startView('home', 'home');
+        const shim: Record<string, Object> = process as Object as Record<string, Object>;
+        const before: number = shim['exitRequests'] as number;
+        // The test runner does not really exit, so the second callback of the
+        // same fault arrives: it must not count the crash again.
+        fireUnhandledException(CRASH_TEXT);
+        const observers: Record<string, Object> =
+          (errorManager as Object as Record<string, Object>)['lastObservers'] as Record<string, Object>;
+        (observers['error'] as errorManager.ErrorObserver).onException(new Error('fatal'));
+
+        expect((shim['exitRequests'] as number) - before).assertEqual(1);
+        expect(scope.ofType('error').length).assertEqual(1);
+      });
+
+    it('withoutTheCrashModuleALaterFaultIsANewCrash',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        // If the exit did not take (the runner never exits), a fault outside the
+        // first one's callback window is a new crash: reported, and exited again.
+        const core: FakeCore = new FakeCore();
+        const scope: CapturingScope = new CapturingScope();
+        const monitor: DefaultRumMonitor = featureWith(core, scope, 100, false);
+        monitor.startView('home', 'home');
+        const shim: Record<string, Object> = process as Object as Record<string, Object>;
+        const before: number = shim['exitRequests'] as number;
+        fireUnhandledException(CRASH_TEXT);
+        // The window is time based: age the first exit past it.
+        const realNow: () => number = Date.now;
+        Date.now = (): number => realNow() + 5000;
+        try {
+          fireUnhandledException('Error name:Error\nError message:another\nStacktrace:\nat c (d.ets:2:2)');
+        } finally {
+          Date.now = realNow;
+        }
+        expect((shim['exitRequests'] as number) - before).assertEqual(2);
+        expect(scope.ofType('error').length).assertEqual(2);
+      });
+
+    it('aCrashModuleWithoutAPublishedPolicyDecidesNotRum',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        const core: FakeCore = new FakeCore();
+        core.crashScope = new FakeCrashScope(core);
+        core.crashScope.policy = ''; // registered, but no policy reached RUM
+        const scope: CapturingScope = new CapturingScope();
+        const monitor: DefaultRumMonitor = featureWith(core, scope, 100, false);
+        monitor.startView('home', 'home');
+        const shim: Record<string, Object> = process as Object as Record<string, Object>;
+        const before: number = shim['exitRequests'] as number;
+        fireUnhandledException(CRASH_TEXT);
+        expect((shim['exitRequests'] as number) - before).assertEqual(0);
+      });
+
+    it('enableBeforeInitializeIsANoOp',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        let threw: boolean = false;
+        try {
+          FlashcatRum.enable(new RumConfigurationBuilder('app-1').build());
+        } catch (_e) {
+          threw = true;
+        }
+        expect(threw).assertFalse();
+      });
+
+    it('aFailureInsideTheSdkNeverThrowsIntoTheHost',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        const core: FakeCore = new FakeCore();
+        const scope: CapturingScope = new CapturingScope();
+        const monitor: DefaultRumMonitor = featureWith(core, scope, 100, false);
+        // A host attribute holding a cycle: serializing any event that carries it throws.
+        const cyclic: Record<string, Object> = {};
+        cyclic['self'] = cyclic;
+        let threw: boolean = false;
+        try {
+          monitor.startView('home', 'home');
+          monitor.addAttribute('cyclic', cyclic);
+          monitor.addAction(RumActionType.TAP, 'tap');
+          monitor.addError('boom', RumErrorSource.SOURCE);
+          monitor.stopView('home');
+          monitor.stopSession();
+        } catch (_e) {
+          threw = true;
+        }
+
+        expect(threw).assertFalse();
+        // The SDK keeps working once the bad attribute is gone.
+        monitor.removeAttribute('cyclic');
+        monitor.startView('next', 'next');
+        monitor.addAction(RumActionType.TAP, 'after');
+        expect(scope.ofType('action').length >= 1).assertTrue();
+      });
+  });
+  describe('rum-last-view-coalescing', (): void => {
+    it('manyViewUpdatesCostOneWriteAndAFlushPointLandsItAtOnce',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        let writes: number = 0;
+        let stored: string = '';
+        LastViewSnapshot.configure((serialized: string): void => {
+          writes += 1;
+          stored = serialized;
+        }, (): string => stored, (): void => {
+          stored = '';
+        });
+        try {
+          for (let i: number = 0; i < 100; i++) {
+            LastViewSnapshot.record({ 'type': 'view', 'session': { 'id': 's-1' }, 'n': i } as Record<string, Object>);
+          }
+          expect(writes).assertEqual(0); // nothing synchronous on the event path
+          // What the core's flush points (background, flush, pre-exit, stop) do via keep_alive.
+          LastViewSnapshot.flush();
+          expect(writes).assertEqual(1);
+          expect((JSON.parse(stored) as Record<string, Object>)['n']).assertEqual(99); // the latest one
+        } finally {
+          LastViewSnapshot.reset();
+        }
+      });
+
+    it('throwingASessionAwayCancelsItsPendingSnapshot',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        let writes: number = 0;
+        LastViewSnapshot.configure((_serialized: string): void => {
+          writes += 1;
+        }, (): string => '', (): void => {});
+        try {
+          LastViewSnapshot.record({ 'type': 'view', 'session': { 'id': 's-gone' } } as Record<string, Object>);
+          LastViewSnapshot.invalidateFor('s-gone');
+          LastViewSnapshot.flush();
+          expect(writes).assertEqual(0);
+          // Negative control: another session's pending view is kept.
+          LastViewSnapshot.record({ 'type': 'view', 'session': { 'id': 's-kept' } } as Record<string, Object>);
+          LastViewSnapshot.invalidateFor('s-gone');
+          LastViewSnapshot.flush();
+          expect(writes).assertEqual(1);
+        } finally {
+          LastViewSnapshot.reset();
+        }
+      });
+
+    it('aRevokedConsentDropsTheQueuedSnapshot',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        const core: FakeCore = new FakeCore();
+        const scope: CapturingScope = new CapturingScope();
+        const monitor: DefaultRumMonitor = featureWith(core, scope, 100, false);
+        const feature: RumFeature = new RumFeature(core, new RumConfigurationBuilder('app-1').build());
+        feature.onInitialize();
+        feature.attachMonitor(monitor);
+        scope.lastView = '';
+        monitor.startView('home', 'home'); // queued, not yet written
+        feature.onReceive({ 'type': 'consent_revoked' } as Record<string, Object>);
+        LastViewSnapshot.flush(); // a later flush point must find nothing to write
+        expect(scope.lastView).assertEqual('');
+      });
+
+    it('aKeepAliveFlushesTheSnapshot',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        const core: FakeCore = new FakeCore();
+        const scope: CapturingScope = new CapturingScope();
+        const monitor: DefaultRumMonitor = featureWith(core, scope, 100, false);
+        monitor.startView('home', 'home');
+        const feature: RumFeature = new RumFeature(core, new RumConfigurationBuilder('app-1').build());
+        feature.onInitialize();
+        feature.attachMonitor(monitor);
+        scope.lastView = '';
+        monitor.addAction(RumActionType.TAP, 'tap');
+        expect(scope.lastView).assertEqual(''); // coalesced, not written yet
+        feature.onReceive({ 'type': 'keep_alive' } as Record<string, Object>);
+        expect(scope.lastView.length > 0).assertTrue();
       });
   });
 }

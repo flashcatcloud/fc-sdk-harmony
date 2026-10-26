@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.7.3
+
+- Whichever live error callback arrives first carries the crash under the
+  active policy; an OS build that delivers only `onException` no longer
+  leaves `REPORT_THEN_EXIT` / `REPORT_AND_RECOVER` apps running.
+- Exception messages are bounded (4096 characters) for parsing and
+  persistence, and multi-line or very long messages no longer break
+  deduplication between the live report and the platform's APP_CRASH copy.
+- `FlashcatCrash.enable` never throws.
+
 ## 0.7.2
 
 - New `JsCrashPolicy.REPORT_AND_CONTINUE`: an uncaught main-thread ArkTS

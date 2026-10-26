@@ -1,6 +1,6 @@
 import { rcp } from '@kit.RemoteCommunicationKit';
 import { util } from '@kit.ArkTS';
-import { SdkCore, FeatureScope, RUM_FEATURE_NAME, TRACE_FEATURE_NAME, TrackingConsent } from '@flashcatcloud/core';
+import { SdkCore, FeatureScope, FlashcatLog, RUM_FEATURE_NAME, TRACE_FEATURE_NAME, TrackingConsent } from '@flashcatcloud/core';
 import { TraceConfiguration } from '../TraceConfiguration';
 import { TraceContext } from './TraceContext';
 
@@ -26,38 +26,61 @@ export class TraceInterceptor implements rcp.Interceptor {
   }
 
   async intercept(context: rcp.RequestContext, next: rcp.RequestHandler): Promise<rcp.Response> {
-    // Honor tracking consent: do NOT attach a correlatable identifier to outgoing
-    // traffic unless the user has granted consent. (RUM resource events are still
-    // reported — the consent-gated writer buffers or drops them itself.)
-    let tc: TraceContext | null = null;
-    if (isInjectionAllowed(this.core)
-      && this.configuration.isFirstParty(hostOfUrl(context.request.url.toString()))
-      && shouldInjectTraceHeaders(context.request.headers)) {
-      tc = TraceContext.generate(this.configuration.sampleRate);
-      if (context.request.headers === undefined) {
-        context.request.headers = {};
-      }
-      setHeaderValue(context.request.headers as Record<string, Object>, 'traceparent', tc.traceparent());
-      setHeaderValue(context.request.headers as Record<string, Object>, 'tracestate',
-        tc.tracestate(headerStringValue(context.request.headers, 'tracestate')));
-      if (tc.sampled) {
-        publishTraceId(this.core, tc.traceId);
-      }
-    }
-    const requestKey: string = util.generateRandomUUID(true);
-    // An unsampled trace is dropped by the APM backend, so advertising its ids on
-    // the RUM resource would create a dead RUM->APM link. Correlate only when sampled.
-    notifyRequestStarted(this.core, requestKey, context.request, tc !== null && tc.sampled ? tc : null);
+    // The request is the host's: telemetry around it may fail, but must never
+    // stop it, fail it, or change the error the host sees.
+    let requestKey: string = '';
     try {
-      const response: rcp.Response = await next.handle(context);
-      notifyRequestCompleted(this.core, requestKey, response);
-      return response;
-    } catch (e) {
-      const error: Error = e instanceof Error ? e : new Error('network request failed');
-      notifyRequestFailed(this.core, requestKey, error);
-      throw error;
+      // Honor tracking consent: do NOT attach a correlatable identifier to outgoing
+      // traffic unless the user has granted consent. (RUM resource events are still
+      // reported — the consent-gated writer buffers or drops them itself.)
+      let tc: TraceContext | null = null;
+      if (isInjectionAllowed(this.core)
+        && this.configuration.isFirstParty(hostOfUrl(context.request.url.toString()))
+        && shouldInjectTraceHeaders(context.request.headers)) {
+        tc = TraceContext.generate(this.configuration.sampleRate);
+        if (context.request.headers === undefined) {
+          context.request.headers = {};
+        }
+        setHeaderValue(context.request.headers as Record<string, Object>, 'traceparent', tc.traceparent());
+        setHeaderValue(context.request.headers as Record<string, Object>, 'tracestate',
+          tc.tracestate(headerStringValue(context.request.headers, 'tracestate')));
+        if (tc.sampled) {
+          publishTraceId(this.core, tc.traceId);
+        }
+      }
+      requestKey = util.generateRandomUUID(true);
+      // An unsampled trace is dropped by the APM backend, so advertising its ids on
+      // the RUM resource would create a dead RUM->APM link. Correlate only when sampled.
+      notifyRequestStarted(this.core, requestKey, context.request, tc !== null && tc.sampled ? tc : null);
+    } catch (error) {
+      logTelemetryFailure('request start', error);
     }
+    let response: rcp.Response;
+    try {
+      response = await next.handle(context);
+    } catch (e) {
+      if (requestKey.length > 0) {
+        try {
+          notifyRequestFailed(this.core, requestKey, e);
+        } catch (error) {
+          logTelemetryFailure('request failure', error);
+        }
+      }
+      throw e as Error; // the host's own error, unchanged
+    }
+    if (requestKey.length > 0) {
+      try {
+        notifyRequestCompleted(this.core, requestKey, response);
+      } catch (error) {
+        logTelemetryFailure('request completion', error);
+      }
+    }
+    return response;
   }
+}
+
+function logTelemetryFailure(what: string, error: Object): void {
+  FlashcatLog.e(`trace: ${what} telemetry failed: ${error instanceof Error ? error.message : 'error'}`);
 }
 
 /** Injection requires a live (non-stopped) core with explicitly GRANTED consent. */
@@ -172,7 +195,7 @@ function notifyRequestStarted(core: SdkCore | null, key: string,
 
 function notifyRequestCompleted(core: SdkCore | null, key: string, response: rcp.Response): void {
   publishResourceCompleted(core, key, response.statusCode,
-    response.body !== undefined ? response.body.byteLength : 0,
+    response.body !== undefined && response.body !== null ? response.body.byteLength : 0,
     contentTypeOf(response.headers));
 }
 

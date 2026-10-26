@@ -35,7 +35,7 @@ resources, carrying `traceparent` for correlation with the server-side trace.
 - Requires `FlashcatTrace.enable(...)`, and `FlashcatRum.enable(...)` with
   `setTrackNetworkRequests(true)` for the resources to surface.
 - `traceparent` is injected only when tracking consent is GRANTED and the host
-  matches `setFirstPartyHosts()`. A request that already carries a
+  matches `setFirstPartyHosts()` (nothing is injected when no hosts are set). A request that already carries a
   `traceparent` keeps it — the existing trace is not overwritten.
 - A response with an error status stays a resource carrying that status. Only a
   request that never received a response is reported as a network error.

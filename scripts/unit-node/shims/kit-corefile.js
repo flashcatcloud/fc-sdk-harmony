@@ -27,9 +27,13 @@ function flagsFor(mode) {
   return flags;
 }
 
+// Call counters, so tests can pin how much file-system work a path does.
+const calls = { accessSync: 0, listFileSync: 0, statSync: 0 };
+
 const fileIo = {
   OpenMode,
-  accessSync: (p) => nodeFs.existsSync(p),
+  calls,
+  accessSync: (p) => { calls.accessSync += 1; return nodeFs.existsSync(p); },
   mkdirSync: (p, recursive) => nodeFs.mkdirSync(p, { recursive: recursive === true }),
   openSync: (p, mode) => ({ fd: nodeFs.openSync(p, flagsFor(mode)) }),
   writeSync: (fd, content) => nodeFs.writeSync(fd, content),
@@ -37,9 +41,10 @@ const fileIo = {
   closeSync: (file) => nodeFs.closeSync(typeof file === 'object' ? file.fd : file),
   renameSync: (from, to) => nodeFs.renameSync(from, to),
   unlinkSync: (p) => nodeFs.unlinkSync(p),
-  listFileSync: (dir) => nodeFs.readdirSync(dir),
+  listFileSync: (dir) => { calls.listFileSync += 1; return nodeFs.readdirSync(dir); },
   readTextSync: (p) => nodeFs.readFileSync(p, 'utf8'),
   statSync: (p) => {
+    calls.statSync += 1;
     const s = nodeFs.statSync(p);
     return { size: s.size, mtimeMs: s.mtimeMs, isDirectory: () => s.isDirectory() };
   },

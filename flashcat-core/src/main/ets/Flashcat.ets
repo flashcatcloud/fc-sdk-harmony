@@ -4,6 +4,7 @@ import { TrackingConsent } from './privacy/TrackingConsent';
 import { SdkCore } from './api/SdkCore';
 import { FlashcatCore } from './internal/FlashcatCore';
 import { SdkCoreRegistry } from './internal/SdkCoreRegistry';
+import { FlashcatLog } from './internal/FlashcatLog';
 
 /**
  * Entry point of the FlashCat HarmonyOS SDK.
@@ -44,10 +45,17 @@ export class Flashcat {
       // Already initialized — Android logs a warning and returns the existing core.
       return Flashcat.registry.get(name);
     }
-    const core: FlashcatCore = new FlashcatCore(name, context, configuration, consent);
-    core.initialize();
-    Flashcat.registry.register(name, core);
-    return core;
+    // Called from the host's startup path: a failure here leaves the app
+    // without monitoring, never without the app.
+    try {
+      const core: FlashcatCore = new FlashcatCore(name, context, configuration, consent);
+      core.initialize();
+      Flashcat.registry.register(name, core);
+      return core;
+    } catch (error) {
+      FlashcatLog.usage(`initialize failed: ${Flashcat.errorText(error)}`);
+      return null;
+    }
   }
 
   /**
@@ -74,11 +82,16 @@ export class Flashcat {
     if (Flashcat.registry.has(name)) {
       return Flashcat.registry.get(name);
     }
-    const core: FlashcatCore =
-      new FlashcatCore(name, context, configuration, TrackingConsent.NOT_GRANTED, true);
-    core.initialize();
-    Flashcat.registry.register(name, core);
-    return core;
+    try {
+      const core: FlashcatCore =
+        new FlashcatCore(name, context, configuration, TrackingConsent.NOT_GRANTED, true);
+      core.initialize();
+      Flashcat.registry.register(name, core);
+      return core;
+    } catch (error) {
+      FlashcatLog.usage(`initializeForDeferredUpload failed: ${Flashcat.errorText(error)}`);
+      return null;
+    }
   }
 
   /** Retrieve a previously initialized instance. Throws if not initialized. */
@@ -97,20 +110,58 @@ export class Flashcat {
 
   /** Sets the consent for the default (or named) instance. */
   static setTrackingConsent(consent: TrackingConsent, instanceName?: string): void {
-    const core: SdkCore = Flashcat.getInstance(instanceName);
-    (core as FlashcatCore).setTrackingConsent(consent);
+    const core: FlashcatCore | null = Flashcat.coreOrLog('setTrackingConsent', instanceName);
+    if (core === null) {
+      return;
+    }
+    try {
+      core.setTrackingConsent(consent);
+    } catch (error) {
+      FlashcatLog.e(`setTrackingConsent failed: ${Flashcat.errorText(error)}`);
+    }
   }
 
   /** Rolls active batches and triggers upload for the default (or named) instance. */
   static flush(instanceName?: string): void {
-    const core: SdkCore = Flashcat.getInstance(instanceName);
-    (core as FlashcatCore).flush();
+    const core: FlashcatCore | null = Flashcat.coreOrLog('flush', instanceName);
+    if (core === null) {
+      return;
+    }
+    try {
+      core.flush();
+    } catch (error) {
+      FlashcatLog.e(`flush failed: ${Flashcat.errorText(error)}`);
+    }
   }
 
   /** Rolls active batches and waits for a bounded background drain. */
   static async flushAndWait(instanceName?: string): Promise<void> {
-    const core: SdkCore = Flashcat.getInstance(instanceName);
-    await (core as FlashcatCore).flushAndWait();
+    const core: FlashcatCore | null = Flashcat.coreOrLog('flushAndWait', instanceName);
+    if (core === null) {
+      return;
+    }
+    try {
+      await core.flushAndWait();
+    } catch (error) {
+      FlashcatLog.e(`flushAndWait failed: ${Flashcat.errorText(error)}`);
+    }
+  }
+
+  /**
+   * The instance a host-facing call acts on. A call made before initialize (or
+   * after stopInstance) is a no-op the log explains — not an exception in the host.
+   */
+  private static coreOrLog(what: string, instanceName?: string): FlashcatCore | null {
+    const core: SdkCore | null = Flashcat.registry.get(instanceName ?? SdkCoreRegistry.DEFAULT_INSTANCE_NAME);
+    if (core === null) {
+      FlashcatLog.usage(`${what} ignored: the SDK instance is not initialized`);
+      return null;
+    }
+    return core as FlashcatCore;
+  }
+
+  private static errorText(error: Object): string {
+    return error instanceof Error ? error.message : 'error';
   }
 
   /** Stops and removes an instance, flushing pending data. */
@@ -118,7 +169,11 @@ export class Flashcat {
     const name: string = instanceName ?? SdkCoreRegistry.DEFAULT_INSTANCE_NAME;
     const core: SdkCore | null = Flashcat.registry.get(name);
     if (core !== null) {
-      (core as FlashcatCore).stop();
+      try {
+        (core as FlashcatCore).stop();
+      } catch (error) {
+        FlashcatLog.e(`stopInstance failed: ${Flashcat.errorText(error)}`);
+      }
       Flashcat.registry.unregister(name);
     }
   }

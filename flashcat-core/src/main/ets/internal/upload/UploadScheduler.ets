@@ -139,13 +139,28 @@ export class UploadScheduler {
     }, actualMs);
   }
 
+  /**
+   * The intake is failing and the next attempt is not due yet. Writers use it
+   * to stop force-rolling batches meant for an immediate upload that cannot
+   * happen: offline, that turned every failed request into a new batch file.
+   */
+  isBackingOff(): boolean {
+    // Also while a retry is in flight (an earlier attempt failed and the delay
+    // has grown): offline that request runs until its timeout.
+    return this.retryNotBeforeMs > Date.now() || (this.draining && this.currentDelayMs > this.baseDelayMs);
+  }
+
   private async drainOnce(): Promise<void> {
     if (!this.running || this.draining) {
       return;
     }
     this.draining = true;
+    // The batch this drain has claimed and not yet finalized: a failure before
+    // finalizing hands it back instead of stranding it until the stale-claim sweep.
+    let claimed: Batch | null = null;
     try {
       const batch: Batch | null = this.persistence.readNextBatch();
+      claimed = batch;
       if (batch === null) {
         // Idle tick — nothing to drain. Silent (was a debug log) to avoid per-tick spam.
         // An idle pass also ends the cycle: the next batch starts a fresh budget.
@@ -156,6 +171,9 @@ export class UploadScheduler {
       }
       FlashcatLog.d(`drain: uploading batch ${batch.batchId} (${batch.eventCount} events)`);
       const status: UploadStatus = await this.uploader.upload(batch);
+      // Finalizing starts here; a delete that fails must not hand a delivered
+      // batch back (it would be uploaded twice).
+      claimed = null;
       // ALWAYS finalize the claimed batch, even if the scheduler was stopped
       // mid-upload — leaking it re-uploads a delivered batch on a later launch
       // (duplicates) or strands a failed one in claimed state.
@@ -182,6 +200,22 @@ export class UploadScheduler {
         this.retryNotBeforeMs = Date.now() + this.currentDelayMs;
         this.scheduleNext(this.currentDelayMs);
       }
+    } catch (error) {
+      // Nothing may end the drain chain (uploads would stop for the rest of the
+      // process) or reject this un-awaited timer promise into the host: back off
+      // and try again, like a failed upload.
+      FlashcatLog.e(`drain: failed: ${error instanceof Error ? error.message : 'error'}`);
+      if (claimed !== null) {
+        try {
+          this.persistence.restoreBatch(claimed);
+        } catch (_e) {
+          // Left to the stale-claim sweep.
+        }
+      }
+      this.cycleCount = 0;
+      this.currentDelayMs = Math.min(this.currentDelayMs * 2, 60000);
+      this.retryNotBeforeMs = Date.now() + this.currentDelayMs;
+      this.scheduleNext(this.currentDelayMs);
     } finally {
       this.draining = false;
       if (this.retrigger) {

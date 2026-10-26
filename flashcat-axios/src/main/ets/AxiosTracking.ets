@@ -1,4 +1,5 @@
 import { AxiosInstance, InternalAxiosRequestConfig, AxiosResponse, AxiosError } from '@ohos/axios';
+import { FlashcatLog } from '@flashcatcloud/core';
 import { FlashcatTrace, TracedResource } from '@flashcatcloud/trace';
 
 /**
@@ -8,6 +9,11 @@ import { FlashcatTrace, TracedResource } from '@flashcatcloud/trace';
  * interceptors.
  */
 const pending: Map<Object, string> = new Map();
+/**
+ * A config that never comes back (another interceptor swapped it, or an error
+ * carries none) would otherwise stay here, holding the request body, forever.
+ */
+const MAX_PENDING: number = 256;
 
 /**
  * Reports every request made through `instance` as a RUM resource, with the
@@ -30,49 +36,84 @@ const pending: Map<Object, string> = new Map();
  * `FlashcatRum.enable(...)` with `setTrackNetworkRequests(true)`.
  */
 export function trackAxios(instance: AxiosInstance): void {
+  // These interceptors sit on the host's requests: telemetry may fail, but the
+  // config, the response and the rejection always pass through unchanged.
   instance.interceptors.request.use((config: InternalAxiosRequestConfig) => {
-    // A request interceptor sees `config.url` as the relative path — axios
-    // joins it with `baseURL` further down, inside the adapter. Resolving it
-    // here is what lets the first-party host check match, and what puts a full
-    // url on the resource instead of a bare path.
-    const url: string = fullUrlOf(config);
-    // An inbound traceparent means this request already belongs to a trace.
-    const traced: TracedResource = FlashcatTrace.startTracedResource(
-      url, config.method ?? 'GET', !config.headers.has('traceparent'));
+    try {
+      // A request interceptor sees `config.url` as the relative path — axios
+      // joins it with `baseURL` further down, inside the adapter. Resolving it
+      // here is what lets the first-party host check match, and what puts a full
+      // url on the resource instead of a bare path.
+      const url: string = fullUrlOf(config);
+      // An inbound traceparent means this request already belongs to a trace.
+      const traced: TracedResource = FlashcatTrace.startTracedResource(
+        url, config.method ?? 'GET', !config.headers.has('traceparent'));
 
-    for (const name of Object.keys(traced.headers)) {
-      config.headers.set(name, traced.headers[name]);
+      // Remember first: the resource is open from here on, and a header write
+      // that fails must not leave it with no way to be closed.
+      if (traced.key.length > 0) {
+        remember(config, traced.key);
+      }
+      for (const name of Object.keys(traced.headers)) {
+        config.headers.set(name, traced.headers[name]);
+      }
+    } catch (error) {
+      logFailure('request', error);
     }
-    pending.set(config, traced.key);
     return config;
   });
 
   instance.interceptors.response.use(
     (response: AxiosResponse) => {
-      const key: string = takeKey(response.config);
-      if (key.length > 0) {
-        FlashcatTrace.stopTracedResource(key, response.status, sizeOf(response.data));
+      try {
+        const key: string = takeKey(response.config);
+        if (key.length > 0) {
+          FlashcatTrace.stopTracedResource(key, response.status, sizeOf(response));
+        }
+      } catch (error) {
+        logFailure('response', error);
       }
       return response;
     },
     (error: AxiosError) => {
-      // axios rejects on HTTP status, so this branch is not only transport
-      // failures. A response means the request completed, so it stays a
-      // resource carrying that status — matching how the rcp interceptor and
-      // FlashcatHttp report a 404. Only a request that never got a response
-      // becomes a network error.
-      const key: string = takeKey(error.config);
-      if (key.length > 0) {
-        const response: AxiosResponse | undefined = error.response;
-        if (response !== undefined) {
-          FlashcatTrace.stopTracedResource(key, response.status, sizeOf(response.data));
-        } else {
-          FlashcatTrace.failTracedResource(key, error.message);
+      try {
+        // axios rejects on HTTP status, so this branch is not only transport
+        // failures. A response means the request completed, so it stays a
+        // resource carrying that status — matching how the rcp interceptor and
+        // FlashcatHttp report a 404. Only a request that never got a response
+        // becomes a network error.
+        const key: string = takeKey(error.config);
+        if (key.length > 0) {
+          const response: AxiosResponse | undefined = error.response;
+          if (response !== undefined) {
+            FlashcatTrace.stopTracedResource(key, response.status, sizeOf(response));
+          } else {
+            FlashcatTrace.failTracedResource(key, error.message);
+          }
         }
+      } catch (telemetryError) {
+        logFailure('error response', telemetryError);
       }
       return Promise.reject(error);
     }
   );
+}
+
+function remember(config: Object, key: string): void {
+  if (pending.size >= MAX_PENDING) {
+    // Evict the oldest (Map keeps insertion order). Usually its response never
+    // came back; with more than MAX_PENDING requests truly in flight it may
+    // still arrive, and that resource then stays open (RUM caps those per view).
+    const oldest: IteratorResult<Object> = pending.keys().next();
+    if (!oldest.done) {
+      pending.delete(oldest.value);
+    }
+  }
+  pending.set(config, key);
+}
+
+function logFailure(what: string, error: Object): void {
+  FlashcatLog.e(`axios: ${what} telemetry failed: ${error instanceof Error ? error.message : 'error'}`);
 }
 
 /**
@@ -112,24 +153,43 @@ function takeKey(config: Object | undefined): string {
 }
 
 /**
- * Best-effort response size — axios exposes the decoded body, not the bytes
- * that came off the wire.
+ * Best-effort response size, without ever re-encoding the body: the
+ * Content-Length header when present (the bytes that came off the wire),
+ * else the length of a string / ArrayBuffer body, else 0. A parsed JSON body
+ * is not serialized again just to be measured — on the response path that
+ * cost the host a full copy and stringify of every payload.
  *
  * @internal — exported for tests.
  */
-export function sizeOf(data: Object | undefined): number {
+export function sizeOf(response: AxiosResponse): number {
+  const declared: number = contentLengthOf(response);
+  if (declared >= 0) {
+    return declared;
+  }
+  const data: Object | undefined = response.data as Object | undefined;
   if (data instanceof ArrayBuffer) {
     return data.byteLength;
   }
   if (typeof data === 'string') {
     return data.length;
   }
-  if (data !== undefined && data !== null) {
-    try {
-      return JSON.stringify(data).length;
-    } catch (_e) {
-      return 0;
-    }
-  }
   return 0;
+}
+
+/** The Content-Length header as a number, or -1 when absent or unreadable. */
+function contentLengthOf(response: AxiosResponse): number {
+  try {
+    const headers: Record<string, Object> | undefined = response.headers as Object as Record<string, Object> | undefined;
+    if (headers === undefined || headers === null) {
+      return -1;
+    }
+    let value: Object | undefined = headers['content-length'] ?? headers['Content-Length'];
+    if (value === undefined && typeof headers['get'] === 'function') {
+      value = (headers['get'] as (name: string) => Object | undefined)('content-length');
+    }
+    const n: number = typeof value === 'number' ? value : (typeof value === 'string' ? Number(value) : NaN);
+    return Number.isFinite(n) && n >= 0 ? n : -1;
+  } catch (_e) {
+    return -1;
+  }
 }
