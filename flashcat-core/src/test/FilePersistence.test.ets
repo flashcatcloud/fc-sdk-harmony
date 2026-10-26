@@ -186,6 +186,35 @@ export default function filePersistenceTests(): void {
         }
       });
 
+    it('evictionCountsFromTheDirectoryNotStaleAccounting',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        // Same as above, but the other process deletes inside the rescan window:
+        // eviction must still see the real bytes before deleting anything.
+        const context: common.Context = fakeContext();
+        const dir: string = `${(context as Object as Record<string, Object>)['filesDir'] as string}/flashcat/rum`;
+        const persistence: FilePersistenceStrategy = new FilePersistenceStrategy(context, 'rum');
+        for (let i: number = 0; i < 5; i++) {
+          persistence.write(eventLine(Date.now(), `keep${i}`), true);
+        }
+        const keep: string[] = fs.listFileSync(dir);
+        const big: string = 'x'.repeat(400 * 1024);
+        for (let i: number = 0; i < 9; i++) {
+          persistence.write(`{"marker":"old${i}","pad":"${big}"}`, true);
+        }
+        for (const n of fs.listFileSync(dir)) {
+          if (keep.indexOf(n) < 0) {
+            fs.unlinkSync(`${dir}/${n}`);
+          }
+        }
+        for (let i: number = 0; i < 9; i++) {
+          persistence.write(`{"marker":"new${i}","pad":"${big}"}`, true);
+        }
+        const left: string[] = fs.listFileSync(dir);
+        for (const n of keep) {
+          expect(left.indexOf(n) >= 0).assertTrue();
+        }
+      });
+
     it('anIdleDrainLooksForOrphanedClaimsAtMostOncePerMinute',
       TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
         const persistence: FilePersistenceStrategy = new FilePersistenceStrategy(fakeContext(), 'rum');

@@ -164,6 +164,9 @@ export class FilePersistenceStrategy implements UploadPersistence {
       this.sizes.set(name, (this.sizes.get(name) ?? 0) + lineBytes);
     } else {
       this.ownNames.delete(name); // the file may not exist — don't track it
+      if (this.activeBytes === 0) {
+        this.sizes.delete(name); // nothing landed: no batch to account for
+      }
       this.activeName = null;
       this.activeBytes = 0;
     }
@@ -637,8 +640,22 @@ export class FilePersistenceStrategy implements UploadPersistence {
    */
   private enforceQuota(): void {
     const now: number = Date.now();
+    let rescanned: boolean = false;
     if (now - this.quotaScannedMs >= QUOTA_RESCAN_MS) {
       this.rescanSizes(now);
+      rescanned = true;
+    }
+    if (!this.overQuota()) {
+      return;
+    }
+    if (!rescanned) {
+      // About to delete undelivered data: count from the directory, not from
+      // accounting another process may have made stale (it uploads and deletes
+      // batches too).
+      this.rescanSizes(now);
+      if (!this.overQuota()) {
+        return;
+      }
     }
     let total: number = 0;
     const batches: string[] = [];
@@ -648,9 +665,6 @@ export class FilePersistenceStrategy implements UploadPersistence {
         batches.push(name);
       }
     });
-    if (batches.length <= MAX_BATCH_COUNT && total <= MAX_TOTAL_BYTES) {
-      return;
-    }
     batches.sort(); // names start with the creation time: oldest first
     let i: number = 0;
     while ((batches.length - i) > MAX_BATCH_COUNT || total > MAX_TOTAL_BYTES) {
@@ -662,6 +676,18 @@ export class FilePersistenceStrategy implements UploadPersistence {
       this.deleteBatch(victim);
       i += 1;
     }
+  }
+
+  private overQuota(): boolean {
+    let total: number = 0;
+    let count: number = 0;
+    this.sizes.forEach((bytes: number, name: string) => {
+      total += bytes;
+      if (name.endsWith(BATCH_SUFFIX)) {
+        count += 1;
+      }
+    });
+    return count > MAX_BATCH_COUNT || total > MAX_TOTAL_BYTES;
   }
 
   /**
@@ -686,9 +712,6 @@ export class FilePersistenceStrategy implements UploadPersistence {
       const known: number | undefined = this.sizes.get(n) ??
         (n.endsWith(UPLOADING_SUFFIX) ? this.sizes.get(FilePersistenceStrategy.originalName(n)) : undefined);
       next.set(n, known !== undefined ? known : FilePersistenceStrategy.sizeOf(`${this.rootDir}/${n}`));
-    }
-    if (this.activeName !== null && !next.has(this.activeName)) {
-      next.set(this.activeName, this.sizes.get(this.activeName) ?? 0);
     }
     this.sizes = next;
   }

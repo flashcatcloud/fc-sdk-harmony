@@ -329,6 +329,8 @@ export class RumFeature implements Feature, FeatureEventReceiver {
       if (m !== null) {
         m.forgetWithheld();
       }
+      // A view queued for the snapshot is the refused user's data too.
+      LastViewSnapshot.discardPending();
     }
   }
 

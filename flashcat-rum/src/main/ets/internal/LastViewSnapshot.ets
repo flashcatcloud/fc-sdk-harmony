@@ -101,6 +101,11 @@ export class LastViewSnapshot {
     }
   }
 
+  /** Drop the queued view without writing it (consent refused). */
+  static discardPending(): void {
+    LastViewSnapshot.cancelPending();
+  }
+
   private static cancelPending(): void {
     if (LastViewSnapshot.timerId !== -1) {
       clearTimeout(LastViewSnapshot.timerId);

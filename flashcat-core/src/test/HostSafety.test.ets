@@ -52,6 +52,25 @@ class ThrowingUploader implements BatchUploader {
   }
 }
 
+/** Always has a batch to hand out. */
+class EndlessBatches implements UploadPersistence {
+  private seq: number = 0;
+  readNextBatch(): Batch | null {
+    this.seq += 1;
+    return { batchId: `b-${this.seq}`, data: '{}', eventCount: 1 } as Object as Batch;
+  }
+  deleteBatch(_batchId: string): void {}
+  restoreBatch(_batch: Batch): void {}
+}
+
+/** Fails every upload after a delay, like a request that runs into its timeout. */
+class SlowFailingUploader implements BatchUploader {
+  async upload(_batch: Batch): Promise<UploadStatus> {
+    await delay(150);
+    return UploadStatus.RETRY;
+  }
+}
+
 class NeverUploader implements BatchUploader {
   async upload(_batch: Batch): Promise<UploadStatus> {
     return UploadStatus.SUCCESS;
@@ -233,6 +252,24 @@ export default function hostSafetyTests(): void {
         await delay(150);
         scheduler.stop();
         expect(persistence.restored.length).assertEqual(1);
+      });
+
+    it('aRetryInFlightCountsAsBackingOff',
+      TestType.FUNCTION | Size.MEDIUMTEST | Level.LEVEL0, async (): Promise<void> => {
+        // Offline, a retry runs until its timeout: errors written meanwhile must
+        // not each close a batch either.
+        const scheduler: UploadScheduler = new UploadScheduler(new EndlessBatches(), new SlowFailingUploader(), 20, 10);
+        scheduler.start();
+        await delay(40); // first attempt fails, backoff starts
+        let sawInFlightRetry: boolean = false;
+        for (let i: number = 0; i < 40; i++) {
+          await delay(10);
+          if ((scheduler as Object as Record<string, Object>)['draining'] === true) {
+            sawInFlightRetry = sawInFlightRetry || scheduler.isBackingOff();
+          }
+        }
+        scheduler.stop();
+        expect(sawInFlightRetry).assertTrue();
       });
 
     it('aStorageFailureDoesNotEndTheUploadChain',

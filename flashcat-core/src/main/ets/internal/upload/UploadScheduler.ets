@@ -145,7 +145,9 @@ export class UploadScheduler {
    * happen: offline, that turned every failed request into a new batch file.
    */
   isBackingOff(): boolean {
-    return this.retryNotBeforeMs > Date.now();
+    // Also while a retry is in flight (an earlier attempt failed and the delay
+    // has grown): offline that request runs until its timeout.
+    return this.retryNotBeforeMs > Date.now() || (this.draining && this.currentDelayMs > this.baseDelayMs);
   }
 
   private async drainOnce(): Promise<void> {

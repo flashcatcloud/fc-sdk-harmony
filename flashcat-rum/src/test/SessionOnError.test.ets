@@ -2109,6 +2109,21 @@ export default function sessionOnErrorTests(): void {
         }
       });
 
+    it('aRevokedConsentDropsTheQueuedSnapshot',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        const core: FakeCore = new FakeCore();
+        const scope: CapturingScope = new CapturingScope();
+        const monitor: DefaultRumMonitor = featureWith(core, scope, 100, false);
+        const feature: RumFeature = new RumFeature(core, new RumConfigurationBuilder('app-1').build());
+        feature.onInitialize();
+        feature.attachMonitor(monitor);
+        scope.lastView = '';
+        monitor.startView('home', 'home'); // queued, not yet written
+        feature.onReceive({ 'type': 'consent_revoked' } as Record<string, Object>);
+        LastViewSnapshot.flush(); // a later flush point must find nothing to write
+        expect(scope.lastView).assertEqual('');
+      });
+
     it('aKeepAliveFlushesTheSnapshot',
       TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
         const core: FakeCore = new FakeCore();
