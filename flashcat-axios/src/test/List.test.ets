@@ -1,5 +1,5 @@
 import { describe, expect, it, Level, Size, TestType } from '@ohos/hypium';
-import { InternalAxiosRequestConfig } from '@ohos/axios';
+import { InternalAxiosRequestConfig, AxiosResponse } from '@ohos/axios';
 import { fullUrlOf, sizeOf } from '../main/ets/AxiosTracking';
 
 /** Minimal stand-in: only the two fields fullUrlOf reads. */
@@ -12,6 +12,14 @@ function configOf(url?: string, baseURL?: string): InternalAxiosRequestConfig {
     config['baseURL'] = baseURL;
   }
   return config as Object as InternalAxiosRequestConfig;
+}
+
+function responseOf(data: Object | undefined, headers?: Record<string, Object>): AxiosResponse {
+  const response: Record<string, Object> = { 'status': 200, 'headers': headers ?? {} };
+  if (data !== undefined) {
+    response['data'] = data;
+  }
+  return response as Object as AxiosResponse;
 }
 
 export default function axiosIntegrationTests(): void {
@@ -45,14 +53,22 @@ export default function axiosIntegrationTests(): void {
       expect(fullUrlOf(configOf())).assertEqual('');
     });
 
-    it('measuresTheDecodedResponseBody', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
-      expect(sizeOf('hello')).assertEqual(5);
-      expect(sizeOf(new ArrayBuffer(64))).assertEqual(64);
-      expect(sizeOf(undefined)).assertEqual(0);
-      // Objects are measured by their serialized length — axios hands back the
-      // parsed body, so the bytes off the wire are no longer available.
-      const body: Record<string, Object> = { 'a': 1 };
-      expect(sizeOf(body)).assertEqual('{"a":1}'.length);
+    it('measuresTheResponseWithoutReencodingIt', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+      // Content-Length wins: the bytes that came off the wire.
+      expect(sizeOf(responseOf({ 'a': 1 }, { 'content-length': '1234' }))).assertEqual(1234);
+      expect(sizeOf(responseOf('hello', { 'Content-Length': 7 }))).assertEqual(7);
+      // Without it, cheap lengths only.
+      expect(sizeOf(responseOf('hello'))).assertEqual(5);
+      expect(sizeOf(responseOf(new ArrayBuffer(64)))).assertEqual(64);
+      expect(sizeOf(responseOf(undefined))).assertEqual(0);
+      // A parsed object is never serialized again just to measure it.
+      let stringified: boolean = false;
+      const body: Record<string, Object> = { 'toJSON': (): string => {
+        stringified = true;
+        return 'x';
+      } };
+      expect(sizeOf(responseOf(body))).assertEqual(0);
+      expect(stringified).assertFalse();
     });
   });
 }

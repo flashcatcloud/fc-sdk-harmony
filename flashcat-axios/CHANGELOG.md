@@ -5,6 +5,9 @@
 - The axios interceptors never fail or alter the host's request: telemetry
   failures are contained and the config, response and rejection pass through
   unchanged. In-flight tracking is capped at 256 requests per process.
+- Resource size comes from the `Content-Length` header (else a string or
+  ArrayBuffer body's length); a parsed JSON body is no longer serialized
+  again on the response path just to be measured.
 - Trace headers follow `@flashcatcloud/trace` 0.7.3: none unless first-party
   hosts are configured.
 

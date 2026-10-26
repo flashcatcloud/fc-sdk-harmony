@@ -68,7 +68,7 @@ export function trackAxios(instance: AxiosInstance): void {
       try {
         const key: string = takeKey(response.config);
         if (key.length > 0) {
-          FlashcatTrace.stopTracedResource(key, response.status, sizeOf(response.data));
+          FlashcatTrace.stopTracedResource(key, response.status, sizeOf(response));
         }
       } catch (error) {
         logFailure('response', error);
@@ -86,7 +86,7 @@ export function trackAxios(instance: AxiosInstance): void {
         if (key.length > 0) {
           const response: AxiosResponse | undefined = error.response;
           if (response !== undefined) {
-            FlashcatTrace.stopTracedResource(key, response.status, sizeOf(response.data));
+            FlashcatTrace.stopTracedResource(key, response.status, sizeOf(response));
           } else {
             FlashcatTrace.failTracedResource(key, error.message);
           }
@@ -153,24 +153,43 @@ function takeKey(config: Object | undefined): string {
 }
 
 /**
- * Best-effort response size — axios exposes the decoded body, not the bytes
- * that came off the wire.
+ * Best-effort response size, without ever re-encoding the body: the
+ * Content-Length header when present (the bytes that came off the wire),
+ * else the length of a string / ArrayBuffer body, else 0. A parsed JSON body
+ * is not serialized again just to be measured — on the response path that
+ * cost the host a full copy and stringify of every payload.
  *
  * @internal — exported for tests.
  */
-export function sizeOf(data: Object | undefined): number {
+export function sizeOf(response: AxiosResponse): number {
+  const declared: number = contentLengthOf(response);
+  if (declared >= 0) {
+    return declared;
+  }
+  const data: Object | undefined = response.data as Object | undefined;
   if (data instanceof ArrayBuffer) {
     return data.byteLength;
   }
   if (typeof data === 'string') {
     return data.length;
   }
-  if (data !== undefined && data !== null) {
-    try {
-      return JSON.stringify(data).length;
-    } catch (_e) {
-      return 0;
-    }
-  }
   return 0;
+}
+
+/** The Content-Length header as a number, or -1 when absent or unreadable. */
+function contentLengthOf(response: AxiosResponse): number {
+  try {
+    const headers: Record<string, Object> | undefined = response.headers as Object as Record<string, Object> | undefined;
+    if (headers === undefined || headers === null) {
+      return -1;
+    }
+    let value: Object | undefined = headers['content-length'] ?? headers['Content-Length'];
+    if (value === undefined && typeof headers['get'] === 'function') {
+      value = (headers['get'] as (name: string) => Object | undefined)('content-length');
+    }
+    const n: number = typeof value === 'number' ? value : (typeof value === 'string' ? Number(value) : NaN);
+    return Number.isFinite(n) && n >= 0 ? n : -1;
+  } catch (_e) {
+    return -1;
+  }
 }
