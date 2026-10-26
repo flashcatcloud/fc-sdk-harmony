@@ -9,7 +9,16 @@ const MAX_BATCH_BYTES: number = 512 * 1024;       // roll the active file past t
 // configured default so an omitted argument cannot silently change behaviour.
 const DEFAULT_BATCH_AGE_MS: number = BatchSize.MEDIUM;
 const MAX_TOTAL_BYTES: number = 4 * 1024 * 1024;  // disk quota per feature (oldest-evicted)
-const MAX_BATCH_COUNT: number = 200;              // file-count quota per feature
+// File-count quota per feature: a sanity bound only. The byte quota is the one
+// that binds — at 200 a device offline for half an hour hit the count with
+// <1 MB on disk and started discarding its oldest events.
+const MAX_BATCH_COUNT: number = 1000;
+// How long the in-memory quota accounting goes without re-listing the
+// directory (the deferred-upload process also deletes and claims batches).
+const QUOTA_RESCAN_MS: number = 60 * 1000;
+// How often an idle drain looks for orphaned claims (they are recoverable only
+// after UPLOADING_RECOVERY_AGE_MS anyway).
+const CLAIM_RECOVERY_INTERVAL_MS: number = 60 * 1000;
 // Batches older than this are deleted instead of uploaded: the intake discards
 // events older than 24 h per-event (isDateOK) while still returning 2xx, so
 // uploading them is silent loss plus wasted traffic. Kept below 24 h for margin.
@@ -73,6 +82,14 @@ export class FilePersistenceStrategy implements UploadPersistence {
   // (their roll state is known locally). Bounded by the file-count quota.
   private readonly ownNames: Set<string> = new Set<string>();
   private pendingBytes: number = -1;          // -1 = not yet read from disk
+  // Quota accounting without a directory scan per batch: bytes per batch file
+  // (plain or claimed), kept from this instance's own writes and reconciled
+  // with the directory at most every QUOTA_RESCAN_MS. It can only over-count
+  // between rescans (another process deleted something), which evicts early —
+  // the safe direction.
+  private sizes: Map<string, number> = new Map<string, number>();
+  private quotaScannedMs: number = 0;
+  private claimsRecoveredMs: number = 0;
   private seq: number = 0;
   /** Roll window for the active batch; see Configuration.batchSize. */
   private readonly batchAgeMs: number;
@@ -130,15 +147,21 @@ export class FilePersistenceStrategy implements UploadPersistence {
       FlashcatLog.e(`persist.write: dropped oversized event (${lineBytes} bytes > ${MAX_EVENT_BYTES})`);
       return false;
     }
-    this.ensureDir(this.rootDir); // self-heal if the dir wasn't created at construction
     const now: number = Date.now();
     if (this.activeName === null || this.shouldRoll(now, lineBytes)) {
       this.openNewActive(now);
     }
     const name: string = this.activeName as string;
-    const ok: boolean = FilePersistenceStrategy.append(`${this.rootDir}/${name}`, line);
+    let ok: boolean = FilePersistenceStrategy.append(`${this.rootDir}/${name}`, line);
+    if (!ok) {
+      // Self-heal a directory removed underneath us, then try once more —
+      // checking for it before every write cost a syscall per event.
+      this.ensureDir(this.rootDir);
+      ok = FilePersistenceStrategy.append(`${this.rootDir}/${name}`, line);
+    }
     if (ok) {
       this.activeBytes += lineBytes;
+      this.sizes.set(name, (this.sizes.get(name) ?? 0) + lineBytes);
     } else {
       this.ownNames.delete(name); // the file may not exist — don't track it
       this.activeName = null;
@@ -169,6 +192,7 @@ export class FilePersistenceStrategy implements UploadPersistence {
     this.activeCreatedMs = now;
     this.activeBytes = 0;
     this.ownNames.add(this.activeName);
+    this.sizes.set(this.activeName, 0);
   }
 
   // ---- pending (pre-consent) buffer ----
@@ -277,7 +301,10 @@ export class FilePersistenceStrategy implements UploadPersistence {
     // Own batch: without this the foreign-claim age gate blocks the migrated
     // batch from our own drain for the roll-age window.
     this.ownNames.add(name);
-    FilePersistenceStrategy.append(`${this.rootDir}/${name}`, lines.join('\n') + '\n');
+    const content: string = lines.join('\n') + '\n';
+    if (FilePersistenceStrategy.append(`${this.rootDir}/${name}`, content)) {
+      this.sizes.set(name, FilePersistenceStrategy.utf8Length(content));
+    }
   }
 
   /** Rewrite the pending file keeping only the newer half of its lines. */
@@ -374,10 +401,14 @@ export class FilePersistenceStrategy implements UploadPersistence {
     if (this.activeName !== null && (now - this.activeCreatedMs) > this.batchAgeMs) {
       this.activeName = null; // close so it's eligible in this same pass
     }
-    // Recover stale claims on every drain pass, not only at construction — an
-    // orphaned .uploading file (process killed mid-upload) must become drainable
-    // within this process's lifetime, not only on some later cold start.
-    this.restoreUploadingBatches();
+    // Recover stale claims during the process's lifetime, not only at
+    // construction — an orphaned .uploading file (process killed mid-upload)
+    // must become drainable without waiting for a cold start. A claim is only
+    // recoverable after UPLOADING_RECOVERY_AGE_MS, so once a minute is enough.
+    if (now - this.claimsRecoveredMs >= CLAIM_RECOVERY_INTERVAL_MS) {
+      this.claimsRecoveredMs = now;
+      this.restoreUploadingBatches();
+    }
     const all: string[] = this.listBatches();
     const ready: string[] = all.filter((n: string) => n !== this.activeName);
     for (const originalName of ready) {
@@ -450,6 +481,9 @@ export class FilePersistenceStrategy implements UploadPersistence {
 
   deleteBatch(batchId: string): void {
     this.ownNames.delete(FilePersistenceStrategy.originalName(batchId));
+    // A claimed batch is accounted under its original name.
+    this.sizes.delete(batchId);
+    this.sizes.delete(FilePersistenceStrategy.originalName(batchId));
     try {
       fs.unlinkSync(`${this.rootDir}/${batchId}`);
     } catch (_e) {
@@ -602,30 +636,61 @@ export class FilePersistenceStrategy implements UploadPersistence {
    * restoreUploadingBatches and evicted on a later pass).
    */
   private enforceQuota(): void {
-    const batches: string[] = this.listBatches();
+    const now: number = Date.now();
+    if (now - this.quotaScannedMs >= QUOTA_RESCAN_MS) {
+      this.rescanSizes(now);
+    }
     let total: number = 0;
-    try {
-      const claimed: string[] = fs.listFileSync(this.rootDir)
-        .filter((n: string) => n.startsWith(BATCH_PREFIX) && n.endsWith(UPLOADING_SUFFIX));
-      for (const n of claimed) {
-        total += FilePersistenceStrategy.sizeOf(`${this.rootDir}/${n}`);
+    const batches: string[] = [];
+    this.sizes.forEach((bytes: number, name: string) => {
+      total += bytes;
+      if (name.endsWith(BATCH_SUFFIX)) {
+        batches.push(name);
       }
-    } catch (_e) {
-      // quota check is best-effort
+    });
+    if (batches.length <= MAX_BATCH_COUNT && total <= MAX_TOTAL_BYTES) {
+      return;
     }
-    for (const n of batches) {
-      total += FilePersistenceStrategy.sizeOf(`${this.rootDir}/${n}`);
-    }
+    batches.sort(); // names start with the creation time: oldest first
     let i: number = 0;
     while ((batches.length - i) > MAX_BATCH_COUNT || total > MAX_TOTAL_BYTES) {
       if (i >= batches.length) {
         break;
       }
       const victim: string = batches[i];
-      total -= FilePersistenceStrategy.sizeOf(`${this.rootDir}/${victim}`);
+      total -= this.sizes.get(victim) ?? 0;
       this.deleteBatch(victim);
       i += 1;
     }
+  }
+
+  /**
+   * Rebuild the per-batch byte map from the directory. Sizes this instance
+   * already knows (its own writes) are kept; only files it has not seen — the
+   * other process's, or claims — are stat'ed. Claimed (.uploading) files count
+   * toward the byte total but are never eviction victims (they may be
+   * mid-upload).
+   */
+  private rescanSizes(now: number): void {
+    this.quotaScannedMs = now;
+    let names: string[] = [];
+    try {
+      names = fs.listFileSync(this.rootDir).filter((n: string) => n.startsWith(BATCH_PREFIX)
+        && (n.endsWith(BATCH_SUFFIX) || n.endsWith(UPLOADING_SUFFIX)));
+    } catch (_e) {
+      return; // quota check is best-effort: keep what we had
+    }
+    const next: Map<string, number> = new Map<string, number>();
+    for (const n of names) {
+      // A claim keeps the size its batch had under the original name.
+      const known: number | undefined = this.sizes.get(n) ??
+        (n.endsWith(UPLOADING_SUFFIX) ? this.sizes.get(FilePersistenceStrategy.originalName(n)) : undefined);
+      next.set(n, known !== undefined ? known : FilePersistenceStrategy.sizeOf(`${this.rootDir}/${n}`));
+    }
+    if (this.activeName !== null && !next.has(this.activeName)) {
+      next.set(this.activeName, this.sizes.get(this.activeName) ?? 0);
+    }
+    this.sizes = next;
   }
 
   /** UTF-8 byte length of a string (what lands on disk / on the wire). */

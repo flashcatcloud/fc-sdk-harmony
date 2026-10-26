@@ -14,6 +14,17 @@
   instead of ending uploads for the process; a claimed batch is handed back.
 - Host misuse (calls before initialize or after stop, failed initialize or
   enable) is always logged, verbose or not.
+- Less file work on the calling thread, especially offline:
+  - while uploads are backing off, an error no longer closes the active batch
+    (offline, every failed request opened a new batch file and re-scanned the
+    directory);
+  - disk quota is tracked in memory and reconciled with the directory at most
+    once a minute, instead of stat'ing every batch file whenever a batch opens;
+  - the byte quota (4 MB) now binds instead of the file count: the count cap
+    rises from 200 to 1000, so a device offline for half an hour no longer
+    discards its oldest events with under 1 MB on disk;
+  - no directory check before every write; idle drains look for orphaned
+    upload claims at most once a minute.
 
 ## 0.7.2
 

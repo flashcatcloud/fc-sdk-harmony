@@ -165,7 +165,7 @@ export class FlashcatCore implements SdkCore {
         this.configuration.batchProcessingLevel);
     const scope: CoreFeatureScope = new CoreFeatureScope(
       this.contextProvider, this.bus, feature.name, persistence,
-      () => this.consent, () => scheduler.triggerNow());
+      () => this.consent, () => scheduler.triggerNow(), () => scheduler.isBackingOff());
 
     this.features.set(feature.name, { feature, scope, scheduler, persistence });
     FlashcatLog.d(`registerFeature: ${feature.name}`);
@@ -548,12 +548,13 @@ class CoreFeatureScope implements FeatureScope {
     featureName: string,
     persistence: FilePersistenceStrategy,
     consentSupplier: () => TrackingConsent,
-    flushTrigger: () => void
+    flushTrigger: () => void,
+    backingOff: () => boolean
   ) {
     this.contextProvider = contextProvider;
     this.bus = bus;
     this.featureName = featureName;
-    this.writer = new PersistenceEventWriter(persistence, consentSupplier, flushTrigger);
+    this.writer = new PersistenceEventWriter(persistence, consentSupplier, flushTrigger, backingOff);
   }
 
   withWriteContext(callback: (context: FlashcatContext, writer: EventWriter) => void): void {
@@ -574,15 +575,18 @@ class PersistenceEventWriter implements EventWriter {
   private readonly persistence: FilePersistenceStrategy;
   private readonly consentSupplier: () => TrackingConsent;
   private readonly flushTrigger: () => void;
+  private readonly backingOff: () => boolean;
 
   constructor(
     persistence: FilePersistenceStrategy,
     consentSupplier: () => TrackingConsent,
-    flushTrigger: () => void
+    flushTrigger: () => void,
+    backingOff: () => boolean
   ) {
     this.persistence = persistence;
     this.consentSupplier = consentSupplier;
     this.flushTrigger = flushTrigger;
+    this.backingOff = backingOff;
   }
 
   write(event: Record<string, Object>, forceFlush?: boolean): boolean {
@@ -600,7 +604,11 @@ class PersistenceEventWriter implements EventWriter {
       if (consent === TrackingConsent.PENDING) {
         return this.persistence.writePending(line);
       }
-      const force: boolean = forceFlush === true;
+      // A force-flush asks for an immediate upload. While the intake is failing
+      // none can happen, so the event joins the active batch (which still rolls
+      // on age) instead of closing it: offline, every failed request would
+      // otherwise open a new batch file and trigger a doomed upload.
+      const force: boolean = forceFlush === true && !this.backingOff();
       const ok: boolean = this.persistence.write(line, force);
       if (ok && force) {
         this.flushTrigger();

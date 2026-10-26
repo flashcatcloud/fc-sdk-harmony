@@ -1,5 +1,6 @@
 import { describe, expect, it, Level, Size, TestType } from '@ohos/hypium';
 import { common } from '@kit.AbilityKit';
+import { fileIo } from '@kit.CoreFileKit';
 import { ConfigurationBuilder } from '../main/ets/config/Configuration';
 import { TrackingConsent } from '../main/ets/privacy/TrackingConsent';
 import { FlashcatCore } from '../main/ets/internal/FlashcatCore';
@@ -103,6 +104,19 @@ class FaultyFeature implements Feature {
   }
 }
 
+function batchFiles(filesDir: string): number {
+  return fileIo.listFileSync(`${filesDir}/flashcat/rum`).filter((n: string) => n.endsWith('.ndjson')).length;
+}
+
+function writeForced(core: FlashcatCore, event: Record<string, Object>): void {
+  const scope: FeatureScope | null = core.getFeature('rum');
+  if (scope !== null) {
+    scope.withWriteContext((_context: FlashcatContext, writer: EventWriter) => {
+      writer.write(event, true);
+    });
+  }
+}
+
 function write(core: FlashcatCore, event: Record<string, Object>): boolean {
   const scope: FeatureScope | null = core.getFeature('rum');
   let written: boolean = false;
@@ -137,6 +151,28 @@ export default function hostSafetyTests(): void {
         expect(written).assertFalse();
         // Negative control: an ordinary event is still written.
         expect(write(core, { 'type': 'action', 'context': { 'k': 'v' } })).assertTrue();
+        core.stop();
+      });
+
+    it('offlineErrorsDoNotOpenABatchFileEach',
+      TestType.FUNCTION | Size.MEDIUMTEST | Level.LEVEL0, async (): Promise<void> => {
+        // The unit-test network always fails: the first forced error triggers an
+        // upload that fails, and the scheduler backs off. Errors written during
+        // the backoff must join the active batch instead of each closing it.
+        const context: common.Context = fakeContext();
+        const filesDir: string = (context as Object as Record<string, Object>)['filesDir'] as string;
+        const core: FlashcatCore = new FlashcatCore(`hs-${instanceSeq++}`, context,
+          new ConfigurationBuilder('token', 'prod').build(), TrackingConsent.GRANTED);
+        core.initialize();
+        core.registerFeature(new NoopFeature());
+        writeForced(core, { 'type': 'error', 'n': 0 });
+        await delay(300); // the triggered upload fails; backoff starts
+        const before: number = batchFiles(filesDir);
+        for (let i: number = 1; i <= 20; i++) {
+          writeForced(core, { 'type': 'error', 'n': i });
+        }
+        // At most one new (active) batch for all 20, not one per error.
+        expect(batchFiles(filesDir) - before <= 1).assertTrue();
         core.stop();
       });
 

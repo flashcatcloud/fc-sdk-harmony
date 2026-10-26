@@ -1509,6 +1509,7 @@ export default function sessionOnErrorTests(): void {
           const scope: CapturingScope = new CapturingScope();
           const app: RumApplicationScope = onErrorApp(scope);
           startView(app, Date.now());
+          LastViewSnapshot.flush(); // writes are coalesced; a flush puts the latest on file
           expect(scope.written.length).assertEqual(0); // nothing uploaded...
           const snapshot: Record<string, Object> = LastViewSnapshot.read() as Record<string, Object>;
           expect(snapshot['type']).assertEqual('view'); // ...but the local snapshot is kept
@@ -1538,6 +1539,7 @@ export default function sessionOnErrorTests(): void {
           const scope: CapturingScope = new CapturingScope();
           const app: RumApplicationScope = onErrorApp(scope);
           startView(app, Date.now());
+          LastViewSnapshot.flush(); // writes are coalesced; a flush puts the latest on file
           expect(stored.length > 0).assertTrue();
           app.stopCurrentSession(Date.now()); // ended without an error: discarded
           expect(stored).assertEqual('');
@@ -1549,6 +1551,7 @@ export default function sessionOnErrorTests(): void {
           startView(app2, Date.now());
           addError(app2, Date.now());
           app2.stopCurrentSession(Date.now());
+          LastViewSnapshot.flush();
           expect(stored.length > 0).assertTrue();
           expect(deletes).assertEqual(1);
           // ...and a discard never touches another session's snapshot: app4 is
@@ -1557,6 +1560,7 @@ export default function sessionOnErrorTests(): void {
           const other: CapturingScope = new CapturingScope();
           const app3: RumApplicationScope = onErrorApp(other);
           startView(app3, Date.now());
+          LastViewSnapshot.flush();
           const otherView: string = stored;
           const stale: CapturingScope = new CapturingScope();
           const app4: RumApplicationScope = onErrorApp(stale);
@@ -1582,6 +1586,7 @@ export default function sessionOnErrorTests(): void {
         const monitor: DefaultRumMonitor = onErrorFeature(core, scope);
         monitor.startView('home', 'home');
         const discarded: string = core.featureContext['session.id'] as string;
+        LastViewSnapshot.flush(); // writes are coalesced; a flush puts the latest on file
         expect(scope.lastView.length > 0).assertTrue();
         monitor.stopSession();
         expect(scope.written.length).assertEqual(0);
@@ -1608,6 +1613,7 @@ export default function sessionOnErrorTests(): void {
         const released: string = core2.featureContext['session.id'] as string;
         monitor3.addError('boom', RumErrorSource.SOURCE);
         monitor3.stopSession();
+        LastViewSnapshot.flush();
         const snapshot: string = scope2.lastView;
         expect(snapshot.length > 0).assertTrue();
         const next2: CapturingScope = new CapturingScope();
@@ -2055,6 +2061,68 @@ export default function sessionOnErrorTests(): void {
         monitor.startView('next', 'next');
         monitor.addAction(RumActionType.TAP, 'after');
         expect(scope.ofType('action').length >= 1).assertTrue();
+      });
+  });
+  describe('rum-last-view-coalescing', (): void => {
+    it('manyViewUpdatesCostOneWriteAndAFlushPointLandsItAtOnce',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        let writes: number = 0;
+        let stored: string = '';
+        LastViewSnapshot.configure((serialized: string): void => {
+          writes += 1;
+          stored = serialized;
+        }, (): string => stored, (): void => {
+          stored = '';
+        });
+        try {
+          for (let i: number = 0; i < 100; i++) {
+            LastViewSnapshot.record({ 'type': 'view', 'session': { 'id': 's-1' }, 'n': i } as Record<string, Object>);
+          }
+          expect(writes).assertEqual(0); // nothing synchronous on the event path
+          // What the core's flush points (background, flush, pre-exit, stop) do via keep_alive.
+          LastViewSnapshot.flush();
+          expect(writes).assertEqual(1);
+          expect((JSON.parse(stored) as Record<string, Object>)['n']).assertEqual(99); // the latest one
+        } finally {
+          LastViewSnapshot.reset();
+        }
+      });
+
+    it('throwingASessionAwayCancelsItsPendingSnapshot',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        let writes: number = 0;
+        LastViewSnapshot.configure((_serialized: string): void => {
+          writes += 1;
+        }, (): string => '', (): void => {});
+        try {
+          LastViewSnapshot.record({ 'type': 'view', 'session': { 'id': 's-gone' } } as Record<string, Object>);
+          LastViewSnapshot.invalidateFor('s-gone');
+          LastViewSnapshot.flush();
+          expect(writes).assertEqual(0);
+          // Negative control: another session's pending view is kept.
+          LastViewSnapshot.record({ 'type': 'view', 'session': { 'id': 's-kept' } } as Record<string, Object>);
+          LastViewSnapshot.invalidateFor('s-gone');
+          LastViewSnapshot.flush();
+          expect(writes).assertEqual(1);
+        } finally {
+          LastViewSnapshot.reset();
+        }
+      });
+
+    it('aKeepAliveFlushesTheSnapshot',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        const core: FakeCore = new FakeCore();
+        const scope: CapturingScope = new CapturingScope();
+        const monitor: DefaultRumMonitor = featureWith(core, scope, 100, false);
+        monitor.startView('home', 'home');
+        const feature: RumFeature = new RumFeature(core, new RumConfigurationBuilder('app-1').build());
+        feature.onInitialize();
+        feature.attachMonitor(monitor);
+        scope.lastView = '';
+        monitor.addAction(RumActionType.TAP, 'tap');
+        expect(scope.lastView).assertEqual(''); // coalesced, not written yet
+        feature.onReceive({ 'type': 'keep_alive' } as Record<string, Object>);
+        expect(scope.lastView.length > 0).assertTrue();
       });
   });
 }

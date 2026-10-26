@@ -11,6 +11,10 @@
   SDK drops the event. The error callbacks tolerate non-Error values.
 - A crash replayed from an earlier launch whose write fails is no longer
   marked delivered (and deleted).
+- The last-view snapshot (used to attribute next-launch native crashes and
+  freezes) is written at most once a second, and immediately whenever the
+  core flushes (background, flush, pre-exit, stop), instead of on every view
+  update — one synchronous write less per action, resource and error.
 
 ## 0.7.2
 

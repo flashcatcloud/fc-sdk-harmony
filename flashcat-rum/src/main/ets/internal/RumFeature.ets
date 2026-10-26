@@ -319,6 +319,9 @@ export class RumFeature implements Feature, FeatureEventReceiver {
         m.keepAlive();
         m.releaseScheduledWithheld();
       }
+      // The process may be about to go away: the latest view goes on file now,
+      // not after the snapshot's write delay.
+      LastViewSnapshot.flush();
     } else if (type === 'consent_revoked') {
       // The core has wiped its batches; what a session still holds in memory
       // goes the same way.

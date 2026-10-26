@@ -139,6 +139,15 @@ export class UploadScheduler {
     }, actualMs);
   }
 
+  /**
+   * The intake is failing and the next attempt is not due yet. Writers use it
+   * to stop force-rolling batches meant for an immediate upload that cannot
+   * happen: offline, that turned every failed request into a new batch file.
+   */
+  isBackingOff(): boolean {
+    return this.retryNotBeforeMs > Date.now();
+  }
+
   private async drainOnce(): Promise<void> {
     if (!this.running || this.draining) {
       return;
