@@ -380,6 +380,7 @@ export class FilePersistenceStrategy implements UploadPersistence {
     this.activeName = null;
     this.activeBytes = 0;
     this.ownNames.clear();
+    this.sizes.clear(); // every batch goes: nothing left to account for
     try {
       const names: string[] = fs.listFileSync(this.rootDir)
         .filter((n: string) => n.startsWith(BATCH_PREFIX)
@@ -661,7 +662,8 @@ export class FilePersistenceStrategy implements UploadPersistence {
     const batches: string[] = [];
     this.sizes.forEach((bytes: number, name: string) => {
       total += bytes;
-      if (name.endsWith(BATCH_SUFFIX)) {
+      // The active batch is never a victim: it holds the newest events.
+      if (name.endsWith(BATCH_SUFFIX) && name !== this.activeName) {
         batches.push(name);
       }
     });
