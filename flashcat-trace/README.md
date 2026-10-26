@@ -19,11 +19,15 @@ import { FlashcatTrace, TraceConfigurationBuilder } from '@flashcatcloud/trace';
 
 const traceConfig = new TraceConfigurationBuilder()
   .setSampleRate(100)
+  // Hosts (and their subdomains) that receive trace headers. With none
+  // configured, no request gets them.
+  .setFirstPartyHosts(['api.example.com'])
   .build();
 
 FlashcatTrace.enable(traceConfig);
 // Pass the target URL so the firstPartyHosts allow-list is applied; calling
-// getHeaders() without a URL skips that gate (the caller takes responsibility).
+// getHeaders() without a URL skips the per-host check (the caller takes
+// responsibility), but still returns nothing when no hosts are configured.
 const headers = FlashcatTrace.getHeaders('https://api.example.com');
 ```
 
@@ -56,7 +60,8 @@ Notes:
   `setFirstPartyHosts()`, so nothing would be injected and the resource would be
   reported without a host.
 - `headers` is empty when consent is not GRANTED or the host is not
-  first-party. The resource is still tracked — send the request either way.
+  first-party — including when no first-party hosts are configured. The
+  resource is still tracked — send the request either way.
 - Pass `injectTrace: false` when the request already carries a `traceparent`;
   it belongs to an existing trace, and generating a second context would both
   break the caller's chain and tie the resource to a trace never sent.

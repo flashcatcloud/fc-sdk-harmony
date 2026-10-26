@@ -56,8 +56,8 @@ export class RumAutoInstrumentation {
     if (!RumAutoInstrumentation.isTapTrackingEnabled()) {
       return;
     }
-    const name: string = RumAutoInstrumentation.resolveTarget(target);
     try {
+      const name: string = RumAutoInstrumentation.resolveTarget(target);
       GlobalRumMonitor.get().addAction(RumActionType.TAP, name, attributes);
       FlashcatLog.d(`rum.tap: auto action tap target="${name}"`);
     } catch (e) {

@@ -126,19 +126,14 @@ export class CrashFeature implements Feature, FeatureEventReceiver {
     }
     const continues: boolean = this.activePolicy === JsCrashPolicy.REPORT_AND_CONTINUE;
     // onUnhandledException normally comes first and onException repeats it.
-    // REPORT_AND_CONTINUE counts a crash from either callback, so it must also
-    // catch the reverse order; the other policies only ever report from
-    // onUnhandledException.
-    if ((callback === 'exception' || continues) && this.liveGuard.isDuplicate(fingerprint, nowMs, callback)) {
+    // Whichever arrives first carries the fault under the active policy (an OS
+    // build may deliver only one of them, or the reverse order); the other is
+    // its duplicate. With the usual order this is exactly the earlier behaviour.
+    if (this.liveGuard.isDuplicate(fingerprint, nowMs, callback)) {
       event['duplicate'] = true;
       event['report_async'] = false;
       this.liveGuard.forget();
       FlashcatLog.d(`crash.js: suppressed duplicate ${callback} callback fingerprint=${fingerprint}`);
-      return;
-    }
-    if (callback === 'exception' && !continues) {
-      // Defensive OS-build fallback: onException may be the only callback.
-      event['report_async'] = true;
       return;
     }
 

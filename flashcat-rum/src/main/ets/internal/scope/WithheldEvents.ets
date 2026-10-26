@@ -458,7 +458,14 @@ export class WithholdingFeatureScope implements FeatureScope {
       this.forget();
       return false;
     }
-    const line: string = JSON.stringify(event);
+    let line: string;
+    try {
+      line = JSON.stringify(event);
+    } catch (_e) {
+      // An event carrying a value that cannot be serialized (a host attribute
+      // with a cycle or a BigInt) is dropped here, as the core writer drops it.
+      return false;
+    }
     // Views stay out of the byte budget, so only details pay for the measurement.
     const bytes: number = event['type'] === 'view' ? 0 : ENCODER.encodeInto(line).byteLength;
     if (!this.isOwnError(event)) {

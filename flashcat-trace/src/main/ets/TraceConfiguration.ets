@@ -5,10 +5,10 @@ export class TraceConfiguration {
   /** 0..100 — fraction of requests marked sampled in the traceparent flags. */
   readonly sampleRate: number;
   /**
-   * Hosts to inject `traceparent` into via the FlashcatHttp auto-capture wrapper.
-   * Empty → inject for ALL hosts (back-compat with the rcp interceptor). Non-empty
-   * → only matching hosts get the header, so trace ids never leak to third parties.
-   * A host matches if it equals an entry or is a subdomain of one.
+   * Hosts that receive `traceparent` / `tracestate` (rcp interceptor,
+   * FlashcatHttp, axios, startTracedResource, getHeaders). Empty → no host
+   * does. A host matches if it equals an entry or is a subdomain of one, so
+   * trace ids never leak to third parties.
    */
   readonly firstPartyHosts: string[];
 
@@ -17,10 +17,14 @@ export class TraceConfiguration {
     this.firstPartyHosts = firstPartyHosts;
   }
 
-  /** Whether `host` is a configured first-party host (empty config = all hosts). */
+  /**
+   * Whether `host` is a configured first-party host. With none configured no
+   * host is: trace headers change the request on the wire and carry
+   * correlatable ids, so they go only where the app opted in.
+   */
   isFirstParty(host: string): boolean {
     if (this.firstPartyHosts.length === 0) {
-      return true;
+      return false;
     }
     const h: string = host.toLowerCase();
     for (const entry of this.firstPartyHosts) {

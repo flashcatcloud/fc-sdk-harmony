@@ -76,9 +76,10 @@ export default function testsuite(): void {
       expect(cfg.isFirstParty('notexample.com')).assertFalse();
     });
 
-    it('isFirstPartyAllowsAllWhenEmpty', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+    it('isFirstPartyMatchesNothingWhenEmpty', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+      // No hosts configured: nothing is injected, third parties included.
       const cfg: TraceConfiguration = new TraceConfiguration(100, []);
-      expect(cfg.isFirstParty('anything.com')).assertTrue();
+      expect(cfg.isFirstParty('anything.com')).assertFalse();
     });
 
     // ---- startTracedResource: the network-stack-agnostic entry point ----

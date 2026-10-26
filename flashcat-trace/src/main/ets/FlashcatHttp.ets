@@ -1,4 +1,5 @@
 import { http } from '@kit.NetworkKit';
+import { FlashcatLog } from '@flashcatcloud/core';
 import { TraceContext } from './internal/TraceContext';
 import {
   contentTypeOf, shouldInjectTraceHeaders, headerStringValue, setHeaderValue
@@ -21,7 +22,8 @@ import { TracedResource } from './TracedResource';
  * sampled-only correlation, the event the RUM feature turns into a resource —
  * belongs to {@link FlashcatTrace.startTracedResource}. What this wrapper adds
  * is the request itself: it copies the returned headers onto the options,
- * never throws beyond the underlying request's own error, and always destroys
+ * never throws beyond the underlying request's own error (passed through
+ * unchanged), never writes into the caller's options, and always destroys
  * the HttpRequest handle.
  *
  * Requires `FlashcatTrace.enable(...)` and, for resources to surface,
@@ -29,46 +31,92 @@ import { TracedResource } from './TracedResource';
  */
 export class FlashcatHttp {
   static async request(reqUrl: string, options?: http.HttpRequestOptions): Promise<http.HttpResponse> {
-    const opts: http.HttpRequestOptions = options ?? {};
-    const method: string = FlashcatHttp.methodOf(opts);
-
-    // The resource lifecycle and the consent / first-party gating live in
-    // startTracedResource — this wrapper only adds the @kit.NetworkKit call and
-    // copies the returned headers onto it.
-    const traced: TracedResource =
-      FlashcatTrace.startTracedResource(reqUrl, method, shouldInjectTraceHeaders(opts.header));
-    if (Object.keys(traced.headers).length > 0) {
-      const header: Record<string, Object> = FlashcatHttp.headerRecord(opts);
-      setHeaderValue(header, 'traceparent', traced.headers['traceparent']);
-      // Preserve other vendors already present on the request.
-      setHeaderValue(header, 'tracestate', TraceContext.mergeDatadogTracestate(
-        headerStringValue(header, 'tracestate'), traced.headers['tracestate']));
-      opts.header = header;
+    let opts: http.HttpRequestOptions = options ?? {};
+    let resourceKey: string = '';
+    // The request is the host's: telemetry may fail, but must never stop it,
+    // fail it, or change the error the host sees.
+    try {
+      const method: string = FlashcatHttp.methodOf(opts);
+      // The resource lifecycle and the consent / first-party gating live in
+      // startTracedResource — this wrapper only adds the @kit.NetworkKit call and
+      // copies the returned headers onto it.
+      const traced: TracedResource =
+        FlashcatTrace.startTracedResource(reqUrl, method, shouldInjectTraceHeaders(opts.header));
+      resourceKey = traced.key;
+      if (Object.keys(traced.headers).length > 0) {
+        // Copy before writing: the host may reuse its options across requests,
+        // and a traceparent left on them would be sent again (and block a fresh one).
+        const header: Record<string, Object> = FlashcatHttp.headerCopy(opts);
+        setHeaderValue(header, 'traceparent', traced.headers['traceparent']);
+        // Preserve other vendors already present on the request.
+        setHeaderValue(header, 'tracestate', TraceContext.mergeDatadogTracestate(
+          headerStringValue(header, 'tracestate'), traced.headers['tracestate']));
+        const copy: http.HttpRequestOptions = FlashcatHttp.optionsCopy(opts);
+        copy.header = header;
+        opts = copy;
+      }
+    } catch (error) {
+      FlashcatHttp.logFailure('request start', error);
     }
 
     const httpRequest: http.HttpRequest = http.createHttp();
+    let response: http.HttpResponse;
     try {
-      const response: http.HttpResponse = await httpRequest.request(reqUrl, opts);
-      FlashcatTrace.stopTracedResource(traced.key, FlashcatHttp.statusOf(response),
-        FlashcatHttp.sizeOf(response), contentTypeOf(response.header));
-      return response;
+      response = await httpRequest.request(reqUrl, opts);
     } catch (e) {
-      FlashcatTrace.failTracedResource(traced.key, e instanceof Error ? e.message : 'network request failed');
-      throw (e instanceof Error ? e : new Error('network request failed'));
+      if (resourceKey.length > 0) {
+        try {
+          FlashcatTrace.failTracedResource(resourceKey, e instanceof Error ? e.message : 'network request failed');
+        } catch (error) {
+          FlashcatHttp.logFailure('request failure', error);
+        }
+      }
+      throw e as Error; // the host's own error, unchanged
     } finally {
-      httpRequest.destroy();
+      try {
+        httpRequest.destroy();
+      } catch (error) {
+        // Cleanup must not replace the host's response or error.
+        FlashcatHttp.logFailure('request cleanup', error);
+      }
     }
+    if (resourceKey.length > 0) {
+      try {
+        FlashcatTrace.stopTracedResource(resourceKey, FlashcatHttp.statusOf(response),
+          FlashcatHttp.sizeOf(response), contentTypeOf(response.header));
+      } catch (error) {
+        FlashcatHttp.logFailure('request completion', error);
+      }
+    }
+    return response;
+  }
+
+  private static logFailure(what: string, error: Object): void {
+    FlashcatLog.e(`trace.http: ${what} telemetry failed: ${error instanceof Error ? error.message : 'error'}`);
+  }
+
+  private static optionsCopy(opts: http.HttpRequestOptions): http.HttpRequestOptions {
+    const copy: Record<string, Object> = {};
+    const source: Record<string, Object> = opts as Object as Record<string, Object>;
+    for (const k of Object.keys(source)) {
+      copy[k] = source[k];
+    }
+    return copy as Object as http.HttpRequestOptions;
   }
 
   private static methodOf(opts: http.HttpRequestOptions): string {
     return opts.method !== undefined ? `${opts.method}` : 'GET';
   }
 
-  private static headerRecord(opts: http.HttpRequestOptions): Record<string, Object> {
-    if (opts.header !== undefined) {
-      return opts.header as Record<string, Object>;
+  private static headerCopy(opts: http.HttpRequestOptions): Record<string, Object> {
+    const copy: Record<string, Object> = {};
+    if (opts.header !== undefined && opts.header !== null) {
+      const source: Record<string, Object> = opts.header as Record<string, Object>;
+      for (const k of Object.keys(source)) {
+        copy[k] = source[k];
+      }
     }
-    return {};
+    return copy;
   }
 
   private static statusOf(response: http.HttpResponse): number {
