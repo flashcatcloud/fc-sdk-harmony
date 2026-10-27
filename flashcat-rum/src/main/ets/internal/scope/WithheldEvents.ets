@@ -1,4 +1,6 @@
-import { FeatureScope, FlashcatContext, EventWriter, SdkCore, TrackingConsent, FlashcatLog } from '@flashcatcloud/core';
+import {
+  FeatureScope, FlashcatContext, EventWriter, SdkCore, TrackingConsent, FlashcatLog, MAX_EVENT_BYTES
+} from '@flashcatcloud/core';
 import { util } from '@kit.ArkTS';
 import { LastViewSnapshot } from '../LastViewSnapshot';
 
@@ -12,10 +14,13 @@ export const WITHHELD_BUFFER_BYTES_LIMIT: number = 64 * 1024;
 export const WITHHELD_BUFFER_EVENTS_LIMIT: number = 200;
 /**
  * Views are the containers their events hang from — the backend builds the session
- * row out of view events — so they stay out of the detail budget and are only
- * bounded against pathological navigation counts.
+ * row out of view events — so they stay out of the detail budget and have their
+ * own, against pathological navigation counts and against host attributes that
+ * make every view document large.
  */
 export const WITHHELD_BUFFER_VIEWS_LIMIT: number = 50;
+/** Twice what storage accepts per event, so any one view it would store fits. */
+export const WITHHELD_BUFFER_VIEW_BYTES_LIMIT: number = 2 * MAX_EVENT_BYTES;
 /**
  * Correlated failures make every client release at the same instant, right when
  * the backend is already under strain. Releases are spread over this window.
@@ -63,11 +68,13 @@ class HeldView {
   readonly date: number;
   /** Its document version: a document is superseded only by a newer one. */
   readonly version: number;
+  readonly bytes: number;
 
-  constructor(line: string, date: number, version: number) {
+  constructor(line: string, date: number, version: number, bytes: number) {
     this.line = line;
     this.date = date;
     this.version = version;
+    this.bytes = bytes;
   }
 }
 
@@ -80,6 +87,7 @@ class HeldView {
 export class WithheldEventBuffer {
   /** Latest document per view, in the order they were last updated. */
   private views: Map<string, HeldView> = new Map<string, HeldView>();
+  private viewBytes: number = 0;
   private details: HeldEvent[] = [];
   private bytes: number = 0;
   private droppedCount: number = 0;
@@ -90,12 +98,18 @@ export class WithheldEventBuffer {
 
   /**
    * Holds `line`, the serialized form of `event` as it was written; `bytes` is
-   * its size, which views are not charged for. Returns false when the event was
-   * dropped rather than held.
+   * its size, charged to the view or the detail budget. Returns false when the
+   * event was dropped rather than held.
    */
   hold(event: Record<string, Object>, line: string, bytes: number, nowMs: number): boolean {
     const viewId: string = WithheldEventBuffer.viewIdOf(event);
     if (event['type'] === 'view') {
+      if (bytes > MAX_EVENT_BYTES) {
+        // Storage would refuse it. An older document of the view, if held,
+        // stays: it still places the view's events.
+        this.droppedCount += 1;
+        return false;
+      }
       // Upsert: a view document is cumulative, so the newest supersedes the rest.
       // Newest by document version, not by arrival: a document is assembled
       // before its mapper runs, and a mapper that reports into the SDK has the
@@ -105,8 +119,9 @@ export class WithheldEventBuffer {
       const version: number = WithheldEventBuffer.documentVersionOf(event);
       const held: HeldView | undefined = this.views.get(viewId);
       if (held === undefined || version >= held.version) {
-        this.views.delete(viewId);
-        this.views.set(viewId, new HeldView(line, date, version));
+        this.deleteView(viewId);
+        this.views.set(viewId, new HeldView(line, date, version, bytes));
+        this.viewBytes += bytes;
       }
       // The view's own start date decides which one is current, not arrival order:
       // a late update of a view that already ended must not make it current again,
@@ -115,13 +130,16 @@ export class WithheldEventBuffer {
         this.currentViewDate = date;
         this.currentViewId = viewId;
       }
-      while (this.views.size > WITHHELD_BUFFER_VIEWS_LIMIT) {
-        const oldest: string = this.views.keys().next().value as string;
-        const evicted: HeldView = this.views.get(oldest) as HeldView;
-        this.views.delete(oldest);
-        if (oldest === this.currentViewId) {
-          // The view in progress is never evicted: move it to the back instead.
-          this.views.set(oldest, evicted);
+      // Least recently updated first; the view in progress is never evicted.
+      // It alone fits the byte budget (larger views are refused above).
+      const order: string[] = Array.from(this.views.keys());
+      for (const id of order) {
+        if (this.views.size <= WITHHELD_BUFFER_VIEWS_LIMIT &&
+          this.viewBytes <= WITHHELD_BUFFER_VIEW_BYTES_LIMIT) {
+          break;
+        }
+        if (id !== this.currentViewId) {
+          this.deleteView(id);
         }
       }
       this.prune(nowMs);
@@ -164,8 +182,11 @@ export class WithheldEventBuffer {
    * Every detail goes out whether or not its view is held: views only decide
    * the order. An error before the first view, with view tracking off, or whose
    * view document the mapper dropped is still the error the session is kept for.
+   *
+   * `lateError` is an error too large to have been held; it goes out as the last
+   * of the errors. Returns whether storage accepted it.
    */
-  release(writer: EventWriter, nowMs: number, sessionId: string): void {
+  release(writer: EventWriter, nowMs: number, sessionId: string, lateError: string | null = null): boolean {
     this.prune(nowMs);
     const views: HeldView[] = [];
     this.views.forEach((view: HeldView) => {
@@ -178,30 +199,40 @@ export class WithheldEventBuffer {
         ordered.push(held.line);
       }
     }
+    const lateErrorIndex: number = lateError !== null ? ordered.length : -1;
+    if (lateError !== null) {
+      ordered.push(lateError);
+    }
     for (const held of this.details) {
       if (held.tier !== EvictionTier.LAST_RESORT) {
         ordered.push(held.line);
       }
     }
     let persisted: number = 0;
+    let lateErrorPersisted: boolean = lateError === null;
     for (let i: number = 0; i < ordered.length; i++) {
       // One batch, uploaded as soon as the last event is in. A write storage
       // refuses is gone, as it is for a collected session: nothing retries it.
       if (writer.write(JSON.parse(ordered[i]) as Record<string, Object>, i === ordered.length - 1)) {
         persisted += 1;
+        if (i === lateErrorIndex) {
+          lateErrorPersisted = true;
+        }
       }
     }
     FlashcatLog.d(`rum.withheld: released session=${sessionId} ${this.describe()} persisted=${persisted} failed=${ordered.length - persisted}`);
     this.clear();
+    return lateErrorPersisted;
   }
 
   /** What is held right now, for the log lines that account for it. */
   describe(): string {
-    return `views=${this.views.size} details=${this.details.length} dropped=${this.droppedCount} detail_bytes=${this.bytes}`;
+    return `views=${this.views.size} view_bytes=${this.viewBytes} details=${this.details.length} dropped=${this.droppedCount} detail_bytes=${this.bytes}`;
   }
 
   clear(): void {
     this.views = new Map<string, HeldView>();
+    this.viewBytes = 0;
     this.details = [];
     this.bytes = 0;
     this.droppedCount = 0;
@@ -234,6 +265,14 @@ export class WithheldEventBuffer {
       }
     });
     for (const id of stale) {
+      this.deleteView(id);
+    }
+  }
+
+  private deleteView(id: string): void {
+    const held: HeldView | undefined = this.views.get(id);
+    if (held !== undefined) {
+      this.viewBytes -= held.bytes;
       this.views.delete(id);
     }
   }
@@ -466,22 +505,24 @@ export class WithholdingFeatureScope implements FeatureScope {
       // with a cycle or a BigInt) is dropped here, as the core writer drops it.
       return false;
     }
-    // Views stay out of the byte budget, so only details pay for the measurement.
-    const bytes: number = event['type'] === 'view' ? 0 : ENCODER.encodeInto(line).byteLength;
+    const bytes: number = ENCODER.encodeInto(line).byteLength;
     if (!this.isOwnError(event)) {
       return buffer.hold(event, line, bytes, Date.now());
     }
+    if (bytes > MAX_EVENT_BYTES) {
+      // Storage refuses it, and a history uploaded for an error the backend
+      // will never see is a session nobody can explain: it earns nothing.
+      return false;
+    }
     if (bytes > WITHHELD_BUFFER_BYTES_LIMIT) {
-      // An error too large for the buffer goes out on its own rather than
-      // evicting the history it explains. Only an error storage accepted earns
-      // the release: a history uploaded for an error the backend will never
-      // see is a session nobody can explain.
-      if (!writer.write(event, true)) {
-        return false;
-      }
+      // An error too large for the buffer would evict the history it explains.
+      // It is released at once instead, inside the release and after the views
+      // — written ahead of them, it would reach the backend before the view
+      // its session is built from.
       this.hasError = true;
-      this.scheduleRelease(buffer);
-      return true;
+      this.cancelTimer();
+      this.buffer = null;
+      return buffer.release(writer, Date.now(), this.sessionId, line);
     }
     this.hasError = true;
     this.scheduleRelease(buffer);

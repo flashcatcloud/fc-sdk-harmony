@@ -15,4 +15,6 @@ export { Feature, FeatureScope, FeatureEventReceiver, EventWriter,
   RUM_FEATURE_NAME, LOGS_FEATURE_NAME, TRACE_FEATURE_NAME, CRASH_FEATURE_NAME } from './src/main/ets/api/feature/Feature';
 export { FlashcatContext, DeviceInfo, UserInfo, NetworkInfo } from './src/main/ets/api/context/FlashcatContext';
 export { DataWriter } from './src/main/ets/api/storage/DataWriter';
+// Largest serialized event (UTF-8 bytes) storage accepts; larger writes are refused.
+export { MAX_EVENT_BYTES } from './src/main/ets/internal/persistence/FilePersistenceStrategy';
 export { FlashcatLog } from './src/main/ets/internal/FlashcatLog';

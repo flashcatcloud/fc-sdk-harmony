@@ -25,7 +25,7 @@ const CLAIM_RECOVERY_INTERVAL_MS: number = 60 * 1000;
 const MAX_BATCH_RETENTION_MS: number = 23 * 60 * 60 * 1000;
 // A single event may not exceed one batch — an oversized event would produce an
 // undeliverable batch (intake body cap) that then gets DROPped whole.
-const MAX_EVENT_BYTES: number = MAX_BATCH_BYTES;
+export const MAX_EVENT_BYTES: number = MAX_BATCH_BYTES;
 const BATCH_PREFIX: string = 'batch-';
 const BATCH_SUFFIX: string = '.ndjson';
 const UPLOADING_SUFFIX: string = '.uploading';
