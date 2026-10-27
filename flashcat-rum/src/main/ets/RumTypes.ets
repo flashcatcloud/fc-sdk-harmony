@@ -8,9 +8,11 @@
  * - `null` to drop the event entirely.
  * Mappers must be cheap and must not throw — a throwing mapper is contained and
  * the original event passes through unmodified. A mapper must not call into the
- * SDK either: monitor calls made from inside it (addError, stopSession, …) are
- * ignored and logged, and any event it causes otherwise is dropped, so the
- * mapper never runs on its own output. Mirrors Android's `RumEventMapper`.
+ * SDK either: monitor calls made from inside it that report something or change
+ * the session (startView, addAction, addError, stopSession, …) are ignored and
+ * logged, and any event it causes otherwise is dropped, so the mapper never runs
+ * on its own output. Global attribute changes (addAttribute, …) still apply.
+ * Mirrors Android's `RumEventMapper`.
  */
 export type RumEventMapper = (event: Record<string, Object>) => Record<string, Object> | null;
 
