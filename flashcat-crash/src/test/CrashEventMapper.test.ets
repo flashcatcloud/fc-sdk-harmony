@@ -2,6 +2,7 @@ import { describe, expect, it, Level, Size, TestType } from '@ohos/hypium';
 import { JsCrashPolicy } from '../main/ets/CrashConfiguration';
 import { CrashEventMapper } from '../main/ets/internal/CrashEventMapper';
 import { CrashIncidentRecord } from '../main/ets/internal/CrashIncident';
+import { APP_FREEZE_PID, appFreezeParams } from './AppFreezeFixture';
 
 export default function crashEventMapperTests(): void {
   describe('CrashEventMapper', (): void => {
@@ -128,6 +129,51 @@ export default function crashEventMapperTests(): void {
       expect((ev['message'] as string).indexOf('freeze')).assertLarger(-1);
     });
 
+    it('mapsFreezeMainThreadFramesToStack', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+      const ev: Record<string, Object> = CrashEventMapper.fromAppFreeze(appFreezeParams('2026-10-27 23:51:37.517'));
+      const lines: string[] = (ev['stack'] as string).split('\n');
+      expect(ev['crash_kind']).assertEqual('freeze');
+      expect(lines.length).assertEqual(27);
+      expect(lines[0]).assertEqual(
+        '#0 pc 0000000000458028 /system/lib64/module/arkcompiler/stub.an (BCStub_HandleLdtrueStwCopy+8)');
+      expect(lines[1]).assertEqual('at anonymous (entry/src/main/ets/pages/Index.ets:175:9)');
+      expect(lines[14]).assertEqual('#14 pc 00000000000ebcc4 /system/lib64/platformsdk/libappkit_native.z.so' +
+        ' (OHOS::AppExecFwk::MainThread::Start()+244)');
+      // Only the main thread: the watchdog thread's frames must not leak in.
+      expect((ev['stack'] as string).indexOf('pthread_cond_timedwait')).assertEqual(-1);
+      expect(ev['arch']).assertEqual('arm64');
+      expect((ev['binary_images'] as Array<Record<string, Object>>).length).assertLarger(0);
+    });
+
+    it('stripsDumpTimeFromFreezeMessage', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+      const first: Record<string, Object> = CrashEventMapper.fromAppFreeze(appFreezeParams('2026-10-27 23:51:37.517'));
+      const second: Record<string, Object> = CrashEventMapper.fromAppFreeze(appFreezeParams('2026-10-27 23:58:02.004'));
+      expect(first['message']).assertEqual('THREAD_BLOCK_6S: App main thread is not response!');
+      expect(second['message']).assertEqual(first['message']);
+      expect(second['stack']).assertEqual(first['stack']);
+      expect(first['freeze.dump_started_at']).assertEqual('2026-10-27 23:51:37.517');
+      expect(second['freeze.dump_started_at']).assertEqual('2026-10-27 23:58:02.004');
+    });
+
+    it('keepsInlineFreezeStackWithoutThreadDump', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+      const exception: Record<string, Object> = {
+        'name': 'THREAD_BLOCK_6S',
+        'message': 'App main thread is not response!',
+        'stack': 'at busy (entry/src/main/ets/pages/Index.ets:12:3)'
+      };
+      const ev: Record<string, Object> = CrashEventMapper.fromAppFreeze({ 'exception': exception });
+      expect(ev['stack']).assertEqual('at busy (entry/src/main/ets/pages/Index.ets:12:3)');
+      expect(ev['freeze.dump_started_at']).assertUndefined();
+    });
+
+    it('leavesFreezeStackEmptyWithoutMainThread', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+      const params: Record<string, Object> = appFreezeParams('2026-10-27 23:51:37.517');
+      params['pid'] = APP_FREEZE_PID + 1;
+      const ev: Record<string, Object> = CrashEventMapper.fromAppFreeze(params);
+      expect(ev['stack']).assertEqual('');
+      expect(ev['message']).assertEqual('THREAD_BLOCK_6S: App main thread is not response!');
+    });
+
     it('mapsPendingIncidentAsCrash', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
       const incident: CrashIncidentRecord = new CrashIncidentRecord(
         'incident-1',
@@ -137,7 +183,7 @@ export default function crashEventMapperTests(): void {
         'TypeError: boom\n    at run (Index.ets:1:2)',
         'fp-1',
         JsCrashPolicy.REPORT_THEN_EXIT,
-        '0.7.4',
+        '0.7.5',
         'session-1',
         'view-1',
         'Home');
@@ -163,7 +209,7 @@ export default function crashEventMapperTests(): void {
         'TypeError: boom\n    at run (Index.ets:1:2)',
         'fp-recovered',
         JsCrashPolicy.REPORT_AND_RECOVER,
-        '0.7.4',
+        '0.7.5',
         'session-1',
         'view-1',
         'Home');

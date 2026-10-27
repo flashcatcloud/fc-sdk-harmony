@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.7.5
+
+- Crash reports forward the `freeze.dump_started_at` attribute set by
+  `@flashcatcloud/crash` for app freezes.
+
 ## 0.7.4
 
 - Error-session capture (`setSessionOnError`): held view documents are

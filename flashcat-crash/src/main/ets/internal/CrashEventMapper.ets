@@ -16,6 +16,7 @@ import { JsCrashPolicy } from '../CrashConfiguration';
  *   type: 'crash_report', target: 'rum',
  *   message: string, stack: string, source: 'source',
  *   is_crash: true, crash_kind: 'crash' | 'freeze',
+ *   'freeze.dump_started_at'?: string, // freeze only: watchdog dump wall-clock time
  *   binary_images: Array<Record<string, Object>>, // native symbol metadata
  *   arch: string,            // normalized: arm64 / arm / x64 / x86, or ''
  *   build_id: string,        // first app native image build id, or ''
@@ -31,14 +32,70 @@ const MAX_STACK_CHARS: number = 50000;
 const MAX_BINARY_IMAGES_CHARS: number = 100000;
 const TRUNCATION_SUFFIX: string = '…[truncated]';
 const SOURCE_TYPE: string = 'harmony';
+// Separates an APP_FREEZE message from the watchdog dump's wall-clock time.
+const FREEZE_DUMP_TIME_MARKER: string = 'Main handler dump start time:';
 
 export class CrashEventMapper {
   static fromAppCrash(params: Record<string, Object>): Record<string, Object> {
     return CrashEventMapper.build(params, 'crash');
   }
 
+  /**
+   * APP_FREEZE carries no inline stack: the watchdog's dump lists every thread
+   * under `params.threads` (`{ tid, thread_name, frames }`, frames in the same
+   * shape as a native APP_CRASH's `exception.frames`), and the blocked main
+   * thread is the one whose tid equals `params.pid`. Its frames become the
+   * error stack. The exception message embeds the dump's wall-clock time
+   * ("...not response!Main handler dump start time: <time>"); it is split off
+   * into `freeze.dump_started_at` so every occurrence of one freeze shares a
+   * single message.
+   */
   static fromAppFreeze(params: Record<string, Object>): Record<string, Object> {
-    return CrashEventMapper.build(params, 'freeze');
+    const exception: Record<string, Object> = CrashEventMapper.asRecord(params['exception']);
+    const message: string = CrashEventMapper.asString(exception['message']);
+    const marker: number = message.indexOf(FREEZE_DUMP_TIME_MARKER);
+    const freezeException: Record<string, Object> = CrashEventMapper.copy(exception);
+    freezeException['message'] = marker >= 0 ? message.substring(0, marker).trim() : message;
+    const mainFrames: Array<Object> = CrashEventMapper.mainThreadFrames(params);
+    if (mainFrames.length > 0) {
+      freezeException['frames'] = mainFrames;
+    }
+    const freezeParams: Record<string, Object> = CrashEventMapper.copy(params);
+    freezeParams['exception'] = freezeException;
+    const event: Record<string, Object> = CrashEventMapper.build(freezeParams, 'freeze');
+    if (marker >= 0) {
+      const dumpStartedAt: string = message.substring(marker + FREEZE_DUMP_TIME_MARKER.length).trim();
+      if (dumpStartedAt.length > 0) {
+        event['freeze.dump_started_at'] = dumpStartedAt;
+      }
+    }
+    return event;
+  }
+
+  /** Frames of the thread whose tid is the process id (the main thread), or []. */
+  private static mainThreadFrames(params: Record<string, Object>): Array<Object> {
+    const threads: Object | undefined = params['threads'];
+    const pid: Object | undefined = params['pid'];
+    if (!Array.isArray(threads) || typeof pid !== 'number') {
+      return [];
+    }
+    const list: Array<Object> = threads as Array<Object>;
+    for (let i = 0; i < list.length; i++) {
+      const thread: Record<string, Object> = CrashEventMapper.asRecord(list[i]);
+      const frames: Object | undefined = thread['frames'];
+      if (thread['tid'] === pid && Array.isArray(frames)) {
+        return frames as Array<Object>;
+      }
+    }
+    return [];
+  }
+
+  private static copy(record: Record<string, Object>): Record<string, Object> {
+    const out: Record<string, Object> = {};
+    for (const key of Object.keys(record)) {
+      out[key] = record[key];
+    }
+    return out;
   }
 
   static fromPendingIncident(incident: CrashIncidentRecord): Record<string, Object> {
