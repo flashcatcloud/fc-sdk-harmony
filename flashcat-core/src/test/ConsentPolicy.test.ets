@@ -3,6 +3,7 @@ import { common } from '@kit.AbilityKit';
 import { ConfigurationBuilder } from '../main/ets/config/Configuration';
 import { TrackingConsent } from '../main/ets/privacy/TrackingConsent';
 import { FlashcatCore } from '../main/ets/internal/FlashcatCore';
+import { CrashPendingStore } from '../main/ets/internal/persistence/CrashPendingStore';
 import { FeatureEventReceiver, RUM_FEATURE_NAME } from '../main/ets/api/feature/Feature';
 
 // NOTE (headless runner): Preferences are process-wide per name, so two
@@ -108,6 +109,42 @@ export default function consentPolicyTests(): void {
         expect(received.indexOf('consent_revoked')).assertEqual(-1); // undecided is not refused
         core.setTrackingConsent(TrackingConsent.NOT_GRANTED);
         expect(received.indexOf('consent_revoked') !== -1).assertTrue();
+        core.stop();
+      });
+
+    it('revocationDeletesPendingCrashIncidents',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        // A crash persisted under GRANTED carries its stack and session/view
+        // ids. Revoking consent must remove it now, not on a later launch's
+        // replay; the hash-only dedup and loop sidecars stay.
+        const context: common.Context = fakeContext();
+        const core: FlashcatCore = new FlashcatCore(`c-${instanceSeq++}`, context,
+          new ConfigurationBuilder('token', 'prod').build(), TrackingConsent.GRANTED, false);
+        core.initialize();
+        // A second store over the same dir stands in for the crash feature.
+        const store: CrashPendingStore = new CrashPendingStore(context, false);
+        const storage = (fields: Record<string, Object>): Record<string, Object> => {
+          store.onReceive(fields);
+          return fields;
+        };
+        const incidentCount = (): number =>
+          (storage({ 'type': 'crash_storage_list' })['files'] as Array<Record<string, Object>>).length;
+        const written: Record<string, Object> = storage({
+          'type': 'crash_storage_write', 'incident_id': 'a1', 'serialized': '{"stack":"s"}'
+        });
+        expect(written['success'] === true).assertTrue();
+        storage({ 'type': 'crash_storage_write_consumed', 'serialized': '[{"fingerprint":"0f"}]' });
+        storage({ 'type': 'crash_storage_write_loop', 'serialized': '[1]' });
+        expect(incidentCount()).assertEqual(1);
+
+        core.setTrackingConsent(TrackingConsent.PENDING);
+        expect(incidentCount()).assertEqual(1); // undecided is not refused
+
+        core.setTrackingConsent(TrackingConsent.NOT_GRANTED);
+        expect(incidentCount()).assertEqual(0);
+        expect((storage({ 'type': 'crash_storage_read_consumed' })['serialized'] as string).length > 0)
+          .assertTrue();
+        expect(storage({ 'type': 'crash_storage_read_loop' })['serialized'] as string).assertEqual('[1]');
         core.stop();
       });
 

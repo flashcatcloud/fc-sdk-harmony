@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.4
+
+- No changes; released with the other packages.
+
 ## 0.7.3
 
 - The axios interceptors never fail or alter the host's request: telemetry

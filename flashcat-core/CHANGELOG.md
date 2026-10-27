@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.7.4
+
+- Revoking tracking consent (`NOT_GRANTED`) now also deletes pending crash
+  incidents persisted earlier, which carry a crash's stack and session/view
+  ids; they previously stayed on disk until a later launch replayed them.
+- Exports `MAX_EVENT_BYTES`, the largest event storage accepts.
+
 ## 0.7.3
 
 - The SDK no longer throws into the host app: an event that cannot be
