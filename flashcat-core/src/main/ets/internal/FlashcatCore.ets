@@ -251,11 +251,11 @@ export class FlashcatCore implements SdkCore {
         r.persistence.wipeAll();
         r.scheduler.stop();
       });
-      // The RUM view snapshot lives outside the feature batches but is just as
-      // personal — it is a whole ViewEvent, user fields and custom context
-      // included. Revocation has to take it too.
+      // The RUM view snapshot and pending crash incidents live outside the
+      // feature batches but are just as personal — a whole ViewEvent, and a
+      // crash's stack plus session/view ids. Revocation has to take them too.
       this.bus.send(CRASH_STORAGE_TARGET,
-        { 'type': 'crash_storage_delete_last_view' } as Record<string, Object>);
+        { 'type': 'crash_storage_consent_revoked' } as Record<string, Object>);
       // RUM may still hold events in memory that have not reached a batch;
       // those are the refused user's data as much as the batches are.
       this.bus.send(RUM_FEATURE_NAME, { 'type': 'consent_revoked' } as Record<string, Object>);

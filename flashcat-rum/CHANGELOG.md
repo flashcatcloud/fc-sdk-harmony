@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.7.4
+
+- Error-session capture (`setSessionOnError`): held view documents are
+  bounded in bytes (twice the per-event storage limit) as well as in count; a
+  view larger than storage accepts is not held. An error too large for the
+  buffer is now released together with its session's views, after them,
+  instead of uploading ahead of them; one storage would refuse releases
+  nothing.
+
 ## 0.7.3
 
 - **Behavior change:** without `@flashcatcloud/crash`, an uncaught

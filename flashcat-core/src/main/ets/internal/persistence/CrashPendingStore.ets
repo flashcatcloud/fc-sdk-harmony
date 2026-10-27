@@ -101,6 +101,30 @@ export class CrashPendingStore implements FeatureEventReceiver {
       event['serialized'] = this.readSidecar(LAST_VIEW_FILE);
     } else if (type === 'crash_storage_delete_last_view') {
       this.deleteLastView();
+    } else if (type === 'crash_storage_consent_revoked') {
+      this.deleteLastView();
+      this.deleteAllIncidents();
+    }
+  }
+
+  /**
+   * Drop every pending incident. An incident carries the crashed run's stack,
+   * message and session/view ids — the same crash data NOT_GRANTED forbids on
+   * disk — and one written before the revocation would otherwise wait for a
+   * replay on some later launch to remove it. The consumed and loop sidecars
+   * stay: they hold only fingerprint hashes and timestamps, which keep dedup
+   * and the crash-loop guard working.
+   */
+  private deleteAllIncidents(): void {
+    try {
+      const names: string[] = fs.listFileSync(this.rootDir)
+        .filter((name: string): boolean =>
+          name.startsWith(INCIDENT_PREFIX) && name.endsWith(INCIDENT_SUFFIX));
+      for (const name of names) {
+        this.deleteIncident(name);
+      }
+    } catch (_error) {
+      // Never written, or the dir is unavailable.
     }
   }
 

@@ -1,13 +1,14 @@
 import { describe, expect, it, Level, Size, TestType } from '@ohos/hypium';
 import {
   FlashcatContext, FeatureScope, EventWriter, SdkCore, TrackingConsent,
-  Feature, FeatureEventReceiver, UserInfo, IntakeTarget
+  Feature, FeatureEventReceiver, UserInfo, IntakeTarget, MAX_EVENT_BYTES
 } from '@flashcatcloud/core';
 import { RumApplicationScope } from '../main/ets/internal/scope/RumApplicationScope';
 import { RumRawEvent } from '../main/ets/internal/scope/RumScope';
 import {
   WithheldEventBuffer, computeReleaseDelay, WITHHELD_BUFFER_BYTES_LIMIT, WITHHELD_BUFFER_EVENTS_LIMIT,
-  WITHHELD_BUFFER_VIEWS_LIMIT, WITHHELD_BUFFER_DURATION_MS, WITHHELD_BUFFER_RELEASE_MAX_DELAY_MS
+  WITHHELD_BUFFER_VIEWS_LIMIT, WITHHELD_BUFFER_VIEW_BYTES_LIMIT, WITHHELD_BUFFER_DURATION_MS,
+  WITHHELD_BUFFER_RELEASE_MAX_DELAY_MS
 } from '../main/ets/internal/scope/WithheldEvents';
 import { RemoteConfigStore, RemoteConfigValues } from '../main/ets/internal/remoteconfig/RemoteConfigStore';
 import { RemoteConfigController, RemoteConfigChangeListener } from '../main/ets/internal/remoteconfig/RemoteConfigController';
@@ -37,7 +38,7 @@ function testContext(): FlashcatContext {
     version: '1.0.0',
     bundleId: 'com.example.demo',
     source: 'harmony',
-    sdkVersion: '0.7.3',
+    sdkVersion: '0.7.4',
     device: {
       brand: 'HUAWEI', model: 'Pura', osName: 'HarmonyOS', osVersion: 'NEXT',
       apiVersion: 18, deviceType: 'phone'
@@ -143,7 +144,8 @@ class CapturingWriter implements EventWriter {
   }
 
   write(event: Record<string, Object>, forceFlush?: boolean): boolean {
-    if (JSON.stringify(event).length > this.scope.rejectAbove) {
+    // Storage stores a line: the newline counts toward its limit.
+    if (JSON.stringify(event).length + 1 > this.scope.rejectAbove) {
       return false;
     }
     this.scope.written.push(event);
@@ -800,6 +802,42 @@ export default function sessionOnErrorTests(): void {
           .map((e: Record<string, Object>) => (e['view'] as Record<string, Object>)['id'] as string);
         expect(ids.join(',')).assertEqual('current');
       });
+
+    it('boundsHeldViewsInBytesAndKeepsTheCurrentOne',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        // Large host attributes make every view document large; the count
+        // limit alone would let 50 of them sit in memory.
+        const now: number = 1_000_000;
+        const size: number = Math.floor(WITHHELD_BUFFER_VIEW_BYTES_LIMIT / 3) + 1;
+        const buffer: WithheldEventBuffer = new WithheldEventBuffer();
+        for (let i: number = 0; i < 5; i++) {
+          expect(hold(buffer, view(`v${i}`, now + i * 10), size, now + i * 10)).assertTrue();
+          hold(buffer, detail('action', `v${i}`, `a${i}`), 10, now + i * 10 + 1);
+        }
+        const ids: string[] = released(buffer, now + 100)
+          .filter((e: Record<string, Object>) => e['type'] === 'view')
+          .map((e: Record<string, Object>) => (e['view'] as Record<string, Object>)['id'] as string);
+        expect(ids.join(',')).assertEqual('v3,v4');
+      });
+
+    it('aViewStorageWouldRefuseIsNotHeldAndTheOlderDocumentStays',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        const now: number = 1_000_000;
+        const buffer: WithheldEventBuffer = new WithheldEventBuffer();
+        const first: Record<string, Object> = view('v1', now);
+        first['_dd'] = { 'document_version': 1 } as Record<string, Object>;
+        first['tag'] = 'first';
+        const huge: Record<string, Object> = view('v1', now);
+        huge['_dd'] = { 'document_version': 2 } as Record<string, Object>;
+        expect(hold(buffer, first, 100, now)).assertTrue();
+        // Exactly the cap: storage adds a newline and refuses it.
+        expect(hold(buffer, huge, MAX_EVENT_BYTES, now + 1)).assertFalse();
+        hold(buffer, detail('error', 'v1', 'e'), 10, now + 2);
+        const views: Array<Record<string, Object>> = released(buffer, now + 3)
+          .filter((e: Record<string, Object>) => e['type'] === 'view');
+        expect(views.length).assertEqual(1);
+        expect(views[0]['tag']).assertEqual('first');
+      });
   });
 
   describe('rum-session-on-error-session-id', (): void => {
@@ -1166,18 +1204,23 @@ export default function sessionOnErrorTests(): void {
         expect(out.filter((e: Record<string, Object>) => e['tag'] === 'kept').length).assertEqual(1);
       });
 
-    it('anOversizedErrorGoesOutAtOnceAndTheHistoryBehindTheJitter',
+    it('anOversizedErrorIsReleasedAtOnceBehindItsView',
       TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        // Too large to hold, but it must still reach storage after the view its
+        // session is built from — written ahead, its batch would upload first.
         const scope: CapturingScope = new CapturingScope();
         const app: RumApplicationScope = onErrorApp(scope);
         startView(app, Date.now());
         addAction(app, Date.now());
         addError(app, Date.now(), 'x'.repeat(WITHHELD_BUFFER_BYTES_LIMIT + 10));
-        expect(scope.written.length).assertEqual(1);
-        expect(scope.written[0]['type']).assertEqual('error');
+        // The release is one batch, flushed with its last event; the view's
+        // own update for the error follows it straight through.
+        const types: string[] = scope.written.map((e: Record<string, Object>) => e['type'] as string);
+        expect(types.slice(0, 3).join(',')).assertEqual('view,error,action');
+        expect(scope.flushes.slice(0, 3).join(',')).assertEqual('false,false,true');
+        const written: number = scope.written.length;
         app.releaseScheduledWithheld();
-        expect(scope.ofType('view').length).assertEqual(1);
-        expect(scope.ofType('action').length).assertEqual(1);
+        expect(scope.written.length).assertEqual(written);
       });
 
     it('releasesWhatWasWrittenNotWhatTheAppChangedAfterwards',
@@ -1203,27 +1246,43 @@ export default function sessionOnErrorTests(): void {
         expect(nested['value']).assertEqual('small');
       });
 
+    it('anErrorExactlyAtTheStorageLimitReleasesNothing',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        // Storage adds a newline, so an error line of exactly the limit is refused.
+        const scope: CapturingScope = new CapturingScope();
+        scope.rejectAbove = MAX_EVENT_BYTES;
+        const app: RumApplicationScope = onErrorApp(scope);
+        startView(app, Date.now());
+        const probe: CapturingScope = new CapturingScope();
+        const probeApp: RumApplicationScope = onErrorApp(probe);
+        startView(probeApp, Date.now());
+        addError(probeApp, Date.now(), 'x'.repeat(WITHHELD_BUFFER_BYTES_LIMIT + 10));
+        const overhead: number = JSON.stringify(probe.ofType('error')[0]).length - (WITHHELD_BUFFER_BYTES_LIMIT + 10);
+        addError(app, Date.now(), 'x'.repeat(MAX_EVENT_BYTES - overhead));
+        expect(scope.written.length).assertEqual(0);
+      });
+
     it('anOversizedErrorStorageRefusesReleasesNothing',
       TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
         const scope: CapturingScope = new CapturingScope();
-        scope.rejectAbove = WITHHELD_BUFFER_BYTES_LIMIT * 2;
+        scope.rejectAbove = MAX_EVENT_BYTES;
         const app: RumApplicationScope = onErrorApp(scope);
         startView(app, Date.now());
         addAction(app, Date.now());
-        addError(app, Date.now(), 'x'.repeat(WITHHELD_BUFFER_BYTES_LIMIT * 3));
+        addError(app, Date.now(), 'x'.repeat(MAX_EVENT_BYTES + 10));
         app.releaseScheduledWithheld();
         expect(scope.written.length).assertEqual(0); // no error reached storage, so no history either
         app.stopCurrentSession(Date.now());
         expect(scope.written.length).assertEqual(0);
         // Negative control: an oversized error storage accepts releases the history.
         const kept: CapturingScope = new CapturingScope();
-        kept.rejectAbove = WITHHELD_BUFFER_BYTES_LIMIT * 4;
+        kept.rejectAbove = MAX_EVENT_BYTES;
         const app2: RumApplicationScope = onErrorApp(kept);
         startView(app2, Date.now());
         addError(app2, Date.now(), 'x'.repeat(WITHHELD_BUFFER_BYTES_LIMIT * 3));
         app2.releaseScheduledWithheld();
         expect(kept.ofType('error').length).assertEqual(1);
-        expect(kept.ofType('view').length).assertEqual(1);
+        expect(kept.written[0]['type']).assertEqual('view');
       });
 
     it('spreadsReleasesAcrossTheJitterWindow',
