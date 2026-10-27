@@ -36,6 +36,15 @@ const MAX_PENDING: number = 256;
  * `FlashcatRum.enable(...)` with `setTrackNetworkRequests(true)`.
  */
 export function trackAxios(instance: AxiosInstance): void {
+  try {
+    registerInterceptors(instance);
+  } catch (error) {
+    // Not an axios instance (null, or an untyped caller's stand-in): nothing is tracked.
+    FlashcatLog.usage(`trackAxios ignored: ${error instanceof Error ? error.message : 'not an axios instance'}`);
+  }
+}
+
+function registerInterceptors(instance: AxiosInstance): void {
   // These interceptors sit on the host's requests: telemetry may fail, but the
   // config, the response and the rejection always pass through unchanged.
   instance.interceptors.request.use((config: InternalAxiosRequestConfig) => {

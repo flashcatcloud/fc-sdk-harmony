@@ -44,6 +44,18 @@ function hostileConfig(): InternalAxiosRequestConfig {
 
 export default function axiosHostSafetyTests(): void {
   describe('AxiosHostSafety', (): void => {
+    it('trackingSomethingThatIsNotAnInstanceIsANoOp',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        let threw: boolean = false;
+        try {
+          trackAxios(null as Object as AxiosInstance);
+          trackAxios({} as AxiosInstance);
+        } catch (_e) {
+          threw = true;
+        }
+        expect(threw).assertFalse();
+      });
+
     it('theRequestConfigPassesThroughWhenTelemetryFails',
       TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
         const fake: FakeInstance = new FakeInstance();

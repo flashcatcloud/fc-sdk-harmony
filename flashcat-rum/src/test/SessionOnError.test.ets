@@ -20,7 +20,7 @@ import { BeforeSamplingContext } from '../main/ets/RumTypes';
 import { RumConfiguration, RumConfigurationBuilder } from '../main/ets/RumConfiguration';
 import { FlashcatRum } from '../main/ets/FlashcatRum';
 import { DefaultRumMonitor } from '../main/ets/internal/monitor/DefaultRumMonitor';
-import { RumActionType, RumErrorSource } from '../main/ets/RumTypes';
+import { RumActionType, RumErrorSource, RumResourceMethod, RumResourceKind } from '../main/ets/RumTypes';
 import { errorManager } from '@kit.AbilityKit';
 import { process } from '@kit.ArkTS';
 
@@ -1965,6 +1965,73 @@ export default function sessionOnErrorTests(): void {
       });
   });
   describe('rum-host-safety', (): void => {
+    it('aMapperThatReportsIntoTheSdkGetsControlBack',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        // An event the mapper causes would be mapped again, and cause another:
+        // the host's call never returned. It is dropped instead.
+        const core: FakeCore = new FakeCore();
+        const scope: CapturingScope = new CapturingScope();
+        const monitor: DefaultRumMonitor = featureWith(core, scope, 100, false);
+        let calls: number = 0;
+        RumEventMapperHolder.configure((event: Record<string, Object>): Record<string, Object> => {
+          calls += 1;
+          if (calls < 50) { // bounds the loop when the guard is missing
+            monitor.addError('from mapper', RumErrorSource.CUSTOM);
+          }
+          return event;
+        });
+        try {
+          monitor.startView('v', 'V');
+          monitor.addAction(RumActionType.TAP, 'a');
+          expect(calls <= 4).assertTrue();
+          const fromMapper: Array<Record<string, Object>> = scope.ofType('error').filter(
+            (e: Record<string, Object>) => (e['error'] as Record<string, Object>)['message'] === 'from mapper');
+          expect(fromMapper.length).assertEqual(0);
+          expect(scope.ofType('action').length).assertEqual(1);
+        } finally {
+          RumEventMapperHolder.reset();
+        }
+      });
+
+    it('hostileAttributesAndKeysNeverThrowIntoTheHost',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        const core: FakeCore = new FakeCore();
+        const scope: CapturingScope = new CapturingScope();
+        const monitor: DefaultRumMonitor = featureWith(core, scope, 100, false);
+        const hostile: Record<string, Object> = {};
+        Object.defineProperty(hostile, 'boom', {
+          enumerable: true,
+          get: (): Object => {
+            throw new Error('getter');
+          }
+        });
+        const badKey: Object = {
+          toString: (): string => {
+            throw new Error('toString');
+          }
+        };
+        let threw: boolean = false;
+        try {
+          monitor.startView('v', 'V', hostile);
+          monitor.stopView('v', hostile);
+          monitor.addAction(RumActionType.TAP, 'a', hostile);
+          monitor.startResource('r', RumResourceMethod.GET, 'https://a.example', hostile);
+          monitor.stopResource('r', 200, 1, RumResourceKind.NATIVE, hostile);
+          monitor.stopResourceWithError('r', 'x', 500, hostile);
+          monitor.startAction(badKey as RumActionType, 'n');
+          monitor.stopAction(badKey as RumActionType, 'n');
+          monitor.addAttribute(badKey as string, 1);
+        } catch (_e) {
+          threw = true;
+        }
+        expect(threw).assertFalse();
+        // A key that cannot be a property name is refused, so it cannot fail every later event.
+        monitor.startView('w', 'W');
+        monitor.addAction(RumActionType.TAP, 'after');
+        expect(scope.ofType('action').filter(
+          (e: Record<string, Object>) => (e['action'] as Record<string, Object>)['target'] !== undefined).length >= 1).assertTrue();
+      });
+
     it('theGlobalErrorCallbacksNeverRaiseOnOddInput',
       TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
         const core: FakeCore = new FakeCore();
