@@ -7,6 +7,7 @@ import { RumApplicationScope } from '../scope/RumApplicationScope';
 import { RumRawEvent } from '../scope/RumScope';
 import { RemoteConfigStore, RemoteConfigValues } from '../remoteconfig/RemoteConfigStore';
 import { RemoteConfigController } from '../remoteconfig/RemoteConfigController';
+import { RumEventMapperHolder } from '../RumEventMapperHolder';
 
 const MS_TO_NS: number = 1e6;
 // Periodically re-emit the active view so its time_spent (and the session
@@ -99,6 +100,9 @@ export class DefaultRumMonitor implements RumMonitor {
   }
 
   setForcedSession(): void {
+    if (DefaultRumMonitor.calledFromMapper('setForcedSession')) {
+      return;
+    }
     try {
       this.applicationScope.forceSession(Date.now());
     } catch (error) {
@@ -144,6 +148,9 @@ export class DefaultRumMonitor implements RumMonitor {
 
   /** Begin a timed action; stopAction emits the ActionEvent with the measured duration. */
   startAction(type: RumActionType, name: string, attributes?: Record<string, Object>): void {
+    if (DefaultRumMonitor.calledFromMapper('startAction')) {
+      return;
+    }
     try {
       if (this.activeActions.size >= MAX_ACTIVE_ACTIONS) {
         // Evict the oldest abandoned entry (Map preserves insertion order).
@@ -161,6 +168,9 @@ export class DefaultRumMonitor implements RumMonitor {
   }
 
   stopAction(type: RumActionType, name: string, attributes?: Record<string, Object>): void {
+    if (DefaultRumMonitor.calledFromMapper('stopAction')) {
+      return;
+    }
     try {
       this.stopActionUnguarded(type, name, attributes);
     } catch (error) {
@@ -305,6 +315,9 @@ export class DefaultRumMonitor implements RumMonitor {
   }
 
   addError(message: string, source: RumErrorSource, stack?: string, attributes?: Record<string, Object>): void {
+    if (DefaultRumMonitor.calledFromMapper('addError')) {
+      return;
+    }
     try {
       this.reportError(message, source, stack, false, 'handled', attributes);
     } catch (error) {
@@ -385,6 +398,9 @@ export class DefaultRumMonitor implements RumMonitor {
   }
 
   stopSession(): void {
+    if (DefaultRumMonitor.calledFromMapper('stopSession')) {
+      return;
+    }
     try {
       this.applicationScope.stopCurrentSession(Date.now());
     } catch (error) {
@@ -399,11 +415,28 @@ export class DefaultRumMonitor implements RumMonitor {
    * host (where an uncaught exception would crash the app).
    */
   private dispatch(kind: string, build: () => RumRawEvent): void {
+    if (DefaultRumMonitor.calledFromMapper(kind)) {
+      return;
+    }
     try {
       this.applicationScope.handleEvent(build());
     } catch (error) {
       DefaultRumMonitor.logFailure(kind, error);
     }
+  }
+
+  /**
+   * The event mapper is running and the host called in from it. Acting on the
+   * call would change what the event being mapped describes — a view's error
+   * count, a session ending under it — and every event it caused would be
+   * mapped in turn. The call is ignored as a whole instead.
+   */
+  private static calledFromMapper(what: string): boolean {
+    if (!RumEventMapperHolder.isApplying()) {
+      return false;
+    }
+    FlashcatLog.usage(`GlobalRumMonitor.${what} ignored: called from inside the event mapper`);
+    return true;
   }
 
   private static logFailure(what: string, error: Object): void {

@@ -21,6 +21,11 @@ export class RumEventMapperHolder {
     RumEventMapperHolder.mapper = mapper;
   }
 
+  /** @internal The mapper is running: the monitor ignores calls the host makes from inside it. */
+  static isApplying(): boolean {
+    return RumEventMapperHolder.applying;
+  }
+
   /** @internal cleared on SDK stop. */
   static reset(): void {
     RumEventMapperHolder.mapper = null;
@@ -36,10 +41,11 @@ export class RumEventMapperHolder {
       return event;
     }
     if (RumEventMapperHolder.applying) {
-      // The mapper reported into the SDK. Mapping that event would run the
-      // mapper again, and every run reports another — the host never gets
-      // control back. Writing it unmapped would skip the app's redaction. It is
-      // dropped, as beforeSampling ignores the events its hook causes.
+      // The monitor already ignores calls made from inside the mapper; this
+      // catches the rest (Flashcat.flush re-emits views). Mapping the event
+      // would run the mapper again, and every run reports another — the host
+      // never gets control back. Writing it unmapped would skip the app's
+      // redaction. It is dropped, as beforeSampling ignores what its hook causes.
       const type: Object | undefined = event['type'];
       FlashcatLog.e(`rum.mapper: dropped event type=${typeof type === 'string' ? type : '?'} reported from inside the mapper`);
       return null;

@@ -1991,6 +1991,38 @@ export default function sessionOnErrorTests(): void {
         } finally {
           RumEventMapperHolder.reset();
         }
+        // The ignored call changed nothing: no error is counted on the view.
+        monitor.stopView('v');
+        const views: Array<Record<string, Object>> = scope.ofType('view');
+        const last: Record<string, Object> = views[views.length - 1]['view'] as Record<string, Object>;
+        expect((last['error'] as Record<string, Object>)['count']).assertEqual(0);
+      });
+
+    it('aMapperCannotEndTheSessionItIsMapping',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        const core: FakeCore = new FakeCore();
+        const scope: CapturingScope = new CapturingScope();
+        const monitor: DefaultRumMonitor = featureWith(core, scope, 100, false);
+        monitor.startView('v', 'V');
+        let before: string | undefined = undefined;
+        monitor.getCurrentSessionId((id: string | undefined): void => {
+          before = id;
+        });
+        RumEventMapperHolder.configure((event: Record<string, Object>): Record<string, Object> => {
+          monitor.stopSession();
+          return event;
+        });
+        try {
+          monitor.addAction(RumActionType.TAP, 'a');
+        } finally {
+          RumEventMapperHolder.reset();
+        }
+        let after: string | undefined = undefined;
+        monitor.getCurrentSessionId((id: string | undefined): void => {
+          after = id;
+        });
+        expect(before !== undefined).assertTrue();
+        expect(after).assertEqual(before);
       });
 
     it('hostileAttributesAndKeysNeverThrowIntoTheHost',
