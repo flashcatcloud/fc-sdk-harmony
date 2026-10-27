@@ -104,7 +104,7 @@ export class WithheldEventBuffer {
   hold(event: Record<string, Object>, line: string, bytes: number, nowMs: number): boolean {
     const viewId: string = WithheldEventBuffer.viewIdOf(event);
     if (event['type'] === 'view') {
-      if (bytes > MAX_EVENT_BYTES) {
+      if (WithheldEventBuffer.storageRefuses(bytes)) {
         // Storage would refuse it. An older document of the view, if held,
         // stays: it still places the view's events.
         this.droppedCount += 1;
@@ -301,6 +301,11 @@ export class WithheldEventBuffer {
     this.bytes -= this.details[index].bytes;
     this.droppedCount += 1;
     this.details.splice(index, 1);
+  }
+
+  /** Storage stores each event as a line: its size check counts the newline too. */
+  static storageRefuses(bytes: number): boolean {
+    return bytes + 1 > MAX_EVENT_BYTES;
   }
 
   private static tierOf(event: Record<string, Object>): EvictionTier {
@@ -509,7 +514,7 @@ export class WithholdingFeatureScope implements FeatureScope {
     if (!this.isOwnError(event)) {
       return buffer.hold(event, line, bytes, Date.now());
     }
-    if (bytes > MAX_EVENT_BYTES) {
+    if (WithheldEventBuffer.storageRefuses(bytes)) {
       // Storage refuses it, and a history uploaded for an error the backend
       // will never see is a session nobody can explain: it earns nothing.
       return false;
@@ -518,7 +523,9 @@ export class WithholdingFeatureScope implements FeatureScope {
       // An error too large for the buffer would evict the history it explains.
       // It is released at once instead, inside the release and after the views
       // — written ahead of them, it would reach the backend before the view
-      // its session is built from.
+      // its session is built from. Past the size check only an I/O failure
+      // can refuse it; whatever of the history did land makes this a
+      // collected session, so it writes straight through from here either way.
       this.hasError = true;
       this.cancelTimer();
       this.buffer = null;

@@ -144,7 +144,8 @@ class CapturingWriter implements EventWriter {
   }
 
   write(event: Record<string, Object>, forceFlush?: boolean): boolean {
-    if (JSON.stringify(event).length > this.scope.rejectAbove) {
+    // Storage stores a line: the newline counts toward its limit.
+    if (JSON.stringify(event).length + 1 > this.scope.rejectAbove) {
       return false;
     }
     this.scope.written.push(event);
@@ -829,7 +830,8 @@ export default function sessionOnErrorTests(): void {
         const huge: Record<string, Object> = view('v1', now);
         huge['_dd'] = { 'document_version': 2 } as Record<string, Object>;
         expect(hold(buffer, first, 100, now)).assertTrue();
-        expect(hold(buffer, huge, MAX_EVENT_BYTES + 1, now + 1)).assertFalse();
+        // Exactly the cap: storage adds a newline and refuses it.
+        expect(hold(buffer, huge, MAX_EVENT_BYTES, now + 1)).assertFalse();
         hold(buffer, detail('error', 'v1', 'e'), 10, now + 2);
         const views: Array<Record<string, Object>> = released(buffer, now + 3)
           .filter((e: Record<string, Object>) => e['type'] === 'view');
@@ -1242,6 +1244,22 @@ export default function sessionOnErrorTests(): void {
         const action: Record<string, Object> = scope.ofType('action')[0];
         const nested: Record<string, Object> = (action['context'] as Record<string, Object>)['nested'] as Record<string, Object>;
         expect(nested['value']).assertEqual('small');
+      });
+
+    it('anErrorExactlyAtTheStorageLimitReleasesNothing',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        // Storage adds a newline, so an error line of exactly the limit is refused.
+        const scope: CapturingScope = new CapturingScope();
+        scope.rejectAbove = MAX_EVENT_BYTES;
+        const app: RumApplicationScope = onErrorApp(scope);
+        startView(app, Date.now());
+        const probe: CapturingScope = new CapturingScope();
+        const probeApp: RumApplicationScope = onErrorApp(probe);
+        startView(probeApp, Date.now());
+        addError(probeApp, Date.now(), 'x'.repeat(WITHHELD_BUFFER_BYTES_LIMIT + 10));
+        const overhead: number = JSON.stringify(probe.ofType('error')[0]).length - (WITHHELD_BUFFER_BYTES_LIMIT + 10);
+        addError(app, Date.now(), 'x'.repeat(MAX_EVENT_BYTES - overhead));
+        expect(scope.written.length).assertEqual(0);
       });
 
     it('anOversizedErrorStorageRefusesReleasesNothing',
