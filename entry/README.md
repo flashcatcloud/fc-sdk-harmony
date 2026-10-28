@@ -96,7 +96,7 @@ view + action + resource (`resource_type=image`) + error all reached the test en
 | Add Manual Error | RUM ErrorEvent (`source:custom`, `is_crash:false`) | `"type":"error"` line |
 | Throw Unhandled ArkTS Error | unhandled exception → `errorManager` + `APP_CRASH` (JsError) | `"type":"error"` from next-launch crash intake, source `source` |
 | Trigger Native Crash (SIGSEGV) | `libentry.so` null-deref → `APP_CRASH` (NativeCrash) | next launch: `"type":"error"` with native stack, `error.binary_images`, `build_id` |
-| Trigger App Freeze (8s) | main-thread block → `APP_FREEZE` | next launch: `"type":"error"` with `error.category:"ANR"` |
+| Trigger App Freeze (8s) | main-thread block → `APP_FREEZE` | next launch: `"type":"error"` with `error.category:"ANR"` and the main thread's stack |
 
 > Crash/freeze events are delivered by `hiAppEvent` on the **next app launch** —
 > trigger a crash, relaunch the app, then check the proxy/console.
@@ -109,6 +109,7 @@ view + action + resource (`resource_type=image`) + error all reached the test en
 - [ ] Native crash produces an error whose `error.stack` has a `libentry.so` frame
       and whose `error.binary_images`, `build_id`, and `error.meta.code_type`
       are populated.
-- [ ] Freeze produces an error with `error.category:"ANR"`.
+- [ ] Freeze produces an error with `error.category:"ANR"` whose `error.stack` is
+      the main thread's frames, and whose message has no timestamp.
 - [ ] Confirm the real `hiAppEvent` `params` field shape matches `CrashEventMapper`
       (adjust the mapper if the on-device shape differs — see R1 plan checklist).
