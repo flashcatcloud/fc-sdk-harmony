@@ -46,6 +46,9 @@ class FakeCore implements SdkCore {
   isActive(): boolean {
     return true;
   }
+  isAppInForeground(): boolean {
+    return false;
+  }
   getIntakeTarget(): IntakeTarget {
     return { host: 'https://intake.example.com', clientToken: 'token' };
   }
