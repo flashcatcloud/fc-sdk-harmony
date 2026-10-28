@@ -40,6 +40,7 @@ export interface FlashcatContext {
   variant: string;
   service: string;
   version: string;          // app version
+  buildVersion?: string;    // app build number (bundle versionCode)
   bundleId: string;         // app bundle identifier
   source: string;           // always "harmony"
   sdkVersion: string;
