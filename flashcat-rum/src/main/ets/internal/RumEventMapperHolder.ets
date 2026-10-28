@@ -13,10 +13,17 @@ import { LastViewSnapshot } from './LastViewSnapshot';
  */
 export class RumEventMapperHolder {
   private static mapper: RumEventMapper | null = null;
+  /** The mapper is running: an event it causes (it called the SDK) is not mapped again. */
+  private static applying: boolean = false;
 
   /** @internal set by FlashcatRum.enable from RumConfiguration.eventMapper. */
   static configure(mapper: RumEventMapper | null): void {
     RumEventMapperHolder.mapper = mapper;
+  }
+
+  /** @internal The mapper is running: the monitor ignores calls the host makes from inside it. */
+  static isApplying(): boolean {
+    return RumEventMapperHolder.applying;
   }
 
   /** @internal cleared on SDK stop. */
@@ -33,6 +40,17 @@ export class RumEventMapperHolder {
     if (m === null) {
       return event;
     }
+    if (RumEventMapperHolder.applying) {
+      // The monitor already ignores calls made from inside the mapper; this
+      // catches the rest (Flashcat.flush re-emits views). Mapping the event
+      // would run the mapper again, and every run reports another — the host
+      // never gets control back. Writing it unmapped would skip the app's
+      // redaction. It is dropped, as beforeSampling ignores what its hook causes.
+      const type: Object | undefined = event['type'];
+      FlashcatLog.e(`rum.mapper: dropped event type=${typeof type === 'string' ? type : '?'} reported from inside the mapper`);
+      return null;
+    }
+    RumEventMapperHolder.applying = true;
     try {
       const result: Record<string, Object> | null = m(event);
       if (result === null) {
@@ -45,6 +63,8 @@ export class RumEventMapperHolder {
       // A mapper bug must never drop the SDK — pass the event through unmodified.
       FlashcatLog.e(`rum.mapper: threw, passing event through: ${e instanceof Error ? e.message : `${e}`}`);
       return event;
+    } finally {
+      RumEventMapperHolder.applying = false;
     }
   }
 }

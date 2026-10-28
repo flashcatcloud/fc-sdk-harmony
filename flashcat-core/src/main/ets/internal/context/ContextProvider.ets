@@ -205,7 +205,8 @@ export class ContextProvider {
   }
 
   setUser(user: UserInfo): void {
-    this.user = user;
+    // Untyped callers can pass null; every event reads the user's fields.
+    this.user = user === null || user === undefined ? {} : user;
   }
 
   updateFeatureContext(featureName: string, update: Record<string, Object>): void {

@@ -44,6 +44,36 @@ function hostileConfig(): InternalAxiosRequestConfig {
 
 export default function axiosHostSafetyTests(): void {
   describe('AxiosHostSafety', (): void => {
+    it('trackingSomethingThatIsNotAnInstanceIsANoOp',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        let threw: boolean = false;
+        try {
+          trackAxios(null as Object as AxiosInstance);
+          trackAxios({} as AxiosInstance);
+        } catch (_e) {
+          threw = true;
+        }
+        expect(threw).assertFalse();
+      });
+
+    it('aFailedRegistrationLeavesNoRequestInterceptorBehind',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        // A request interceptor without its response side opens resources
+        // that nothing closes.
+        let requestRegistered: boolean = false;
+        const interceptors: Record<string, Object> = {
+          'request': { use: (): number => {
+            requestRegistered = true;
+            return 0;
+          } } as Object,
+          'response': { use: (): number => {
+            throw new Error('response side unavailable');
+          } } as Object
+        };
+        trackAxios({ 'interceptors': interceptors } as Object as AxiosInstance);
+        expect(requestRegistered).assertFalse();
+      });
+
     it('theRequestConfigPassesThroughWhenTelemetryFails',
       TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
         const fake: FakeInstance = new FakeInstance();

@@ -7,6 +7,7 @@ import { RumApplicationScope } from '../scope/RumApplicationScope';
 import { RumRawEvent } from '../scope/RumScope';
 import { RemoteConfigStore, RemoteConfigValues } from '../remoteconfig/RemoteConfigStore';
 import { RemoteConfigController } from '../remoteconfig/RemoteConfigController';
+import { RumEventMapperHolder } from '../RumEventMapperHolder';
 
 const MS_TO_NS: number = 1e6;
 // Periodically re-emit the active view so its time_spent (and the session
@@ -99,6 +100,9 @@ export class DefaultRumMonitor implements RumMonitor {
   }
 
   setForcedSession(): void {
+    if (DefaultRumMonitor.calledFromMapper('setForcedSession')) {
+      return;
+    }
     try {
       this.applicationScope.forceSession(Date.now());
     } catch (error) {
@@ -121,16 +125,20 @@ export class DefaultRumMonitor implements RumMonitor {
   }
 
   startView(key: string, name: string, attributes?: Record<string, Object>): void {
-    const e: RumRawEvent = this.raw('startView', attributes);
-    e.key = key;
-    e.name = name;
-    this.dispatch(e);
+    this.dispatch('startView', () => {
+      const e: RumRawEvent = this.raw('startView', attributes);
+      e.key = key;
+      e.name = name;
+      return e;
+    });
   }
 
   stopView(key: string, attributes?: Record<string, Object>): void {
-    const e: RumRawEvent = this.raw('stopView', attributes);
-    e.key = key;
-    this.dispatch(e);
+    this.dispatch('stopView', () => {
+      const e: RumRawEvent = this.raw('stopView', attributes);
+      e.key = key;
+      return e;
+    });
   }
 
   /** Instantaneous action — emits an ActionEvent with loading_time 0. */
@@ -140,19 +148,37 @@ export class DefaultRumMonitor implements RumMonitor {
 
   /** Begin a timed action; stopAction emits the ActionEvent with the measured duration. */
   startAction(type: RumActionType, name: string, attributes?: Record<string, Object>): void {
-    if (this.activeActions.size >= MAX_ACTIVE_ACTIONS) {
-      // Evict the oldest abandoned entry (Map preserves insertion order).
-      const oldest: IterableIterator<string> = this.activeActions.keys();
-      const first: IteratorResult<string> = oldest.next();
-      if (!first.done) {
-        this.activeActions.delete(first.value);
-      }
+    if (DefaultRumMonitor.calledFromMapper('startAction')) {
+      return;
     }
-    this.activeActions.set(
-      DefaultRumMonitor.actionKey(type, name), new ActiveActionRecord(Date.now(), attributes));
+    try {
+      if (this.activeActions.size >= MAX_ACTIVE_ACTIONS) {
+        // Evict the oldest abandoned entry (Map preserves insertion order).
+        const oldest: IterableIterator<string> = this.activeActions.keys();
+        const first: IteratorResult<string> = oldest.next();
+        if (!first.done) {
+          this.activeActions.delete(first.value);
+        }
+      }
+      this.activeActions.set(
+        DefaultRumMonitor.actionKey(type, name), new ActiveActionRecord(Date.now(), attributes));
+    } catch (error) {
+      DefaultRumMonitor.logFailure('startAction', error);
+    }
   }
 
   stopAction(type: RumActionType, name: string, attributes?: Record<string, Object>): void {
+    if (DefaultRumMonitor.calledFromMapper('stopAction')) {
+      return;
+    }
+    try {
+      this.stopActionUnguarded(type, name, attributes);
+    } catch (error) {
+      DefaultRumMonitor.logFailure('stopAction', error);
+    }
+  }
+
+  private stopActionUnguarded(type: RumActionType, name: string, attributes?: Record<string, Object>): void {
     const k: string = DefaultRumMonitor.actionKey(type, name);
     const record: ActiveActionRecord | undefined = this.activeActions.get(k);
     let durationNs: number = 0;
@@ -191,15 +217,17 @@ export class DefaultRumMonitor implements RumMonitor {
 
   private emitAction(type: RumActionType, name: string, durationNs: number,
     attributes?: Record<string, Object>, dateMs?: number): void {
-    const e: RumRawEvent = this.raw('addAction', attributes);
-    if (dateMs !== undefined) {
-      e.timestampMs = dateMs;
-    }
-    e.name = name;
-    e.actionType = type as string;
-    e.actionId = util.generateRandomUUID(true);
-    e.actionDurationNs = durationNs;
-    this.dispatch(e);
+    this.dispatch('addAction', () => {
+      const e: RumRawEvent = this.raw('addAction', attributes);
+      if (dateMs !== undefined) {
+        e.timestampMs = dateMs;
+      }
+      e.name = name;
+      e.actionType = type as string;
+      e.actionId = util.generateRandomUUID(true);
+      e.actionDurationNs = durationNs;
+      return e;
+    });
   }
 
   private static actionKey(type: RumActionType, name: string): string {
@@ -208,7 +236,7 @@ export class DefaultRumMonitor implements RumMonitor {
 
   /** Re-emit the active view (keep its time_spent / the session duration current). */
   keepAlive(): void {
-    this.dispatch({ kind: 'keepAlive', attributes: {}, timestampMs: Date.now() });
+    this.dispatch('keepAlive', () => ({ kind: 'keepAlive', attributes: {}, timestampMs: Date.now() } as RumRawEvent));
   }
 
   /**
@@ -236,7 +264,7 @@ export class DefaultRumMonitor implements RumMonitor {
    * event itself is written by the replay.
    */
   markCrash(): void {
-    this.dispatch({ kind: 'markCrash', attributes: {}, timestampMs: Date.now() });
+    this.dispatch('markCrash', () => ({ kind: 'markCrash', attributes: {}, timestampMs: Date.now() } as RumRawEvent));
   }
 
   private startKeepAlive(): void {
@@ -254,33 +282,42 @@ export class DefaultRumMonitor implements RumMonitor {
   }
 
   startResource(key: string, method: RumResourceMethod, url: string, attributes?: Record<string, Object>): void {
-    const e: RumRawEvent = this.raw('startResource', attributes);
-    e.key = key;
-    e.method = method as string;
-    e.url = url;
-    this.dispatch(e);
+    this.dispatch('startResource', () => {
+      const e: RumRawEvent = this.raw('startResource', attributes);
+      e.key = key;
+      e.method = method as string;
+      e.url = url;
+      return e;
+    });
   }
 
   stopResource(key: string, statusCode: number, size: number, kind: RumResourceKind,
     attributes?: Record<string, Object>): void {
-    const e: RumRawEvent = this.raw('stopResource', attributes);
-    e.key = key;
-    e.statusCode = statusCode;
-    e.sizeBytes = size;
-    e.resourceKind = kind as string;
-    this.dispatch(e);
+    this.dispatch('stopResource', () => {
+      const e: RumRawEvent = this.raw('stopResource', attributes);
+      e.key = key;
+      e.statusCode = statusCode;
+      e.sizeBytes = size;
+      e.resourceKind = kind as string;
+      return e;
+    });
   }
 
   stopResourceWithError(key: string, message: string, statusCode?: number,
     attributes?: Record<string, Object>): void {
-    const e: RumRawEvent = this.raw('stopResourceWithError', attributes);
-    e.key = key;
-    e.errorMessage = message;
-    e.statusCode = statusCode;
-    this.dispatch(e);
+    this.dispatch('stopResourceWithError', () => {
+      const e: RumRawEvent = this.raw('stopResourceWithError', attributes);
+      e.key = key;
+      e.errorMessage = message;
+      e.statusCode = statusCode;
+      return e;
+    });
   }
 
   addError(message: string, source: RumErrorSource, stack?: string, attributes?: Record<string, Object>): void {
+    if (DefaultRumMonitor.calledFromMapper('addError')) {
+      return;
+    }
     try {
       this.reportError(message, source, stack, false, 'handled', attributes);
     } catch (error) {
@@ -312,6 +349,12 @@ export class DefaultRumMonitor implements RumMonitor {
   }
 
   addAttribute(key: string, value: Object): void {
+    // Every later event copies these keys into a record: one that cannot be a
+    // property name would fail each of them, not just this call.
+    if (typeof key !== 'string') {
+      FlashcatLog.usage('GlobalRumMonitor.addAttribute ignored: the key must be a string');
+      return;
+    }
     this.globalAttributes.set(key, value);
   }
 
@@ -355,6 +398,9 @@ export class DefaultRumMonitor implements RumMonitor {
   }
 
   stopSession(): void {
+    if (DefaultRumMonitor.calledFromMapper('stopSession')) {
+      return;
+    }
     try {
       this.applicationScope.stopCurrentSession(Date.now());
     } catch (error) {
@@ -363,16 +409,34 @@ export class DefaultRumMonitor implements RumMonitor {
   }
 
   /**
-   * Every event enters the scope tree here, on the host's call stack or a
-   * timer's: a failure inside the SDK drops the event and is logged, never
-   * thrown into the host (where an uncaught exception would crash the app).
+   * Every event is built and enters the scope tree here, on the host's call
+   * stack or a timer's: a failure inside the SDK — building from the host's
+   * attributes included — drops the event and is logged, never thrown into the
+   * host (where an uncaught exception would crash the app).
    */
-  private dispatch(e: RumRawEvent): void {
-    try {
-      this.applicationScope.handleEvent(e);
-    } catch (error) {
-      DefaultRumMonitor.logFailure(e.kind, error);
+  private dispatch(kind: string, build: () => RumRawEvent): void {
+    if (DefaultRumMonitor.calledFromMapper(kind)) {
+      return;
     }
+    try {
+      this.applicationScope.handleEvent(build());
+    } catch (error) {
+      DefaultRumMonitor.logFailure(kind, error);
+    }
+  }
+
+  /**
+   * The event mapper is running and the host called in from it. Acting on the
+   * call would change what the event being mapped describes — a view's error
+   * count, a session ending under it — and every event it caused would be
+   * mapped in turn. The call is ignored as a whole instead.
+   */
+  private static calledFromMapper(what: string): boolean {
+    if (!RumEventMapperHolder.isApplying()) {
+      return false;
+    }
+    FlashcatLog.usage(`GlobalRumMonitor.${what} ignored: called from inside the event mapper`);
+    return true;
   }
 
   private static logFailure(what: string, error: Object): void {
