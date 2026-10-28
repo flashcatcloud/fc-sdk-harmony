@@ -11,8 +11,9 @@ const PENDING_KEY: string = 'rum.active.pending';
 const MAX_AGE_MS: number = 72 * 60 * 60 * 1000;
 const RETRY_DELAYS_MS: number[] = [2000, 8000];
 const TIMEOUT_MS: number = 10000;
-// The intake stores at most this many characters of any string field.
-const MAX_FIELD_CHARS: number = 255;
+// The intake stores at most this many UTF-8 bytes of any string field; with
+// every field at the limit the body still fits the intake's 4096-byte cap.
+const MAX_FIELD_BYTES: number = 255;
 /** What a sender answers when no HTTP status came back at all. */
 export const NETWORK_ERROR: number = 0;
 
@@ -75,7 +76,7 @@ enum Outcome {
 
 /**
  * Tells the intake that the app is in use: at most one beacon per local day
- * per device and user.
+ * per device, user and app version (name and build).
  *
  * Sent on its own request rather than through the batch pipeline: a session of
  * a few seconds never reaches its first upload, and the device would not count
@@ -270,7 +271,8 @@ export class ActiveDeviceBeacon {
     return consent === TrackingConsent.GRANTED;
   }
 
-  /** Local day + anonymous id + user id; empty when there is no identity to report. */
+  /** Local day + anonymous id + user id + app version and build; empty when
+   * there is no identity to report. */
   private static keyFor(context: FlashcatContext, atMs: number): string {
     const anonymousId: string = context.anonymousId ?? '';
     const userId: string = context.user.id ?? '';
@@ -280,7 +282,10 @@ export class ActiveDeviceBeacon {
     const day: Date = new Date(atMs);
     const month: string = `${day.getMonth() + 1}`.padStart(2, '0');
     const date: string = `${day.getDate()}`.padStart(2, '0');
-    return `${day.getFullYear()}-${month}-${date}|${anonymousId}|${userId}`;
+    // The app version is part of it: an upgrade during the day is reported
+    // for the new version too.
+    const app: string = `${context.version}|${context.buildVersion ?? ''}`;
+    return `${day.getFullYear()}-${month}-${date}|${anonymousId}|${userId}|${app}`;
   }
 
   private static payloadFor(context: FlashcatContext): Record<string, Object> {
@@ -310,14 +315,25 @@ export class ActiveDeviceBeacon {
     return payload;
   }
 
-  /** At most MAX_FIELD_CHARS UTF-16 units, never splitting a surrogate pair. */
+  /** At most MAX_FIELD_BYTES of UTF-8, cut on a code point boundary (a
+   * surrogate pair is kept or dropped whole). */
   private static cut(value: string): string {
-    if (value.length <= MAX_FIELD_CHARS) {
+    // A UTF-16 unit never takes more than 3 UTF-8 bytes.
+    if (value.length * 3 <= MAX_FIELD_BYTES) {
       return value;
     }
-    const last: number = value.charCodeAt(MAX_FIELD_CHARS - 1);
-    const end: number = last >= 0xD800 && last <= 0xDBFF ? MAX_FIELD_CHARS - 1 : MAX_FIELD_CHARS;
-    return value.substring(0, end);
+    let bytes: number = 0;
+    let i: number = 0;
+    while (i < value.length) {
+      const code: number = value.codePointAt(i) as number;
+      const size: number = code < 0x80 ? 1 : code < 0x800 ? 2 : code < 0x10000 ? 3 : 4;
+      if (bytes + size > MAX_FIELD_BYTES) {
+        return value.substring(0, i);
+      }
+      bytes += size;
+      i += code > 0xFFFF ? 2 : 1;
+    }
+    return value;
   }
 
   private static serialize(beacon: Beacon): string {

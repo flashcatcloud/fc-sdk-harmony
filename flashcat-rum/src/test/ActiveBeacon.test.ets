@@ -1,4 +1,5 @@
 import { describe, expect, it, Level, Size, TestType } from '@ohos/hypium';
+import { util } from '@kit.ArkTS';
 import {
   FlashcatContext, FeatureScope, SdkCore, TrackingConsent,
   Feature, FeatureEventReceiver, UserInfo, IntakeTarget
@@ -27,6 +28,10 @@ class FakeCore implements SdkCore {
   foreground: boolean = true;
   user: UserInfo = {};
   service: string = 'svc';
+  version: string = '2.3.0';
+  buildVersion: string = '230';
+  /** When set, replaces every other string field of the context. */
+  fill: string = '';
   pendingReads: number = 0;
 
   registerFeature(_feature: Feature): void {}
@@ -37,17 +42,18 @@ class FakeCore implements SdkCore {
   removeEventReceiver(_featureName: string): void {}
   updateFeatureContext(_featureName: string, _update: Record<string, Object>): void {}
   getContext(): FlashcatContext {
+    const f = (value: string): string => this.fill.length > 0 ? this.fill : value;
     return {
-      env: 'prod',
+      env: f('prod'),
       variant: '',
       service: this.service,
-      version: '2.3.0',
-      buildVersion: '230',
+      version: f(this.version),
+      buildVersion: f(this.buildVersion),
       bundleId: 'com.example.demo',
       source: 'harmony',
-      sdkVersion: '0.7.5',
+      sdkVersion: f('0.7.5'),
       device: {
-        brand: 'HUAWEI', model: 'Pura 70', osName: 'HarmonyOS', osVersion: '5.0.1',
+        brand: f('HUAWEI'), model: f('Pura 70'), osName: f('HarmonyOS'), osVersion: f('5.0.1'),
         apiVersion: 18, deviceType: 'phone'
       },
       user: this.user,
@@ -122,6 +128,27 @@ function settle(): Promise<void> {
   return sleep(60);
 }
 
+function utf8Bytes(value: string): number {
+  return new util.TextEncoder().encodeInto(value).byteLength;
+}
+
+/** True when the string holds an unpaired surrogate (a split pair). */
+function hasLoneSurrogate(value: string): boolean {
+  for (let i: number = 0; i < value.length; i++) {
+    const unit: number = value.charCodeAt(i);
+    if (unit >= 0xD800 && unit <= 0xDBFF) {
+      const next: number = i + 1 < value.length ? value.charCodeAt(i + 1) : 0;
+      if (next < 0xDC00 || next > 0xDFFF) {
+        return true;
+      }
+      i++;
+    } else if (unit >= 0xDC00 && unit <= 0xDFFF) {
+      return true;
+    }
+  }
+  return false;
+}
+
 function usr(body: Record<string, Object>): Record<string, Object> {
   return body['usr'] as Record<string, Object>;
 }
@@ -176,6 +203,31 @@ export default function activeBeaconTests(): void {
       beacon.trigger();
       await settle();
       expect(sender.urls.length).assertEqual(2);
+    });
+
+    it('anUpgradeIsReportedTheSameDay', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, async (): Promise<void> => {
+      const core: FakeCore = new FakeCore();
+      const sender: FakeSender = new FakeSender();
+      const clock: Clock = new Clock();
+      beaconOf(core, sender, clock).trigger();
+      await settle();
+      clock.ms += HOUR_MS;
+      beaconOf(core, sender, clock).trigger(); // same version, same day
+      await settle();
+      expect(sender.urls.length).assertEqual(1);
+
+      core.version = '2.4.0'; // upgraded and relaunched the same day
+      core.buildVersion = '240';
+      beaconOf(core, sender, clock).trigger();
+      await settle();
+      expect(sender.urls.length).assertEqual(2);
+      expect(sender.bodies[1]['version']).assertEqual('2.4.0');
+      expect(sender.bodies[1]['build_version']).assertEqual('240');
+
+      core.buildVersion = '241'; // a rebuild of the same version name
+      beaconOf(core, sender, clock).trigger();
+      await settle();
+      expect(sender.urls.length).assertEqual(3);
     });
 
     it('aNewUserIsReportedTheSameDay', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, async (): Promise<void> => {
@@ -311,19 +363,41 @@ export default function activeBeaconTests(): void {
       expect(core.settings.size).assertEqual(0);
     });
 
-    it('cutsEveryStringFieldTo255Characters', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, async (): Promise<void> => {
+    it('cutsEveryStringFieldTo255Utf8Bytes', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, async (): Promise<void> => {
       const core: FakeCore = new FakeCore();
-      core.user = { id: 'u'.repeat(254) + '\uD83D\uDE00' + 'x'.repeat(40) };
       core.service = 's'.repeat(300);
+      // 253 ASCII bytes + a 4-byte emoji: the pair is dropped whole, never split.
+      core.user = { id: 'u'.repeat(253) + '\uD83D\uDE00' + 'x'.repeat(40) };
+      core.fill = '\u4E2D'.repeat(300); // CJK: 3 bytes each, 900 bytes
       const sender: FakeSender = new FakeSender();
       beaconOf(core, sender, new Clock()).trigger();
       await settle();
       const body: Record<string, Object> = sender.bodies[0];
-      expect((body['service'] as string).length).assertEqual(255);
-      // A surrogate pair straddling the limit is dropped whole, never split.
-      expect(usr(body)['id']).assertEqual('u'.repeat(254));
+      expect(body['service']).assertEqual('s'.repeat(255));
+      expect(usr(body)['id']).assertEqual('u'.repeat(253));
       expect(usr(body)['anonymous_id']).assertEqual(ANONYMOUS_ID);
-      expect(JSON.stringify(body).length < 4096).assertTrue();
+      expect(body['env']).assertEqual('\u4E2D'.repeat(85)); // 255 bytes
+      const fields: string[] = [body['env'] as string, body['version'] as string,
+        body['build_version'] as string, body['sdk_version'] as string,
+        (body['os'] as Record<string, Object>)['name'] as string,
+        (body['os'] as Record<string, Object>)['version'] as string,
+        (body['device'] as Record<string, Object>)['model'] as string,
+        (body['device'] as Record<string, Object>)['brand'] as string];
+      for (const field of fields) {
+        expect(utf8Bytes(field) <= 255).assertTrue();
+        expect(hasLoneSurrogate(field)).assertFalse();
+      }
+      // Every field at its limit still fits the intake's body cap.
+      expect(utf8Bytes(JSON.stringify(body)) < 4096).assertTrue();
+
+      // An emoji-only string is cut on a pair boundary: 63 pairs = 252 bytes.
+      core.fill = '\uD83D\uDE00'.repeat(100);
+      core.user = { id: 'other-user' };
+      beaconOf(core, sender, new Clock()).trigger();
+      await settle();
+      const emoji: string = sender.bodies[1]['env'] as string;
+      expect(emoji).assertEqual('\uD83D\uDE00'.repeat(63));
+      expect(hasLoneSurrogate(emoji)).assertFalse();
     });
 
     it('aBackgroundLaunchDoesNotSend', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, async (): Promise<void> => {
