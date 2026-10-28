@@ -36,33 +36,19 @@ const MAX_PENDING: number = 256;
  * `FlashcatRum.enable(...)` with `setTrackNetworkRequests(true)`.
  */
 export function trackAxios(instance: AxiosInstance): void {
+  try {
+    registerInterceptors(instance);
+  } catch (error) {
+    // Not an axios instance (null, or an untyped caller's stand-in): nothing is tracked.
+    FlashcatLog.usage(`trackAxios ignored: ${error instanceof Error ? error.message : 'not an axios instance'}`);
+  }
+}
+
+function registerInterceptors(instance: AxiosInstance): void {
   // These interceptors sit on the host's requests: telemetry may fail, but the
   // config, the response and the rejection always pass through unchanged.
-  instance.interceptors.request.use((config: InternalAxiosRequestConfig) => {
-    try {
-      // A request interceptor sees `config.url` as the relative path — axios
-      // joins it with `baseURL` further down, inside the adapter. Resolving it
-      // here is what lets the first-party host check match, and what puts a full
-      // url on the resource instead of a bare path.
-      const url: string = fullUrlOf(config);
-      // An inbound traceparent means this request already belongs to a trace.
-      const traced: TracedResource = FlashcatTrace.startTracedResource(
-        url, config.method ?? 'GET', !config.headers.has('traceparent'));
-
-      // Remember first: the resource is open from here on, and a header write
-      // that fails must not leave it with no way to be closed.
-      if (traced.key.length > 0) {
-        remember(config, traced.key);
-      }
-      for (const name of Object.keys(traced.headers)) {
-        config.headers.set(name, traced.headers[name]);
-      }
-    } catch (error) {
-      logFailure('request', error);
-    }
-    return config;
-  });
-
+  // The response side goes first: should registering the request side then
+  // fail, a response interceptor alone opens nothing and so leaks nothing.
   instance.interceptors.response.use(
     (response: AxiosResponse) => {
       try {
@@ -97,6 +83,31 @@ export function trackAxios(instance: AxiosInstance): void {
       return Promise.reject(error);
     }
   );
+
+  instance.interceptors.request.use((config: InternalAxiosRequestConfig) => {
+    try {
+      // A request interceptor sees `config.url` as the relative path — axios
+      // joins it with `baseURL` further down, inside the adapter. Resolving it
+      // here is what lets the first-party host check match, and what puts a full
+      // url on the resource instead of a bare path.
+      const url: string = fullUrlOf(config);
+      // An inbound traceparent means this request already belongs to a trace.
+      const traced: TracedResource = FlashcatTrace.startTracedResource(
+        url, config.method ?? 'GET', !config.headers.has('traceparent'));
+
+      // Remember first: the resource is open from here on, and a header write
+      // that fails must not leave it with no way to be closed.
+      if (traced.key.length > 0) {
+        remember(config, traced.key);
+      }
+      for (const name of Object.keys(traced.headers)) {
+        config.headers.set(name, traced.headers[name]);
+      }
+    } catch (error) {
+      logFailure('request', error);
+    }
+    return config;
+  });
 }
 
 function remember(config: Object, key: string): void {

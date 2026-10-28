@@ -2,7 +2,8 @@
 
 ## 0.7.5
 
-- No changes; released with the other packages.
+- `setUserInfo(null)` is treated as no user; it previously made every
+  event fail to assemble and be dropped.
 
 ## 0.7.4
 
