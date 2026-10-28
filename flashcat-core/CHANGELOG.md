@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.7.5
+
+- `setUserInfo(null)` is treated as no user; it previously made every
+  event fail to assemble and be dropped.
+
 ## 0.7.4
 
 - Revoking tracking consent (`NOT_GRANTED`) now also deletes pending crash

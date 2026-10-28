@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.7.5
+
+- An event mapper that calls into the SDK no longer hangs the app. Monitor
+  calls made from inside the mapper that report something or change the
+  session (startView, addAction, addError, stopSession, …) are ignored and
+  logged; any other event it causes is dropped. Previously the next call
+  could run the mapper without end.
+- Building an event from the host's attributes happens inside the
+  monitor's guard: an attribute whose getter throws drops the event instead
+  of throwing out of startView, addAction, startResource and the rest;
+  startAction/stopAction are guarded the same way.
+- `addAttribute` refuses a key that is not a string; such a key made every
+  later event fail.
+
 ## 0.7.4
 
 - Error-session capture (`setSessionOnError`): held view documents are

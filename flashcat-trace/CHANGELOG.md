@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.7.5
+
+- `stopTracedResource` / `failTracedResource` ignore a missing key instead
+  of throwing.
+
 ## 0.7.4
 
 - No changes; released with the other packages.
