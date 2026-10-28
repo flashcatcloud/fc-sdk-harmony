@@ -220,6 +220,8 @@ export class RumFeature implements Feature, FeatureEventReceiver {
       this.activeBeacon = new ActiveDeviceBeacon(this.core,
         new HttpActiveBeaconSender(`flashcat-sdk-harmony/${this.core.getContext().sdkVersion}`));
       this.activeBeacon.trigger();
+    } else {
+      ActiveDeviceBeacon.discardStored(this.core); // it carries the device and user ids
     }
   }
 
@@ -326,7 +328,7 @@ export class RumFeature implements Feature, FeatureEventReceiver {
         m.refreshRemoteConfig();
       }
       this.triggerActiveBeacon();
-    } else if (type === 'consent_granted' || type === 'user_changed') {
+    } else if (type === 'app_foreground_detected' || type === 'consent_granted' || type === 'user_changed') {
       this.triggerActiveBeacon();
     } else if (type === 'keep_alive') {
       // App backgrounded — refresh the active view so its final time_spent is sent

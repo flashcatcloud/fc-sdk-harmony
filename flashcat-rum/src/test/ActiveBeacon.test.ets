@@ -26,6 +26,7 @@ class FakeCore implements SdkCore {
   consent: TrackingConsent = TrackingConsent.GRANTED;
   foreground: boolean = true;
   user: UserInfo = {};
+  service: string = 'svc';
   pendingReads: number = 0;
 
   registerFeature(_feature: Feature): void {}
@@ -39,7 +40,7 @@ class FakeCore implements SdkCore {
     return {
       env: 'prod',
       variant: '',
-      service: 'svc',
+      service: this.service,
       version: '2.3.0',
       buildVersion: '230',
       bundleId: 'com.example.demo',
@@ -271,6 +272,60 @@ export default function activeBeaconTests(): void {
       expect(core.settings.size).assertEqual(0);
     });
 
+    it('revocationDuringAnInFlightSendWritesNothing', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, async (): Promise<void> => {
+      // The 202 arrives after the user refused: neither the sent marker nor a
+      // stored beacon (both name the device and the user) may be written.
+      const core: FakeCore = new FakeCore();
+      const sender: FakeSender = new FakeSender();
+      let release: () => void = (): void => {};
+      sender.gate = new Promise<void>((resolve: () => void) => {
+        release = resolve;
+      });
+      beaconOf(core, sender, new Clock()).trigger();
+      await sleep(5);
+      core.consent = TrackingConsent.NOT_GRANTED;
+      release();
+      await settle();
+      expect(sender.urls.length).assertEqual(1);
+      expect(core.settings.size).assertEqual(0);
+
+      // Same for a stored beacon whose late delivery succeeds after revocation:
+      // the marker for today must not appear.
+      const clock: Clock = new Clock();
+      const failing: FakeSender = new FakeSender();
+      failing.codes.push(503, 503, 503);
+      core.consent = TrackingConsent.GRANTED;
+      beaconOf(core, failing, clock).trigger();
+      await settle();
+      expect(core.settings.has(PENDING_KEY)).assertTrue();
+      let releaseLate: () => void = (): void => {};
+      failing.gate = new Promise<void>((resolve: () => void) => {
+        releaseLate = resolve;
+      });
+      beaconOf(core, failing, clock).trigger();
+      await sleep(5);
+      core.consent = TrackingConsent.NOT_GRANTED;
+      releaseLate();
+      await settle();
+      expect(failing.urls.length).assertEqual(4);
+      expect(core.settings.size).assertEqual(0);
+    });
+
+    it('cutsEveryStringFieldTo255Characters', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, async (): Promise<void> => {
+      const core: FakeCore = new FakeCore();
+      core.user = { id: 'u'.repeat(254) + '\uD83D\uDE00' + 'x'.repeat(40) };
+      core.service = 's'.repeat(300);
+      const sender: FakeSender = new FakeSender();
+      beaconOf(core, sender, new Clock()).trigger();
+      await settle();
+      const body: Record<string, Object> = sender.bodies[0];
+      expect((body['service'] as string).length).assertEqual(255);
+      // A surrogate pair straddling the limit is dropped whole, never split.
+      expect(usr(body)['id']).assertEqual('u'.repeat(254));
+      expect(usr(body)['anonymous_id']).assertEqual(ANONYMOUS_ID);
+      expect(JSON.stringify(body).length < 4096).assertTrue();
+    });
+
     it('aBackgroundLaunchDoesNotSend', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, async (): Promise<void> => {
       const core: FakeCore = new FakeCore();
       core.foreground = false;
@@ -376,8 +431,9 @@ export default function activeBeaconTests(): void {
       await sleep(5);
       expect(core.pendingReads).assertEqual(0);
 
+      // The core's startup probe found the app already in the foreground.
       core.foreground = true;
-      feature.onReceive({ 'type': 'app_foreground' });
+      feature.onReceive({ 'type': 'app_foreground_detected' });
       await sleep(5);
       expect(core.pendingReads).assertEqual(1);
       feature.onReceive({ 'type': 'user_changed' }); // in flight: queued behind it
@@ -390,17 +446,25 @@ export default function activeBeaconTests(): void {
       second.onInitialize(); // launch trigger, already in the foreground
       await sleep(5);
       expect(core.pendingReads).assertEqual(2);
+      second.onReceive({ 'type': 'app_foreground' }); // in flight: queued, no new read
+      expect(core.pendingReads).assertEqual(2);
       second.onReceive({ 'type': 'consent_revoked' });
       expect(core.settings.has(PENDING_KEY)).assertFalse();
       second.onStop();
     });
 
-    it('theToggleOffSendsNothing', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, async (): Promise<void> => {
+    it('theToggleOffSendsNothingAndDropsWhatIsStored', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, async (): Promise<void> => {
       const core: FakeCore = new FakeCore();
+      // Left by an earlier launch that had the beacon on.
+      core.settings.set(PENDING_KEY, '{"payload":{},"used_at":1,"key":"k"}');
+      core.settings.set(SENT_KEY, 'k');
       const feature: RumFeature = new RumFeature(core,
         new RumConfigurationBuilder('app-1').setTrackActiveDevices(false).build());
       feature.onInitialize();
+      expect(core.settings.size).assertEqual(0);
+      core.pendingReads = 0;
       feature.onReceive({ 'type': 'app_foreground' });
+      feature.onReceive({ 'type': 'app_foreground_detected' });
       feature.onReceive({ 'type': 'user_changed' });
       feature.onReceive({ 'type': 'consent_granted' });
       await sleep(5);

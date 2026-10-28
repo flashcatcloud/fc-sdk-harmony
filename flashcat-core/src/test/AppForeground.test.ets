@@ -65,7 +65,10 @@ export default function appForegroundTests(): void {
       expect(core.isAppInForeground()).assertFalse();
       await settle();
       expect(core.isAppInForeground()).assertTrue();
-      expect(received.indexOf('app_foreground') !== -1).assertTrue();
+      expect(received.indexOf('app_foreground_detected') !== -1).assertTrue();
+      // Not a return from the background: RUM must not refresh its remote
+      // configuration for it, so the app_foreground message is not sent.
+      expect(received.indexOf('app_foreground')).assertEqual(-1);
       core.stop();
     });
 
@@ -75,7 +78,7 @@ export default function appForegroundTests(): void {
       const core: FlashcatCore = build(app, received);
       await settle();
       expect(core.isAppInForeground()).assertFalse();
-      expect(received.indexOf('app_foreground')).assertEqual(-1);
+      expect(received.indexOf('app_foreground_detected')).assertEqual(-1);
 
       (app.callback as ApplicationStateChangeCallback).onApplicationForeground();
       expect(core.isAppInForeground()).assertTrue();

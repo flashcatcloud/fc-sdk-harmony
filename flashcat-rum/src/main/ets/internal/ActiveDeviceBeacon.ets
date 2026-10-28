@@ -11,6 +11,8 @@ const PENDING_KEY: string = 'rum.active.pending';
 const MAX_AGE_MS: number = 72 * 60 * 60 * 1000;
 const RETRY_DELAYS_MS: number[] = [2000, 8000];
 const TIMEOUT_MS: number = 10000;
+// The intake stores at most this many characters of any string field.
+const MAX_FIELD_CHARS: number = 255;
 /** What a sender answers when no HTTP status came back at all. */
 export const NETWORK_ERROR: number = 0;
 
@@ -130,11 +132,17 @@ export class ActiveDeviceBeacon {
 
   /** Consent revoked: what is stored names the device and the user. */
   forget(): void {
-    if (this.core.readSetting(PENDING_KEY) !== null) {
-      this.core.writeSetting(PENDING_KEY, null);
+    ActiveDeviceBeacon.discardStored(this.core);
+  }
+
+  /** Deletes the stored beacon and sent marker, e.g. left by a launch that had
+   * the beacon on when this one has it off. */
+  static discardStored(core: SdkCore): void {
+    if (core.readSetting(PENDING_KEY) !== null) {
+      core.writeSetting(PENDING_KEY, null);
     }
-    if (this.core.readSetting(SENT_KEY) !== null) {
-      this.core.writeSetting(SENT_KEY, null);
+    if (core.readSetting(SENT_KEY) !== null) {
+      core.writeSetting(SENT_KEY, null);
     }
   }
 
@@ -167,9 +175,14 @@ export class ActiveDeviceBeacon {
       }
       const beacon: Beacon = { payload: ActiveDeviceBeacon.payloadFor(context), usedAtMs: usedAtMs, key: key };
       const outcome: Outcome = await this.deliver(beacon, false);
+      // Consent can be revoked while the request is on the wire: nothing that
+      // names the device or the user is written after that.
+      if (!this.consentGranted()) {
+        return;
+      }
       if (outcome === Outcome.SENT) {
         this.core.writeSetting(SENT_KEY, key);
-      } else if (outcome === Outcome.FAILED && this.consentGranted()) {
+      } else if (outcome === Outcome.FAILED) {
         this.core.writeSetting(PENDING_KEY, ActiveDeviceBeacon.serialize(beacon));
       }
     } while (this.again && !this.stopped && this.consentGranted());
@@ -187,6 +200,9 @@ export class ActiveDeviceBeacon {
       return false;
     }
     this.core.writeSetting(PENDING_KEY, null); // sent, refused or too old
+    if (!this.consentGranted()) {
+      return false; // revoked while the request was on the wire
+    }
     if (outcome === Outcome.SENT && stored !== null
       && stored.key === ActiveDeviceBeacon.keyFor(this.core.getContext(), this.now())) {
       this.core.writeSetting(SENT_KEY, stored.key);
@@ -269,28 +285,38 @@ export class ActiveDeviceBeacon {
   static payloadFor(context: FlashcatContext): Record<string, Object> {
     const usr: Record<string, Object> = {};
     if (context.anonymousId !== undefined && context.anonymousId.length > 0) {
-      usr['anonymous_id'] = context.anonymousId;
+      usr['anonymous_id'] = ActiveDeviceBeacon.cut(context.anonymousId);
     }
     if (context.user.id !== undefined && context.user.id.length > 0) {
-      usr['id'] = context.user.id;
+      usr['id'] = ActiveDeviceBeacon.cut(context.user.id);
     }
     const os: Record<string, Object> = {};
-    os['name'] = context.device.osName;
-    os['version'] = context.device.osVersion;
+    os['name'] = ActiveDeviceBeacon.cut(context.device.osName);
+    os['version'] = ActiveDeviceBeacon.cut(context.device.osVersion);
     const device: Record<string, Object> = {};
     device['type'] = RumEventAssembler.deviceTypeFor(context.device.deviceType);
-    device['model'] = context.device.model;
-    device['brand'] = context.device.brand;
+    device['model'] = ActiveDeviceBeacon.cut(context.device.model);
+    device['brand'] = ActiveDeviceBeacon.cut(context.device.brand);
     const payload: Record<string, Object> = {};
-    payload['service'] = context.service;
-    payload['env'] = context.env;
-    payload['version'] = context.version;
-    payload['build_version'] = context.buildVersion ?? '';
-    payload['sdk_version'] = context.sdkVersion;
+    payload['service'] = ActiveDeviceBeacon.cut(context.service);
+    payload['env'] = ActiveDeviceBeacon.cut(context.env);
+    payload['version'] = ActiveDeviceBeacon.cut(context.version);
+    payload['build_version'] = ActiveDeviceBeacon.cut(context.buildVersion ?? '');
+    payload['sdk_version'] = ActiveDeviceBeacon.cut(context.sdkVersion);
     payload['usr'] = usr;
     payload['os'] = os;
     payload['device'] = device;
     return payload;
+  }
+
+  /** At most MAX_FIELD_CHARS UTF-16 units, never splitting a surrogate pair. */
+  private static cut(value: string): string {
+    if (value.length <= MAX_FIELD_CHARS) {
+      return value;
+    }
+    const last: number = value.charCodeAt(MAX_FIELD_CHARS - 1);
+    const end: number = last >= 0xD800 && last <= 0xDBFF ? MAX_FIELD_CHARS - 1 : MAX_FIELD_CHARS;
+    return value.substring(0, end);
   }
 
   private static serialize(beacon: Beacon): string {

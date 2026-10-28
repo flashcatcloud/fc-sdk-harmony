@@ -162,7 +162,9 @@ export class FlashcatCore implements SdkCore {
               || info.state === appManager.ProcessState.STATE_ACTIVE)) {
               this.appStateObserved = true;
               this.appForeground = true;
-              this.bus.send(RUM_FEATURE_NAME, { 'type': 'app_foreground' } as Record<string, Object>);
+              // Not app_foreground: this is no return from the background, and
+              // nothing that reacts to one (a configuration refresh) should run.
+              this.bus.send(RUM_FEATURE_NAME, { 'type': 'app_foreground_detected' } as Record<string, Object>);
               return;
             }
           }
