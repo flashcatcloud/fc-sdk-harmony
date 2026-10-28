@@ -194,8 +194,8 @@ export class RumConfigurationBuilder {
   }
 
   /**
-   * Report, at most once a day per device and user, that the app is in use.
-   * Default true.
+   * Report that the app is in use: at most one beacon per local day per device
+   * and user. Default true.
    *
    * A small request of its own, sent straight away rather than with the event
    * batches, so that a session too short to upload its events still counts the

@@ -74,13 +74,14 @@ enum Outcome {
 }
 
 /**
- * Tells the intake, once a day per device and user, that the app is in use.
+ * Tells the intake that the app is in use: at most one beacon per local day
+ * per device and user.
  *
  * Sent on its own request rather than through the batch pipeline: a session of
  * a few seconds never reaches its first upload, and the device would not count
  * as active that day. "Already sent today" is judged on the device's local
- * date and only saves requests — the intake keeps one row per day either way,
- * and dates it by its own clock.
+ * date and only saves requests — repeats are idempotent on the intake, which
+ * records the hour the beacon arrived in (less age_ms) by its own clock.
  *
  * Gated on GRANTED consent and on the app being in the foreground; session
  * sampling does not apply. A beacon still undelivered after the retries is
