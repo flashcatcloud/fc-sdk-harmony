@@ -160,7 +160,6 @@ export class FlashcatCore implements SdkCore {
           for (const info of infos) {
             if (info.pid === process.pid && (info.state === appManager.ProcessState.STATE_FOREGROUND
               || info.state === appManager.ProcessState.STATE_ACTIVE)) {
-              this.appStateObserved = true;
               this.appForeground = true;
               // Not app_foreground: this is no return from the background, and
               // nothing that reacts to one (a configuration refresh) should run.

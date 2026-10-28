@@ -271,7 +271,7 @@ export class ActiveDeviceBeacon {
   }
 
   /** Local day + anonymous id + user id; empty when there is no identity to report. */
-  static keyFor(context: FlashcatContext, atMs: number): string {
+  private static keyFor(context: FlashcatContext, atMs: number): string {
     const anonymousId: string = context.anonymousId ?? '';
     const userId: string = context.user.id ?? '';
     if (anonymousId.length === 0 && userId.length === 0) {
@@ -283,7 +283,7 @@ export class ActiveDeviceBeacon {
     return `${day.getFullYear()}-${month}-${date}|${anonymousId}|${userId}`;
   }
 
-  static payloadFor(context: FlashcatContext): Record<string, Object> {
+  private static payloadFor(context: FlashcatContext): Record<string, Object> {
     const usr: Record<string, Object> = {};
     if (context.anonymousId !== undefined && context.anonymousId.length > 0) {
       usr['anonymous_id'] = ActiveDeviceBeacon.cut(context.anonymousId);
