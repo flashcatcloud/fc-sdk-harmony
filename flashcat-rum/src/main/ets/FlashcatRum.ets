@@ -82,12 +82,16 @@ export class FlashcatRum {
           new HttpRemoteConfigFetcher(`flashcat-sdk-harmony/${context.sdkVersion}`),
           buildConfigUrl(intake.host, intake.clientToken, context),
           (activation: string, before: number | null, after: number | null): void => {
-            if (monitorRef !== null) {
-              monitorRef.onRemoteConfigurationChanged(activation, before, after);
-            }
-            // A published frequency applies at once, not at the next session.
-            if (samplerRef !== null) {
-              samplerRef.refreshPeriod();
+            try {
+              if (monitorRef !== null) {
+                monitorRef.onRemoteConfigurationChanged(activation, before, after);
+              }
+            } finally {
+              // A published frequency applies at once, not at the next session,
+              // and not only when the session side took the change cleanly.
+              if (samplerRef !== null) {
+                samplerRef.refreshPeriod();
+              }
             }
           }
         );

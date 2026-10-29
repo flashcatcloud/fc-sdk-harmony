@@ -175,6 +175,17 @@ class FakeReaders {
   }
 }
 
+/** A view whose sample handling fails. */
+class ThrowingVitals extends ViewVitals {
+  onMemorySample(_bytes: number): void {
+    throw new Error('view failed');
+  }
+
+  onCpuSample(_ticks: number): void {
+    throw new Error('view failed');
+  }
+}
+
 function settle(): Promise<void> {
   return new Promise<void>((resolve: () => void) => setTimeout(resolve, 0));
 }
@@ -356,6 +367,50 @@ export default function viewVitalsTests(): void {
       expect(readers.cpuReads).assertEqual(1);
     });
 
+    it('theTimerRunsOnlyWhileAViewIsOpen', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+      // An app with no open view (an unsampled session opens none) is never woken.
+      const readers: FakeReaders = new FakeReaders();
+      const timer: FakeTimer = new FakeTimer();
+      const s: ResourceSampler = sampler(readers, timer);
+      s.setForeground(true);
+      expect(timer.active.size).assertEqual(0);
+      const first: ViewVitals = new ViewVitals();
+      const second: ViewVitals = new ViewVitals();
+      s.register(first);
+      expect(timer.active.size).assertEqual(1);
+      s.register(second);
+      expect(timer.active.size).assertEqual(1);
+      s.unregister(first);
+      expect(timer.active.size).assertEqual(1);
+      s.unregister(second);
+      expect(timer.active.size).assertEqual(0);
+      expect(s.isRunning()).assertFalse();
+      s.register(first);
+      expect(timer.active.size).assertEqual(1);
+    });
+
+    it('aViewFailingToTakeASampleDisablesNoReader', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, async (): Promise<void> => {
+      const readers: FakeReaders = new FakeReaders();
+      const timer: FakeTimer = new FakeTimer();
+      readers.memory = 70;
+      const s: ResourceSampler = sampler(readers, timer);
+      s.setForeground(true);
+      s.register(new ThrowingVitals()); // first, so it is handed every sample before the healthy one
+      const healthy: ViewVitals = new ViewVitals();
+      s.register(healthy);
+      await settle();
+      timer.fire();
+      await settle();
+      expect(readers.memoryReads).assertEqual(2);
+      timer.fire();
+      await settle();
+      expect(readers.memoryReads).assertEqual(3); // still asked: the reader was never at fault
+      expect(readers.cpuReads).assertEqual(3); // on start, then each period
+      const fields: Record<string, Object> = healthy.toFields(SECOND_NS);
+      expect(fields['memory_max']).assertEqual(70);
+      expect(fields['cpu_ticks_count']).assertEqual(0);
+    });
+
     it('anUnreadableCpuIsDroppedAndMemoryCarriesOn', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, async (): Promise<void> => {
       const readers: FakeReaders = new FakeReaders();
       readers.cpuThrows = true;
@@ -429,6 +484,7 @@ export default function viewVitalsTests(): void {
       const timer: FakeTimer = new FakeTimer();
       let period: number = 500;
       const s: ResourceSampler = new ResourceSampler(readers.readers(), (): number => period, timer);
+      s.register(new ViewVitals());
       s.setForeground(true);
       period = 1000;
       s.refreshPeriod();
@@ -576,6 +632,7 @@ export default function viewVitalsTests(): void {
       const monitor: DefaultRumMonitor = new DefaultRumMonitor(core, scope, configuration);
       monitor.stopKeepAlive();
       const s: ResourceSampler = sampler(new FakeReaders(), new FakeTimer());
+      s.register(new ViewVitals());
       feature.attachMonitor(monitor, s);
       expect(s.isRunning()).assertFalse(); // the core has not seen the foreground
       feature.onReceive({ 'type': 'app_foreground_detected' });
@@ -599,6 +656,7 @@ export default function viewVitalsTests(): void {
       const monitor: DefaultRumMonitor = new DefaultRumMonitor(core, new CapturingScope(), configuration);
       monitor.stopKeepAlive();
       const s: ResourceSampler = sampler(new FakeReaders(), new FakeTimer());
+      s.register(new ViewVitals());
       feature.attachMonitor(monitor, s);
       expect(s.isRunning()).assertTrue();
       feature.onStop();

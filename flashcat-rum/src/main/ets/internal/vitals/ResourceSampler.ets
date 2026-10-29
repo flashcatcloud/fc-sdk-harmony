@@ -36,9 +36,10 @@ class SystemSamplerTimer implements SamplerTimer {
  * open views. Nothing runs in the background, or while no view is there to
  * receive it (an unsampled session opens none).
  *
- * A view registering takes a reading at once, so its CPU baseline is its own
- * start rather than up to one period earlier, and a view shorter than one
- * period still gets a memory sample.
+ * The timer starts with the first open view and stops with the last, taking
+ * a reading as it starts: a view that replaces another (the old one closes
+ * first) gets its CPU baseline at its own start rather than up to one period
+ * earlier, and a view shorter than one period still gets a memory sample.
  *
  * A memory read may be asynchronous. One is never started while the previous
  * is still out (no backlog on a slow device), and one that lands after the
@@ -86,13 +87,14 @@ export class ResourceSampler {
 
   register(view: ViewVitals): void {
     this.views.add(view);
-    if (this.isRunning()) {
-      this.sampleNow();
-    }
+    this.reconcile(); // the first open view starts the timer, and samples
   }
 
   unregister(view: ViewVitals): void {
     this.views.delete(view);
+    if (this.views.size === 0) {
+      this.reconcile(); // no view left to receive a sample: the timer stops
+    }
   }
 
   isRunning(): boolean {
@@ -101,7 +103,8 @@ export class ResourceSampler {
 
   private reconcile(): void {
     let period: number = 0;
-    if (this.foreground && !this.stopped && (this.memoryReader !== null || this.cpuReader !== null)) {
+    if (this.foreground && !this.stopped && this.views.size > 0
+      && (this.memoryReader !== null || this.cpuReader !== null)) {
       try {
         period = this.periodOf();
       } catch (_e) {
@@ -117,16 +120,14 @@ export class ResourceSampler {
       return;
     }
     try {
-      this.timerId = this.timer.every(period, (): void => this.tick());
+      this.timerId = this.timer.every(period, (): void => this.sampleNow());
       this.runningPeriodMs = period;
     } catch (e) {
       this.timerId = -1;
       FlashcatLog.e(`rum.vitals: sampler not started: ${e instanceof Error ? e.message : 'error'}`);
       return;
     }
-    if (this.views.size > 0) {
-      this.sampleNow();
-    }
+    this.sampleNow();
   }
 
   private halt(): void {
@@ -141,12 +142,6 @@ export class ResourceSampler {
     this.runningPeriodMs = 0;
     this.generation += 1;
     this.memoryInFlight = false;
-  }
-
-  private tick(): void {
-    if (this.views.size > 0) {
-      this.sampleNow();
-    }
   }
 
   private sampleNow(): void {
@@ -171,7 +166,7 @@ export class ResourceSampler {
       return;
     }
     const value: number = ticks as number;
-    this.views.forEach((v: ViewVitals) => v.onCpuSample(value));
+    this.deliver((v: ViewVitals): void => v.onCpuSample(value));
   }
 
   private readMemory(): void {
@@ -189,6 +184,7 @@ export class ResourceSampler {
       this.disableMemory();
       return;
     }
+    // Two-argument then: only the read's own rejection means "unreadable".
     pending.then((bytes: number | null) => {
       if (generation !== this.generation) {
         return; // stopped or restarted since: not a sample of the current run
@@ -199,13 +195,25 @@ export class ResourceSampler {
         return;
       }
       const value: number = bytes as number;
-      this.views.forEach((v: ViewVitals) => v.onMemorySample(value));
-    }).catch((_e: Object) => {
+      this.deliver((v: ViewVitals): void => v.onMemorySample(value));
+    }, (_e: Object) => {
       if (generation !== this.generation) {
         return;
       }
       this.memoryInFlight = false;
       this.disableMemory();
+    });
+  }
+
+  /** A view failing to take a sample costs that view the sample, nothing more:
+   * not the other views, and not the reader. */
+  private deliver(sample: (v: ViewVitals) => void): void {
+    this.views.forEach((v: ViewVitals) => {
+      try {
+        sample(v);
+      } catch (e) {
+        FlashcatLog.e(`rum.vitals: a view did not take a sample: ${e instanceof Error ? e.message : 'error'}`);
+      }
     });
   }
 
