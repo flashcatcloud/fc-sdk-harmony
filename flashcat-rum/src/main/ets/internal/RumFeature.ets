@@ -66,7 +66,7 @@ export class RumFeature implements Feature, FeatureEventReceiver {
   private activeBeacon: ActiveDeviceBeacon | null = null;
   // Memory/CPU sampling and frame observation for the open view; foreground only.
   private collector: VitalsCollector | null = null;
-  // Times app launches; fed the app's lifecycle from here.
+  // Times app launches and router page loads; fed the app's lifecycle from here.
   private launch: AppLaunchTracker | null = null;
 
   constructor(core: SdkCore, configuration: RumConfiguration) {

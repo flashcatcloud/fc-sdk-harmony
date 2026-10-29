@@ -147,7 +147,7 @@ export class RumApplicationScope implements RumScope {
   private static startsUserActivity(event: RumRawEvent): boolean {
     return event.kind !== 'keepAlive' && event.kind !== 'markCrash'
       && event.kind !== 'stopView' && event.kind !== 'stopResource'
-      && event.kind !== 'stopResourceWithError';
+      && event.kind !== 'stopResourceWithError' && event.kind !== 'addViewLoadingTime';
   }
 
   private rememberExpiredView(session: RumSessionScope): void {

@@ -10,6 +10,16 @@ export interface RumMonitor {
   stopView(key: string, attributes?: Record<string, Object>): void;
 
   /**
+   * Mark the open view as loaded now: its `view.loading_time` becomes the time
+   * since the view started. Without `overwrite`, a value an earlier call set is
+   * kept. For `router` pages tracked by `startViewTracking`, the SDK measures
+   * the first frame after the page is shown; a value set here replaces that
+   * measurement. Ignored when no view is open. Same as Android's
+   * `addViewLoadingTime(overwrite)`.
+   */
+  addViewLoadingTime(overwrite: boolean): void;
+
+  /**
    * Call when the app has finished loading what its first screen shows (data
    * included). Reports the time to full display of the current launch: from
    * the launch's start to now. Counted once per session, and only after the
@@ -90,6 +100,7 @@ export interface RumMonitor {
 class NoOpRumMonitor implements RumMonitor {
   startView(key: string, name: string, attributes?: Record<string, Object>): void {}
   stopView(key: string, attributes?: Record<string, Object>): void {}
+  addViewLoadingTime(overwrite: boolean): void {}
   reportAppFullyDisplayed(): void {}
   addAction(type: RumActionType, name: string, attributes?: Record<string, Object>): void {}
   startAction(type: RumActionType, name: string, attributes?: Record<string, Object>): void {}

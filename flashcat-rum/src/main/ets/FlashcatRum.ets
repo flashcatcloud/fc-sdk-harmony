@@ -131,6 +131,11 @@ export class FlashcatRum {
         if (monitorRef !== null) {
           monitorRef.reportAppLaunch(APP_LAUNCH_TTFD, type, startMs, durationNs, atMs);
         }
+      },
+      viewLoaded: (viewKey: string, atMs: number): void => {
+        if (monitorRef !== null) {
+          monitorRef.addAutoViewLoadingTime(viewKey, atMs);
+        }
       }
     };
     const launch: AppLaunchTracker =
@@ -179,8 +184,9 @@ export class FlashcatRum {
   /**
    * Start automatic View tracking for `router` navigation, scoped to `context`
    * (a UIAbilityContext or a UIContext from UI land). Each page show/hide then
-   * emits start/stopView automatically. Router tracking is a no-op unless RUM
-   * is enabled with `setTrackNavigation(true)`. Idempotent.
+   * emits start/stopView automatically, and each shown page's first frame sets
+   * its `view.loading_time`. Router tracking is a no-op unless RUM is enabled
+   * with `setTrackNavigation(true)`. Idempotent.
    *
    * Call it in every app, router-based or not: app launch timing (time to
    * initial display, cold / warm / hot) ends at the first frame drawn, and

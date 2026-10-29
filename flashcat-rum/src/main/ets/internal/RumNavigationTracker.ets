@@ -116,8 +116,14 @@ export class RumNavigationTracker {
       const name: string = RumNavigationTracker.viewName(info);
       const attributes: Record<string, Object> = { 'view.url': info.path };
       GlobalRumMonitor.get().startView(key, name, attributes);
+      if (RumNavigationTracker.launch !== null) {
+        RumNavigationTracker.launch.expectViewLoad(key);
+      }
       FlashcatLog.d(`rum.nav: auto startView key="${key}" name="${name}" path="${info.path}"`);
     } else if (state === uiObserver.RouterPageState.ON_PAGE_HIDE) {
+      if (RumNavigationTracker.launch !== null) {
+        RumNavigationTracker.launch.cancelViewLoad(key);
+      }
       GlobalRumMonitor.get().stopView(key);
       FlashcatLog.d(`rum.nav: auto stopView key="${key}"`);
     }

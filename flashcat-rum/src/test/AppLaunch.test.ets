@@ -116,6 +116,7 @@ class Bench {
   hookable: boolean = true;
   unhooked: number = 0;
   readonly measured: Measured[] = [];
+  readonly loaded: string[] = [];
   private readonly frames: Map<Object, (firstDrawFrame: boolean | null) => void> =
     new Map<Object, (firstDrawFrame: boolean | null) => void>();
   readonly tracker: AppLaunchTracker;
@@ -127,6 +128,9 @@ class Bench {
       },
       fullDisplay: (type: StartupType, startMs: number, durationNs: number, _atMs: number): void => {
         this.measured.push(new Measured('ttfd', type, startMs, durationNs));
+      },
+      viewLoaded: (viewKey: string, atMs: number): void => {
+        this.loaded.push(`${viewKey}@${atMs}`);
       }
     };
     const hooks: FrameHookFactory =
@@ -482,7 +486,8 @@ export default function appLaunchTests(): void {
           reached = true;
           throw new Error('sink failed');
         },
-        fullDisplay: (_t: StartupType, _s: number, _d: number, _a: number): void => {}
+        fullDisplay: (_t: StartupType, _s: number, _d: number, _a: number): void => {},
+        viewLoaded: (_k: string, _a: number): void => {}
       };
       const tracker: AppLaunchTracker = new AppLaunchTracker(sink,
         (_c: Object, cb: (firstDrawFrame: boolean | null) => void): (() => void) | null => {

@@ -147,6 +147,25 @@ export class DefaultRumMonitor implements RumMonitor {
     }
   }
 
+  addViewLoadingTime(overwrite: boolean): void {
+    this.dispatch('addViewLoadingTime', () => {
+      const e: RumRawEvent = this.raw('addViewLoadingTime');
+      e.overwrite = overwrite === true;
+      return e;
+    });
+  }
+
+  /** Internal: the router page `key` drew its first frame at `atMs`. */
+  addAutoViewLoadingTime(key: string, atMs: number): void {
+    this.dispatch('addViewLoadingTime', () => {
+      const e: RumRawEvent = this.raw('addViewLoadingTime');
+      e.key = key;
+      e.loadingTimeAuto = true;
+      e.timestampMs = atMs;
+      return e;
+    });
+  }
+
   reportAppFullyDisplayed(): void {
     if (DefaultRumMonitor.calledFromMapper('reportAppFullyDisplayed')) {
       return;

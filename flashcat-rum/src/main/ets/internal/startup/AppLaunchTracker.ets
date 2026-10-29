@@ -16,12 +16,14 @@ export const MAX_LAUNCH_DURATION_MS: number = 90_000;
 const MS_TO_NS: number = 1e6;
 const NOT_OBSERVED: string = 'rum.launch: first frame not observed';
 
-/** Where measured launches go. */
+/** Where measured launches and page loads go. */
 export interface AppLaunchSink {
   /** Time to initial display: from the launch's start to the first frame drawn after it. */
   initialDisplay: (type: StartupType, startMs: number, durationNs: number, atMs: number) => void;
   /** Time to full display: from the launch's start to `reportAppFullyDisplayed`. */
   fullDisplay: (type: StartupType, startMs: number, durationNs: number, atMs: number) => void;
+  /** The first frame drawn after the router showed the page `viewKey`. */
+  viewLoaded: (viewKey: string, atMs: number) => void;
 }
 
 /**
@@ -61,6 +63,16 @@ class Hook {
 
   constructor(seq: number) {
     this.seq = seq;
+  }
+}
+
+class PendingViewLoad {
+  readonly key: string;
+  readonly sinceMs: number;
+
+  constructor(key: string, sinceMs: number) {
+    this.key = key;
+    this.sinceMs = sinceMs;
   }
 }
 
@@ -106,6 +118,7 @@ export class AppLaunchTracker {
   // An ability launch began since the app last went to the background: the
   // return to the foreground that goes with it is that launch, not a hot one.
   private launchedSinceBackground: boolean = false;
+  private pendingViewLoad: PendingViewLoad | null = null;
   private stopped: boolean = false;
 
   constructor(sink: AppLaunchSink, hookFrames: FrameHookFactory, processAgeMs: () => number | null,
@@ -180,6 +193,7 @@ export class AppLaunchTracker {
     this.backgrounded = true;
     this.foreground = false;
     this.launchedSinceBackground = false;
+    this.pendingViewLoad = null;
     if (this.launch !== null && !this.launch.displayed) {
       this.launch = null;
       FlashcatLog.d(`${NOT_OBSERVED}: the app went to the background first`);
@@ -223,6 +237,18 @@ export class AppLaunchTracker {
     }
   }
 
+  /** The router showed the page `key`: its first frame is its loading time. */
+  expectViewLoad(key: string): void {
+    this.pendingViewLoad = new PendingViewLoad(key, this.nowMs());
+  }
+
+  /** The page `key` was hidden before it drew. */
+  cancelViewLoad(key: string): void {
+    if (this.pendingViewLoad !== null && this.pendingViewLoad.key === key) {
+      this.pendingViewLoad = null;
+    }
+  }
+
   /** `RumMonitor.reportAppFullyDisplayed`. */
   onFullyDisplayed(): void {
     const launch: Launch | null = this.abilityLaunch;
@@ -252,6 +278,7 @@ export class AppLaunchTracker {
     this.stopped = true;
     this.launch = null;
     this.abilityLaunch = null;
+    this.pendingViewLoad = null;
     this.hooks.forEach((hook: Hook) => AppLaunchTracker.unhook(hook));
     this.hooks.clear();
   }
@@ -270,6 +297,7 @@ export class AppLaunchTracker {
       return;
     }
     const nowMs: number = this.nowMs();
+    this.resolveViewLoad(nowMs);
     const launch: Launch | null = this.launch;
     if (launch === null || launch.displayed) {
       return;
@@ -298,6 +326,17 @@ export class AppLaunchTracker {
     }
     launch.displayed = true;
     this.sink.initialDisplay(launch.type, launch.startMs, (nowMs - launch.startMs) * MS_TO_NS, nowMs);
+  }
+
+  private resolveViewLoad(nowMs: number): void {
+    const pending: PendingViewLoad | null = this.pendingViewLoad;
+    if (pending === null) {
+      return;
+    }
+    this.pendingViewLoad = null;
+    if (nowMs - pending.sinceMs <= MAX_LAUNCH_DURATION_MS) {
+      this.sink.viewLoaded(pending.key, nowMs);
+    }
   }
 
   private begin(type: StartupType, startMs: number): void {

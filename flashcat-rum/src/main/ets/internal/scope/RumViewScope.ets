@@ -1,4 +1,4 @@
-import { FeatureScope, FlashcatContext, EventWriter, SdkCore } from '@flashcatcloud/core';
+import { FeatureScope, FlashcatContext, EventWriter, SdkCore, FlashcatLog } from '@flashcatcloud/core';
 import { RumScope, RumRawEvent } from './RumScope';
 import { RumResourceScope } from './RumResourceScope';
 import { RumEventAssembler } from '../assembly/RumEventAssembler';
@@ -50,6 +50,10 @@ export class RumViewScope implements RumScope {
   // collectors until the view closes; every document written carries what it holds then.
   private readonly vitals: ViewVitals = new ViewVitals();
   private readonly collector: VitalsCollector | null;
+  // view.loading_time (ns from the view's start), absent until measured. A
+  // value the host set wins over the SDK's own measurement of a router page.
+  private loadingTimeNs: number | null = null;
+  private loadingTimeManual: boolean = false;
 
   constructor(
     featureScope: FeatureScope,
@@ -133,6 +137,11 @@ export class RumViewScope implements RumScope {
           this.writeViewEvent(event.timestampMs);
           this.clearViewContext();
           return null;
+        }
+        return this;
+      case 'addViewLoadingTime':
+        if (this.takeLoadingTime(event)) {
+          this.writeViewEvent(event.timestampMs);
         }
         return this;
       case 'markCrash':
@@ -222,6 +231,26 @@ export class RumViewScope implements RumScope {
     this.clearViewContext();
   }
 
+  /**
+   * Android's `addViewLoadingTime(overwrite)`: the time from the view's start
+   * to now (the session hands it to the open view only); once a manual value
+   * is set, only an overwriting call replaces it. The SDK's measurement of a
+   * router page applies to that page only, and only while nothing has been set.
+   */
+  private takeLoadingTime(event: RumRawEvent): boolean {
+    if (event.loadingTimeAuto === true) {
+      if (event.key !== this.key || this.loadingTimeNs !== null) {
+        return false;
+      }
+    } else if (this.loadingTimeManual && event.overwrite !== true) {
+      FlashcatLog.usage(`addViewLoadingTime ignored: view "${this.viewName}" already has one; pass overwrite to replace it`);
+      return false;
+    }
+    this.loadingTimeNs = Math.max(0, event.timestampMs - this.startedAtMs) * MS_TO_NS;
+    this.loadingTimeManual = event.loadingTimeAuto !== true;
+    return true;
+  }
+
   /** The view is closed: later samples belong to the next view. What it holds
    * stays, so late writes (draining resources) still carry it. */
   private stopSampling(): void {
@@ -299,6 +328,9 @@ export class RumViewScope implements RumScope {
     const crashes: number = this.crashCount;
     const isActive: boolean = this.active;
     const vitalFields: Record<string, Object> = this.vitals.toFields(timeSpentNs);
+    if (this.loadingTimeNs !== null) {
+      vitalFields['loading_time'] = this.loadingTimeNs;
+    }
     this.featureScope.withWriteContext((context: FlashcatContext, writer: EventWriter) => {
       const event: Record<string, Object> = RumEventAssembler.view(
         context, this.applicationId, this.sessionId, this.viewId, this.viewName,

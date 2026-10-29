@@ -1,7 +1,16 @@
 const uiObserver = {
-  on: () => {},
-  off: () => {},
-  ScrollEventType: { SCROLL_START: 0, SCROLL_STOP: 1 }
+  ScrollEventType: { SCROLL_START: 0, SCROLL_STOP: 1 },
+  RouterPageState: { ABOUT_TO_APPEAR: 0, ABOUT_TO_DISAPPEAR: 1, ON_PAGE_SHOW: 2, ON_PAGE_HIDE: 3, ON_BACK_PRESS: 4 },
+  // Live routerPageUpdate callbacks, so tests can fire page shows and hides.
+  routerPageUpdate: [],
+  on(type, _context, callback) {
+    if (type === 'routerPageUpdate') uiObserver.routerPageUpdate.push(callback);
+  },
+  off(type, _context, callback) {
+    if (type === 'routerPageUpdate') {
+      uiObserver.routerPageUpdate = uiObserver.routerPageUpdate.filter((c) => c !== callback);
+    }
+  }
 };
 
 // Records what was subscribed, so tests can tell which system event a frame

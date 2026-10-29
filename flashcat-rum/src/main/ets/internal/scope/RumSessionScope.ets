@@ -226,6 +226,8 @@ export class RumSessionScope implements RumScope {
       this.lastStoppedView.handleEvent(event);
     } else if (event.kind === 'addError') {
       this.writeViewlessError(event); // error before any view started
+    } else if (event.kind === 'addViewLoadingTime' && event.loadingTimeAuto !== true) {
+      FlashcatLog.usage('addViewLoadingTime ignored: no view is open');
     } else if (event.kind === 'addAction' || event.kind === 'startResource') {
       // Surfaced so integrators can see why their data is missing — previously
       // these were dropped with no trace at any log level.
