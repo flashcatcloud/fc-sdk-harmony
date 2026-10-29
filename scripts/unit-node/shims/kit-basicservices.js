@@ -18,4 +18,8 @@ const zlib = {
     }
   })
 };
-module.exports = { deviceInfo, zlib };
+const systemDateTime = {
+  TimeType: { STARTUP: 0, ACTIVE: 1 },
+  getUptime: (_type, nanoseconds) => Number(process.hrtime.bigint() / (nanoseconds ? 1n : 1000000n))
+};
+module.exports = { deviceInfo, zlib, systemDateTime };

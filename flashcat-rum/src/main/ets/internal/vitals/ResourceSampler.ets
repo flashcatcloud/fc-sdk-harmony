@@ -1,5 +1,6 @@
 import { FlashcatLog } from '@flashcatcloud/core';
 import { ViewVitals } from './ViewVitals';
+import { VitalsCollector } from './VitalsCollector';
 
 /**
  * Where samples come from. Either half is null when this device has no way to
@@ -45,7 +46,7 @@ class SystemSamplerTimer implements SamplerTimer {
  * is still out (no backlog on a slow device), and one that lands after the
  * sampler stopped or restarted is dropped.
  */
-export class ResourceSampler {
+export class ResourceSampler implements VitalsCollector {
   private memoryReader: (() => Promise<number | null>) | null;
   private cpuReader: (() => number | null) | null;
   private readonly periodOf: () => number;

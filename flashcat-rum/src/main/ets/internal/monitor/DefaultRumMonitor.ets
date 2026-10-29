@@ -8,7 +8,7 @@ import { RumRawEvent } from '../scope/RumScope';
 import { RemoteConfigStore, RemoteConfigValues } from '../remoteconfig/RemoteConfigStore';
 import { RemoteConfigController } from '../remoteconfig/RemoteConfigController';
 import { RumEventMapperHolder } from '../RumEventMapperHolder';
-import { ResourceSampler } from '../vitals/ResourceSampler';
+import { VitalsCollector } from '../vitals/VitalsCollector';
 
 const MS_TO_NS: number = 1e6;
 // Periodically re-emit the active view so its time_spent (and the session
@@ -56,7 +56,7 @@ export class DefaultRumMonitor implements RumMonitor {
     configuration: RumConfiguration,
     remoteConfig: RemoteConfigStore | null = null,
     controller: RemoteConfigController | null = null,
-    sampler: ResourceSampler | null = null
+    collector: VitalsCollector | null = null
   ) {
     this.remoteConfig = remoteConfig;
     this.controller = controller;
@@ -64,7 +64,7 @@ export class DefaultRumMonitor implements RumMonitor {
       featureScope, core, configuration.applicationId, configuration.sessionSampleRate,
       remoteConfig, configuration.beforeSampling,
       controller === null ? null : (): void => controller.onSessionStarted(),
-      configuration.sessionOnError, sampler);
+      configuration.sessionOnError, collector);
     this.startKeepAlive();
   }
 

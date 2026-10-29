@@ -12,6 +12,9 @@ import { RemoteConfigController } from './internal/remoteconfig/RemoteConfigCont
 import { HttpRemoteConfigFetcher, buildConfigUrl } from './internal/remoteconfig/RemoteConfigFetcher';
 import { ResourceSampler } from './internal/vitals/ResourceSampler';
 import { systemResourceReaders } from './internal/vitals/SystemResourceReaders';
+import { FrameObserver } from './internal/vitals/FrameObserver';
+import { systemFrameSources } from './internal/vitals/SystemFrameSources';
+import { VitalsCollectors } from './internal/vitals/VitalsCollector';
 import { VitalsUpdateFrequency, vitalsPeriodMs } from './VitalsUpdateFrequency';
 
 /**
@@ -26,6 +29,9 @@ import { VitalsUpdateFrequency, vitalsPeriodMs } from './VitalsUpdateFrequency';
  * Mirrors `Rum.enable(rumConfiguration, sdkCore)` on Android.
  */
 export class FlashcatRum {
+  // The frames of every context passed to startViewTracking; one per enable.
+  private static frames: FrameObserver | null = null;
+
   static enable(configuration: RumConfiguration, sdkCore?: SdkCore): void {
     // Called from the host's startup path (and possibly before initialize): a
     // failure leaves the app without RUM, never without the app.
@@ -70,7 +76,7 @@ export class FlashcatRum {
     // back — by which time it is there. The controller has to exist first
     // because the monitor owns it.
     let monitorRef: DefaultRumMonitor | null = null;
-    let samplerRef: ResourceSampler | null = null;
+    let collectorsRef: VitalsCollectors | null = null;
     if (configuration.remoteConfigurationEnabled) {
       try {
         const intake: IntakeTarget = core.getIntakeTarget();
@@ -89,8 +95,8 @@ export class FlashcatRum {
             } finally {
               // A published frequency applies at once, not at the next session,
               // and not only when the session side took the change cleanly.
-              if (samplerRef !== null) {
-                samplerRef.refreshPeriod();
+              if (collectorsRef !== null) {
+                collectorsRef.refreshPeriod();
               }
             }
           }
@@ -104,11 +110,16 @@ export class FlashcatRum {
       }
     }
 
-    const sampler: ResourceSampler = FlashcatRum.buildSampler(core, configuration, store);
-    samplerRef = sampler;
-    const monitor: DefaultRumMonitor = new DefaultRumMonitor(core, scope, configuration, store, controller, sampler);
+    const periodOf: () => number = FlashcatRum.vitalsPeriodOf(configuration, store);
+    const apiVersion: number = core.getContext().device.apiVersion;
+    const frames: FrameObserver = new FrameObserver(systemFrameSources(apiVersion), periodOf);
+    const collectors: VitalsCollectors = new VitalsCollectors([
+      new ResourceSampler(systemResourceReaders(apiVersion), periodOf), frames]);
+    collectorsRef = collectors;
+    const monitor: DefaultRumMonitor = new DefaultRumMonitor(core, scope, configuration, store, controller, collectors);
     monitorRef = monitor;
-    feature.attachMonitor(monitor, sampler);
+    feature.attachMonitor(monitor, collectors);
+    FlashcatRum.frames = frames;
     GlobalRumMonitor.register(monitor);
 
     // Phase 2: make the auto-instrumentation toggles consultable by the tap /
@@ -122,17 +133,16 @@ export class FlashcatRum {
     }
   }
 
-  /** The console's published frequency, when there is one, over the init value. */
-  private static buildSampler(core: SdkCore, configuration: RumConfiguration,
-    store: RemoteConfigStore | null): ResourceSampler {
-    const periodOf: () => number = (): number => {
+  /** The sampling period of the console's published frequency, when there is
+   * one, over the init value; 0 (`NEVER`) also turns frame observation off. */
+  private static vitalsPeriodOf(configuration: RumConfiguration, store: RemoteConfigStore | null): () => number {
+    return (): number => {
       const stored: RemoteConfigValues | null = store === null ? null : store.read();
       const frequency: VitalsUpdateFrequency =
         stored !== null && stored.vitalsUpdateFrequency !== null
           ? stored.vitalsUpdateFrequency : configuration.vitalsUpdateFrequency;
       return vitalsPeriodMs(frequency);
     };
-    return new ResourceSampler(systemResourceReaders(core.getContext().device.apiVersion), periodOf);
   }
 
   /**
@@ -158,9 +168,21 @@ export class FlashcatRum {
    *
    * Covers `router`-based navigation only; `Navigation`/`NavDestination`-based
    * apps should call startView/stopView manually for now.
+   *
+   * This is also where views start measuring the frames `context`'s window
+   * draws (`view.refresh_rate_*`, `view.slow_frame` / `view.frozen_frame`,
+   * `view.slow_frames_rate`, `view.freeze_rate`), whether or not navigation is
+   * tracked automatically; `VitalsUpdateFrequency.NEVER` turns it off. On API
+   * 22+ every redraw counts; on API 12–21 only frames drawn while a list or
+   * other scrollable moves. A host driving its own animation with
+   * `displaySync` or `postFrameCallback` makes the system report frames that
+   * redrew nothing, which raises the frame rate RUM reports.
    */
   static startViewTracking(context: NavContext): void {
     RumNavigationTracker.attach(context);
+    if (FlashcatRum.frames !== null) {
+      FlashcatRum.frames.attach(context);
+    }
   }
 
   /**
@@ -172,6 +194,9 @@ export class FlashcatRum {
       RumNavigationTracker.detachContext(context);
     } else {
       RumNavigationTracker.detach();
+    }
+    if (FlashcatRum.frames !== null) {
+      FlashcatRum.frames.detach(context);
     }
   }
 }

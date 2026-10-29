@@ -21,7 +21,7 @@ export class RumConfiguration {
   readonly sessionOnError: boolean;
   /** Send the once-a-day active-device beacon. Default true. */
   readonly trackActiveDevices: boolean;
-  /** How often memory and CPU are sampled for the open view. */
+  /** How often memory and CPU are sampled for the open view; `NEVER` also stops frame measurement. */
   readonly vitalsUpdateFrequency: VitalsUpdateFrequency;
 
   constructor(
@@ -222,7 +222,9 @@ export class RumConfigurationBuilder {
    * foreground, for the view that is open: `view.memory_average` /
    * `view.memory_max` (bytes) and `view.cpu_ticks_count` /
    * `view.cpu_ticks_per_second`. Same values as the Android SDK.
-   * `NEVER` samples nothing. A field the device cannot read is left out of the
+   * Drawn frames (see `FlashcatRum.startViewTracking`) have no period, only
+   * this switch: any value but `NEVER` measures them.
+   * `NEVER` measures nothing. A field the device cannot read is left out of the
    * view rather than sent as 0.
    *
    * With remote configuration enabled, the console's `vitalsUpdateFrequency`

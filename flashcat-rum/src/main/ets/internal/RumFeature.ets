@@ -24,7 +24,7 @@ import { RumNavigationTracker } from './RumNavigationTracker';
 import { RumEventMapperHolder } from './RumEventMapperHolder';
 import { LastViewSnapshot } from './LastViewSnapshot';
 import { ActiveDeviceBeacon, HttpActiveBeaconSender } from './ActiveDeviceBeacon';
-import { ResourceSampler } from './vitals/ResourceSampler';
+import { VitalsCollector } from './vitals/VitalsCollector';
 
 // Internal core receiver owning the crash sidecar files. MessageBus contract.
 const CRASH_STORAGE_TARGET: string = '__flashcat_crash_storage';
@@ -63,8 +63,8 @@ export class RumFeature implements Feature, FeatureEventReceiver {
   // whole run because a hiAppEvent replay can arrive well after startup.
   private previousRunView: Record<string, Object> | null = null;
   private activeBeacon: ActiveDeviceBeacon | null = null;
-  // Memory/CPU sampling for the open view; runs only in the foreground.
-  private sampler: ResourceSampler | null = null;
+  // Memory/CPU sampling and frame observation for the open view; foreground only.
+  private collector: VitalsCollector | null = null;
 
   constructor(core: SdkCore, configuration: RumConfiguration) {
     this.core = core;
@@ -72,14 +72,14 @@ export class RumFeature implements Feature, FeatureEventReceiver {
   }
 
   /** Set by FlashcatRum.enable once the monitor is built (after registration). */
-  attachMonitor(monitor: DefaultRumMonitor, sampler: ResourceSampler | null = null): void {
+  attachMonitor(monitor: DefaultRumMonitor, collector: VitalsCollector | null = null): void {
     this.monitor = monitor;
-    this.sampler = sampler;
+    this.collector = collector;
     FlashcatLog.d('rum: monitor attached');
     // RUM enabled after the core already learned it is in the foreground: no
     // foreground message is coming, so sampling starts now.
-    if (sampler !== null && this.core.isAppInForeground()) {
-      sampler.setForeground(true);
+    if (collector !== null && this.core.isAppInForeground()) {
+      collector.setForeground(true);
     }
     // If the crash feature was enabled BEFORE RUM, its startup replay found no
     // RUM receiver and retained the pending incidents — ask it to replay now.
@@ -280,9 +280,9 @@ export class RumFeature implements Feature, FeatureEventReceiver {
     }
     // The core's stop wrote the final view documents (with what was sampled)
     // just before this; nothing samples after it.
-    if (this.sampler !== null) {
-      this.sampler.stop();
-      this.sampler = null;
+    if (this.collector !== null) {
+      this.collector.stop();
+      this.collector = null;
     }
     if (this.monitor !== null) {
       this.monitor.stopKeepAlive(); // stop the keep-alive timer so it doesn't leak
@@ -379,8 +379,8 @@ export class RumFeature implements Feature, FeatureEventReceiver {
   }
 
   private setForeground(foreground: boolean): void {
-    if (this.sampler !== null) {
-      this.sampler.setForeground(foreground);
+    if (this.collector !== null) {
+      this.collector.setForeground(foreground);
     }
   }
 

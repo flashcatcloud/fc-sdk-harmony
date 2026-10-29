@@ -5,7 +5,7 @@ import { RumEventAssembler } from '../assembly/RumEventAssembler';
 import { writeMapped } from '../RumEventMapperHolder';
 import { DrawnConfiguration } from '../remoteconfig/RemoteConfigStore';
 import { ViewVitals } from '../vitals/ViewVitals';
-import { ResourceSampler } from '../vitals/ResourceSampler';
+import { VitalsCollector } from '../vitals/VitalsCollector';
 
 const MS_TO_NS: number = 1e6;
 const MAX_PENDING_RESOURCES: number = 100;
@@ -46,10 +46,10 @@ export class RumViewScope implements RumScope {
   // extended write would credit post-navigation idle time as dwell time.
   private closedAtMs: number = 0;
   private readonly pendingResources: Map<string, RumResourceScope> = new Map<string, RumResourceScope>();
-  // Memory and CPU sampled while this view is open. Registered with the sampler
-  // until the view closes; every document written carries what it holds then.
+  // Memory, CPU and frames sampled while this view is open. Registered with the
+  // collectors until the view closes; every document written carries what it holds then.
   private readonly vitals: ViewVitals = new ViewVitals();
-  private readonly sampler: ResourceSampler | null;
+  private readonly collector: VitalsCollector | null;
 
   constructor(
     featureScope: FeatureScope,
@@ -63,7 +63,7 @@ export class RumViewScope implements RumScope {
     attributes: Record<string, Object>,
     draw: DrawnConfiguration | null = null,
     sampledForError: boolean = false,
-    sampler: ResourceSampler | null = null
+    collector: VitalsCollector | null = null
   ) {
     this.featureScope = featureScope;
     this.core = core;
@@ -76,9 +76,9 @@ export class RumViewScope implements RumScope {
     this.attributes = attributes;
     this.draw = draw;
     this.sampledForError = sampledForError;
-    this.sampler = sampler;
-    if (sampler !== null) {
-      sampler.register(this.vitals);
+    this.collector = collector;
+    if (collector !== null) {
+      collector.register(this.vitals);
     }
     // Publish the active view so Logs/Trace/Crash can correlate. The URL is the
     // RESOLVED one (caller-supplied view.url, e.g. the nav tracker's route path),
@@ -225,8 +225,8 @@ export class RumViewScope implements RumScope {
   /** The view is closed: later samples belong to the next view. What it holds
    * stays, so late writes (draining resources) still carry it. */
   private stopSampling(): void {
-    if (this.sampler !== null) {
-      this.sampler.unregister(this.vitals);
+    if (this.collector !== null) {
+      this.collector.unregister(this.vitals);
     }
   }
 

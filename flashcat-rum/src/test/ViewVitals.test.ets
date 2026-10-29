@@ -44,7 +44,7 @@ function testContext(): FlashcatContext {
   };
 }
 
-class CapturingScope implements FeatureScope {
+export class CapturingScope implements FeatureScope {
   readonly written: Array<Record<string, Object>> = [];
 
   withWriteContext(callback: (context: FlashcatContext, writer: EventWriter) => void): void {
@@ -67,7 +67,7 @@ class CapturingScope implements FeatureScope {
   }
 }
 
-class FakeCore implements SdkCore {
+export class FakeCore implements SdkCore {
   readonly name: string = 'test';
   readonly settings: Map<string, string> = new Map<string, string>();
   foreground: boolean = false;
@@ -186,7 +186,7 @@ class ThrowingVitals extends ViewVitals {
   }
 }
 
-function settle(): Promise<void> {
+export function settle(): Promise<void> {
   return new Promise<void>((resolve: () => void) => setTimeout(resolve, 0));
 }
 
@@ -194,7 +194,7 @@ function sampler(readers: FakeReaders, timer: FakeTimer, periodMs: number = 500)
   return new ResourceSampler(readers.readers(), (): number => periodMs, timer);
 }
 
-function raw(kind: string, timestampMs: number, key?: string): RumRawEvent {
+export function raw(kind: string, timestampMs: number, key?: string): RumRawEvent {
   const e: RumRawEvent = { kind, attributes: {}, timestampMs };
   if (key !== undefined) {
     e.key = key;

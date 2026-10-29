@@ -67,7 +67,7 @@ export class RumEventAssembler {
     // crash-free rate. Without it every session reads as crash-free even when
     // is_crash errors were reported. Counts is_crash errors, matching 崩溃次数.
     view['crash'] = RumEventAssembler.count(crashCount);
-    // Only the keys that have samples behind them (memory_*, cpu_ticks_*).
+    // Only the keys that have samples behind them (memory, CPU, frames).
     for (const k of Object.keys(vitalFields)) {
       view[k] = vitalFields[k];
     }

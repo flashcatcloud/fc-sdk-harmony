@@ -2,7 +2,7 @@
  * How often RUM samples the app's memory and CPU while the app is in the
  * foreground. Same values, and the same meaning, as `VitalsUpdateFrequency` in
  * the Android SDK — a value never means a different period on a different
- * device.
+ * device. Drawn frames are measured as they come, at any value but `NEVER`.
  */
 export enum VitalsUpdateFrequency {
   /** Every 100 ms. */
@@ -11,7 +11,7 @@ export enum VitalsUpdateFrequency {
   AVERAGE = 'average',
   /** Every 1000 ms. */
   RARE = 'rare',
-  /** No memory or CPU is sampled, and views carry none of those fields. */
+  /** No memory, CPU or frame is measured, and views carry none of those fields. */
   NEVER = 'never'
 }
 
