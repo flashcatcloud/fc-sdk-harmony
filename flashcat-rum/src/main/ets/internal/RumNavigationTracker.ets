@@ -3,6 +3,7 @@ import { common } from '@kit.AbilityKit';
 import { FlashcatLog } from '@flashcatcloud/core';
 import { GlobalRumMonitor } from '../RumMonitor';
 import { RumAutoInstrumentation } from './RumAutoInstrumentation';
+import { AppLaunchTracker } from './startup/AppLaunchTracker';
 
 /** Context the navigation observer can be scoped to (ability or UI context). */
 export type NavContext = common.UIAbilityContext | UIContext;
@@ -33,12 +34,25 @@ export class RumNavigationTracker {
   // navigation tracking for every context but the first.
   private static readonly attached: Map<NavContext, (info: uiObserver.RouterPageInfo) => void> =
     new Map<NavContext, (info: uiObserver.RouterPageInfo) => void>();
+  // The enabled RUM's launch timer: every tracked context hooks its frames
+  // into it, router tracking or not. Null before enable and after stop.
+  private static launch: AppLaunchTracker | null = null;
+
+  /** @internal set by FlashcatRum.enable. */
+  static configureLaunch(launch: AppLaunchTracker | null): void {
+    RumNavigationTracker.launch = launch;
+  }
 
   /**
    * Attach the router observer scoped to `context` (a UIAbilityContext or a
    * UIContext obtained in UI land). Call once per context after RUM is enabled.
    */
   static attach(context: NavContext): void {
+    // Frames first, and whatever the navigation flag says: app launch timing
+    // ends at a frame, and this call is where the app hands over its UI.
+    if (RumNavigationTracker.launch !== null) {
+      RumNavigationTracker.launch.attachContext(context);
+    }
     if (!RumAutoInstrumentation.isNavigationTrackingEnabled()) {
       FlashcatLog.d('rum.nav: trackNavigation disabled — observer not attached');
       return;
@@ -74,10 +88,14 @@ export class RumNavigationTracker {
         }
       });
     RumNavigationTracker.attached.clear();
+    RumNavigationTracker.launch = null; // the feature unhooks its frames
   }
 
   /** Detach the observer bound to one context (e.g. before that ability is destroyed). */
   static detachContext(context: NavContext): void {
+    if (RumNavigationTracker.launch !== null) {
+      RumNavigationTracker.launch.detachContext(context);
+    }
     const cb: ((info: uiObserver.RouterPageInfo) => void) | undefined =
       RumNavigationTracker.attached.get(context);
     if (cb !== undefined) {

@@ -16,6 +16,9 @@ import { FrameObserver } from './internal/vitals/FrameObserver';
 import { systemFrameSources } from './internal/vitals/SystemFrameSources';
 import { VitalsCollectors } from './internal/vitals/VitalsCollector';
 import { VitalsUpdateFrequency, vitalsPeriodMs } from './VitalsUpdateFrequency';
+import { AppLaunchTracker, AppLaunchSink, StartupType } from './internal/startup/AppLaunchTracker';
+import { systemFrameHooks, systemProcessAgeMs } from './internal/startup/SystemLaunchHooks';
+import { APP_LAUNCH_TTID, APP_LAUNCH_TTFD } from './internal/assembly/RumEventAssembler';
 
 /**
  * Enables Real User Monitoring. Call after `Flashcat.initialize`.
@@ -116,10 +119,28 @@ export class FlashcatRum {
     const collectors: VitalsCollectors = new VitalsCollectors([
       new ResourceSampler(systemResourceReaders(apiVersion), periodOf), frames]);
     collectorsRef = collectors;
-    const monitor: DefaultRumMonitor = new DefaultRumMonitor(core, scope, configuration, store, controller, collectors);
+    // What it measures goes through the monitor, so it lands in whatever
+    // session and view are current, under their sampling.
+    const launchSink: AppLaunchSink = {
+      initialDisplay: (type: StartupType, startMs: number, durationNs: number, atMs: number): void => {
+        if (monitorRef !== null) {
+          monitorRef.reportAppLaunch(APP_LAUNCH_TTID, type, startMs, durationNs, atMs);
+        }
+      },
+      fullDisplay: (type: StartupType, startMs: number, durationNs: number, atMs: number): void => {
+        if (monitorRef !== null) {
+          monitorRef.reportAppLaunch(APP_LAUNCH_TTFD, type, startMs, durationNs, atMs);
+        }
+      }
+    };
+    const launch: AppLaunchTracker =
+      new AppLaunchTracker(launchSink, systemFrameHooks(apiVersion), systemProcessAgeMs);
+    const monitor: DefaultRumMonitor =
+      new DefaultRumMonitor(core, scope, configuration, store, controller, collectors, launch);
     monitorRef = monitor;
-    feature.attachMonitor(monitor, collectors);
+    feature.attachMonitor(monitor, collectors, launch);
     FlashcatRum.frames = frames;
+    RumNavigationTracker.configureLaunch(launch);
     GlobalRumMonitor.register(monitor);
 
     // Phase 2: make the auto-instrumentation toggles consultable by the tap /
@@ -158,8 +179,16 @@ export class FlashcatRum {
   /**
    * Start automatic View tracking for `router` navigation, scoped to `context`
    * (a UIAbilityContext or a UIContext from UI land). Each page show/hide then
-   * emits start/stopView automatically. No-op unless RUM is enabled with
-   * `setTrackNavigation(true)`. Idempotent.
+   * emits start/stopView automatically. Router tracking is a no-op unless RUM
+   * is enabled with `setTrackNavigation(true)`. Idempotent.
+   *
+   * Call it in every app, router-based or not: app launch timing (time to
+   * initial display, cold / warm / hot) ends at the first frame drawn, and
+   * this is where the SDK hooks frames — whatever `setTrackNavigation` says.
+   * Call it in the first page's `aboutToAppear`, with `this.getUIContext()`,
+   * so the hook is in place before that page's first frame; a launch whose
+   * first frame was missed is not reported. Launch timing does not depend on
+   * `VitalsUpdateFrequency`: `NEVER` does not turn it off.
    *
    * IMPORTANT: pair with `stopViewTracking(context)` in the ability's
    * onDestroy — the registry holds a strong reference per context, so

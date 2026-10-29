@@ -1,4 +1,6 @@
-import { common, bundleManager, appManager, ApplicationStateChangeCallback } from '@kit.AbilityKit';
+import { common, bundleManager, appManager, ApplicationStateChangeCallback, AbilityLifecycleCallback,
+  UIAbility } from '@kit.AbilityKit';
+import { window } from '@kit.ArkUI';
 import { process } from '@kit.ArkTS';
 import { fileIo as fs } from '@kit.CoreFileKit';
 import { preferences } from '@kit.ArkData';
@@ -39,6 +41,7 @@ export class FlashcatCore implements SdkCore {
   private readonly features: Map<string, RegisteredFeature> = new Map<string, RegisteredFeature>();
   private readonly deferredUploadRegistrar: DeferredUploadWorkRegistrar = new DeferredUploadWorkRegistrar();
   private appStateCallback: ApplicationStateChangeCallback | null = null;
+  private abilityLifecycleId: number = -1;
   // False until the app is known to be in front of the user: a launch the
   // system started in the background (an extension, a wake-up) stays false.
   private appForeground: boolean = false;
@@ -145,7 +148,38 @@ export class FlashcatCore implements SdkCore {
       this.appStateCallback = null;
       // Lifecycle hook unavailable — uploads still drain on the normal cadence.
     }
+    this.observeAbilities();
     this.probeForeground();
+  }
+
+  /**
+   * RUM times app launches from ability creation, and features receive no
+   * context of their own to subscribe with. Only creation and destruction are
+   * forwarded: whether that makes a launch is RUM's to decide.
+   */
+  private observeAbilities(): void {
+    const ignore = (): void => {};
+    const callback: AbilityLifecycleCallback = {
+      onAbilityCreate: (_ability: UIAbility): void => {
+        this.bus.send(RUM_FEATURE_NAME, { 'type': 'ability_created' } as Record<string, Object>);
+      },
+      onAbilityDestroy: (_ability: UIAbility): void => {
+        this.bus.send(RUM_FEATURE_NAME, { 'type': 'ability_destroyed' } as Record<string, Object>);
+      },
+      onWindowStageCreate: (_ability: UIAbility, _stage: window.WindowStage): void => ignore(),
+      onWindowStageActive: (_ability: UIAbility, _stage: window.WindowStage): void => ignore(),
+      onWindowStageInactive: (_ability: UIAbility, _stage: window.WindowStage): void => ignore(),
+      onWindowStageDestroy: (_ability: UIAbility, _stage: window.WindowStage): void => ignore(),
+      onAbilityForeground: (_ability: UIAbility): void => ignore(),
+      onAbilityBackground: (_ability: UIAbility): void => ignore(),
+      onAbilityContinue: (_ability: UIAbility): void => ignore()
+    };
+    try {
+      this.abilityLifecycleId = this.context.getApplicationContext().on('abilityLifecycle', callback);
+    } catch (_e) {
+      this.abilityLifecycleId = -1;
+      // Lifecycle hook unavailable — launches are not measured.
+    }
   }
 
   /**
@@ -404,6 +438,17 @@ export class FlashcatCore implements SdkCore {
         // Already gone.
       }
       this.appStateCallback = null;
+    }
+    if (this.abilityLifecycleId !== -1) {
+      try {
+        // Callback overload: the promise one's rejection would escape this try.
+        this.context.getApplicationContext().off('abilityLifecycle', this.abilityLifecycleId, (_err) => {
+          // best-effort removal
+        });
+      } catch (_e) {
+        // Already gone.
+      }
+      this.abilityLifecycleId = -1;
     }
   }
 

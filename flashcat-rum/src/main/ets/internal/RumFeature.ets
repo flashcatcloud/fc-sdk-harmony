@@ -25,6 +25,7 @@ import { RumEventMapperHolder } from './RumEventMapperHolder';
 import { LastViewSnapshot } from './LastViewSnapshot';
 import { ActiveDeviceBeacon, HttpActiveBeaconSender } from './ActiveDeviceBeacon';
 import { VitalsCollector } from './vitals/VitalsCollector';
+import { AppLaunchTracker } from './startup/AppLaunchTracker';
 
 // Internal core receiver owning the crash sidecar files. MessageBus contract.
 const CRASH_STORAGE_TARGET: string = '__flashcat_crash_storage';
@@ -65,6 +66,8 @@ export class RumFeature implements Feature, FeatureEventReceiver {
   private activeBeacon: ActiveDeviceBeacon | null = null;
   // Memory/CPU sampling and frame observation for the open view; foreground only.
   private collector: VitalsCollector | null = null;
+  // Times app launches; fed the app's lifecycle from here.
+  private launch: AppLaunchTracker | null = null;
 
   constructor(core: SdkCore, configuration: RumConfiguration) {
     this.core = core;
@@ -72,9 +75,11 @@ export class RumFeature implements Feature, FeatureEventReceiver {
   }
 
   /** Set by FlashcatRum.enable once the monitor is built (after registration). */
-  attachMonitor(monitor: DefaultRumMonitor, collector: VitalsCollector | null = null): void {
+  attachMonitor(monitor: DefaultRumMonitor, collector: VitalsCollector | null = null,
+    launch: AppLaunchTracker | null = null): void {
     this.monitor = monitor;
     this.collector = collector;
+    this.launch = launch;
     FlashcatLog.d('rum: monitor attached');
     // RUM enabled after the core already learned it is in the foreground: no
     // foreground message is coming, so sampling starts now.
@@ -284,6 +289,10 @@ export class RumFeature implements Feature, FeatureEventReceiver {
       this.collector.stop();
       this.collector = null;
     }
+    if (this.launch !== null) {
+      this.launch.stop(); // unhook every frame source
+      this.launch = null;
+    }
     if (this.monitor !== null) {
       this.monitor.stopKeepAlive(); // stop the keep-alive timer so it doesn't leak
       this.monitor.stopRemoteConfig(); // and the configuration refresh with it
@@ -343,12 +352,31 @@ export class RumFeature implements Feature, FeatureEventReceiver {
         m.refreshRemoteConfig();
       }
       this.setForeground(true);
+      if (this.launch !== null) {
+        this.launch.onForeground();
+      }
       this.triggerActiveBeacon();
     } else if (type === 'app_foreground_detected') {
+      // Already in the foreground when the SDK started: no return from the
+      // background, so no hot start.
+      if (this.launch !== null) {
+        this.launch.onForegroundDetected();
+      }
       this.setForeground(true);
       this.triggerActiveBeacon();
     } else if (type === 'app_background') {
       this.setForeground(false);
+      if (this.launch !== null) {
+        this.launch.onBackground();
+      }
+    } else if (type === 'ability_created') {
+      if (this.launch !== null) {
+        this.launch.onAbilityCreated();
+      }
+    } else if (type === 'ability_destroyed') {
+      if (this.launch !== null) {
+        this.launch.onAbilityDestroyed();
+      }
     } else if (type === 'consent_granted' || type === 'user_changed') {
       this.triggerActiveBeacon();
     } else if (type === 'keep_alive') {

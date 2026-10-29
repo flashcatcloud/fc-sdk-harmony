@@ -277,6 +277,10 @@ export class RumViewScope implements RumScope {
     return this.viewName;
   }
 
+  getViewUrl(): string {
+    return this.resolvedViewUrl();
+  }
+
   private writeViewEvent(nowMs: number): void {
     this.documentVersion += 1;
     // Once closed, time freezes at the close timestamp: late count updates

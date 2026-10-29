@@ -11,6 +11,7 @@ import sessionOnErrorTests from './SessionOnError.test';
 import activeBeaconTests from './ActiveBeacon.test';
 import viewVitalsTests from './ViewVitals.test';
 import frameVitalsTests from './FrameVitals.test';
+import appLaunchTests from './AppLaunch.test';
 
 export default function testsuite(): void {
   crashReportTests();
@@ -23,6 +24,7 @@ export default function testsuite(): void {
   activeBeaconTests();
   viewVitalsTests();
   frameVitalsTests();
+  appLaunchTests();
   describe('flashcat-rum', (): void => {
     it('defaultMonitorIsNoOp', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
       const monitor = GlobalRumMonitor.get();

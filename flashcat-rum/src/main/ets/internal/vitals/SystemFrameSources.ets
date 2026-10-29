@@ -246,7 +246,7 @@ export class ScrollDrawSource implements FrameSource {
   }
 }
 
-class WindowFrameMetrics implements Subscription<(m: window.FrameMetrics) => void> {
+export class WindowFrameMetrics implements Subscription<(m: window.FrameMetrics) => void> {
   private readonly win: window.Window;
 
   constructor(win: window.Window) {
@@ -278,7 +278,7 @@ class ObserverScroll implements Subscription<(info: uiObserver.ScrollEventInfo) 
   }
 }
 
-class ObserverDraw implements Subscription<() => void> {
+export class ObserverDraw implements Subscription<() => void> {
   private readonly observer: UIObserver;
 
   constructor(observer: UIObserver) {
@@ -295,7 +295,7 @@ class ObserverDraw implements Subscription<() => void> {
 }
 
 /** The window a navigation context draws in: a UIContext's own, an ability's last shown. */
-function windowOf(context: Object): Promise<window.Window> {
+export function windowOf(context: Object): Promise<window.Window> {
   if (context instanceof UIContext) {
     const name: string | undefined = context.getWindowName();
     if (name !== undefined) {
@@ -310,7 +310,7 @@ function windowOf(context: Object): Promise<window.Window> {
   return window.getLastWindow(context as common.BaseContext);
 }
 
-function uiContextOf(context: Object): Promise<UIContext> {
+export function uiContextOf(context: Object): Promise<UIContext> {
   if (context instanceof UIContext) {
     return Promise.resolve(context);
   }

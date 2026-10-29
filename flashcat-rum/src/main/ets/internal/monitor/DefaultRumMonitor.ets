@@ -9,6 +9,7 @@ import { RemoteConfigStore, RemoteConfigValues } from '../remoteconfig/RemoteCon
 import { RemoteConfigController } from '../remoteconfig/RemoteConfigController';
 import { RumEventMapperHolder } from '../RumEventMapperHolder';
 import { VitalsCollector } from '../vitals/VitalsCollector';
+import { AppLaunchTracker, StartupType } from '../startup/AppLaunchTracker';
 
 const MS_TO_NS: number = 1e6;
 // Periodically re-emit the active view so its time_spent (and the session
@@ -49,6 +50,8 @@ export class DefaultRumMonitor implements RumMonitor {
   // Null unless the app opted into remote configuration.
   private readonly remoteConfig: RemoteConfigStore | null;
   private readonly controller: RemoteConfigController | null;
+  // Null when launch timing is not wired (tests, or enable failed to build it).
+  private readonly launch: AppLaunchTracker | null;
 
   constructor(
     core: SdkCore,
@@ -56,8 +59,10 @@ export class DefaultRumMonitor implements RumMonitor {
     configuration: RumConfiguration,
     remoteConfig: RemoteConfigStore | null = null,
     controller: RemoteConfigController | null = null,
-    collector: VitalsCollector | null = null
+    collector: VitalsCollector | null = null,
+    launch: AppLaunchTracker | null = null
   ) {
+    this.launch = launch;
     this.remoteConfig = remoteConfig;
     this.controller = controller;
     this.applicationScope = new RumApplicationScope(
@@ -131,6 +136,41 @@ export class DefaultRumMonitor implements RumMonitor {
       const e: RumRawEvent = this.raw('startView', attributes);
       e.key = key;
       e.name = name;
+      return e;
+    });
+    if (this.launch !== null && !RumEventMapperHolder.isApplying()) {
+      try {
+        this.launch.onViewStarted();
+      } catch (error) {
+        DefaultRumMonitor.logFailure('startView', error);
+      }
+    }
+  }
+
+  reportAppFullyDisplayed(): void {
+    if (DefaultRumMonitor.calledFromMapper('reportAppFullyDisplayed')) {
+      return;
+    }
+    if (this.launch === null) {
+      FlashcatLog.usage('reportAppFullyDisplayed ignored: app launches are not measured');
+      return;
+    }
+    try {
+      this.launch.onFullyDisplayed();
+    } catch (error) {
+      DefaultRumMonitor.logFailure('reportAppFullyDisplayed', error);
+    }
+  }
+
+  /** Internal: a launch vital measured by the app launch tracker. */
+  reportAppLaunch(metric: string, type: StartupType, startMs: number, durationNs: number, atMs: number): void {
+    this.dispatch('appLaunch', () => {
+      const e: RumRawEvent = this.raw('appLaunch');
+      e.timestampMs = atMs;
+      e.launchMetric = metric;
+      e.startupType = type as string;
+      e.launchStartMs = startMs;
+      e.launchDurationNs = durationNs;
       return e;
     });
   }

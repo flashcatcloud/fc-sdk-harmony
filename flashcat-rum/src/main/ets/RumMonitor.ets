@@ -9,6 +9,20 @@ export interface RumMonitor {
   startView(key: string, name: string, attributes?: Record<string, Object>): void;
   stopView(key: string, attributes?: Record<string, Object>): void;
 
+  /**
+   * Call when the app has finished loading what its first screen shows (data
+   * included). Reports the time to full display of the current launch: from
+   * the launch's start to now. Counted once per session, and only after the
+   * launch's first frame (time to initial display) was measured and within
+   * 90 s of the launch's start; other calls are ignored and logged.
+   *
+   * Launch timing needs `Flashcat.initialize` and `FlashcatRum.enable` in
+   * `AbilityStage.onCreate`, and `FlashcatRum.startViewTracking(this.getUIContext())`
+   * in the first page's `aboutToAppear`. A launch whose first frame the SDK
+   * did not see is not reported.
+   */
+  reportAppFullyDisplayed(): void;
+
   addAction(type: RumActionType, name: string, attributes?: Record<string, Object>): void;
   startAction(type: RumActionType, name: string, attributes?: Record<string, Object>): void;
   stopAction(type: RumActionType, name: string, attributes?: Record<string, Object>): void;
@@ -76,6 +90,7 @@ export interface RumMonitor {
 class NoOpRumMonitor implements RumMonitor {
   startView(key: string, name: string, attributes?: Record<string, Object>): void {}
   stopView(key: string, attributes?: Record<string, Object>): void {}
+  reportAppFullyDisplayed(): void {}
   addAction(type: RumActionType, name: string, attributes?: Record<string, Object>): void {}
   startAction(type: RumActionType, name: string, attributes?: Record<string, Object>): void {}
   stopAction(type: RumActionType, name: string, attributes?: Record<string, Object>): void {}

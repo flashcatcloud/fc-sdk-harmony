@@ -2,7 +2,8 @@ import { FeatureScope, FlashcatContext, EventWriter, SdkCore, FlashcatLog } from
 import { util } from '@kit.ArkTS';
 import { RumScope, RumRawEvent } from './RumScope';
 import { RumViewScope } from './RumViewScope';
-import { RumEventAssembler } from '../assembly/RumEventAssembler';
+import { RumEventAssembler, LaunchView, APP_LAUNCH_TTID } from '../assembly/RumEventAssembler';
+import { StartupType } from '../startup/AppLaunchTracker';
 import { writeMapped } from '../RumEventMapperHolder';
 import { DrawnConfiguration } from '../remoteconfig/RemoteConfigStore';
 import { WithholdingFeatureScope } from './WithheldEvents';
@@ -53,6 +54,10 @@ export class RumSessionScope implements RumScope {
   // outlive a navigation) are not systematically lost.
   private readonly drainingViews: RumViewScope[] = [];
   private readonly collector: VitalsCollector | null;
+  // Android parity: one cold / warm time to initial display per session, one
+  // time to full display per session. A hot start is reported every time.
+  private launchInitialDisplayReported: boolean = false;
+  private launchFullDisplayReported: boolean = false;
 
   constructor(
     featureScope: FeatureScope,
@@ -169,6 +174,10 @@ export class RumSessionScope implements RumScope {
 
     if (!this.sampled) {
       return this; // session dropped — track lifecycle but emit nothing
+    }
+    if (event.kind === 'appLaunch') {
+      this.writeAppLaunch(event);
+      return this;
     }
     if (event.kind === 'addError' && event.inherited === true && this.withheld !== null && this.withheld.isWithholding()) {
       // A crash of a process that already died is not this session's error: it
@@ -377,6 +386,35 @@ export class RumSessionScope implements RumScope {
   /** Whether the settings this session was drawn under are exactly these. */
   wasDrawnWith(sessionSampleRate: number, sessionOnError: boolean): boolean {
     return this.draw.sessionSampleRate === sessionSampleRate && this.draw.sessionOnError === sessionOnError;
+  }
+
+  private writeAppLaunch(raw: RumRawEvent): void {
+    if (raw.launchMetric === APP_LAUNCH_TTID) {
+      if (raw.startupType !== StartupType.HOT) {
+        if (this.launchInitialDisplayReported) {
+          return;
+        }
+        this.launchInitialDisplayReported = true;
+      }
+    } else {
+      if (this.launchFullDisplayReported) {
+        return;
+      }
+      this.launchFullDisplayReported = true;
+    }
+    const open: RumViewScope | null = this.activeView;
+    let view: LaunchView | null = null;
+    if (open !== null) {
+      const openView: LaunchView = { id: open.getViewId(), name: open.getViewName(), url: open.getViewUrl() };
+      view = openView;
+    }
+    this.featureScope.withWriteContext((context: FlashcatContext, writer: EventWriter) => {
+      const event: Record<string, Object> = RumEventAssembler.appLaunch(
+        context, this.applicationId, this.sessionId, view, raw.launchMetric ?? APP_LAUNCH_TTID,
+        raw.startupType ?? '', raw.launchStartMs ?? raw.timestampMs, raw.launchDurationNs ?? 0,
+        raw.attributes, this.draw, this.sampledOnError);
+      writeMapped(writer, event, false);
+    });
   }
 
   private writeViewlessError(raw: RumRawEvent): void {

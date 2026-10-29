@@ -6,7 +6,7 @@
 export interface RumRawEvent {
   kind: string;                 // 'startView' | 'stopView' | 'addAction' | 'addError'
                                 // | 'startResource' | 'stopResource' | 'stopResourceWithError'
-                                // | 'keepAlive' | 'markCrash'
+                                // | 'keepAlive' | 'markCrash' | 'appLaunch'
                                 // markCrash: bump the active view's error+crash counts without
                                 // writing an error event (the error itself is delivered by the
                                 // durable pending-incident replay at next launch).
@@ -34,6 +34,12 @@ export interface RumRawEvent {
   // An error of a process that already died, replayed into whichever session is
   // current because nothing identifies the one it happened in.
   inherited?: boolean;
+
+  // app launch vital (kind === 'appLaunch'); timestampMs is when it was measured
+  launchMetric?: string;        // 'ttid' | 'ttfd'
+  startupType?: string;         // StartupType value
+  launchStartMs?: number;       // epoch ms the launch started: the vital's date
+  launchDurationNs?: number;
 
   // resource specifics (kind === 'startResource' | 'stopResource')
   url?: string;

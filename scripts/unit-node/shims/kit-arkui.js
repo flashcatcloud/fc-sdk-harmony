@@ -5,9 +5,10 @@ const uiObserver = {
 };
 
 // Records what was subscribed, so tests can tell which system event a frame
-// source chose. `failWith` makes the next `on` throw a BusinessError-like code.
+// source chose, and keeps the live callbacks per event so tests can fire them.
+// `failWith` makes the next `on` throw a BusinessError-like code.
 class Recorder {
-  constructor() { this.calls = []; this.failWith = 0; }
+  constructor() { this.calls = []; this.failWith = 0; this.callbacks = {}; }
   on(type, cb) {
     if (this.failWith !== 0) {
       const e = new Error(`${this.failWith}: Capability not supported.`);
@@ -15,8 +16,12 @@ class Recorder {
       throw e;
     }
     this.calls.push(`on:${type}`);
+    (this.callbacks[type] = this.callbacks[type] || []).push(cb);
   }
-  off(type, cb) { this.calls.push(`off:${type}`); }
+  off(type, cb) {
+    this.calls.push(`off:${type}`);
+    this.callbacks[type] = (this.callbacks[type] || []).filter((c) => c !== cb);
+  }
 }
 
 const window = {

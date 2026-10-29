@@ -1,5 +1,5 @@
 import { describe, expect, it, Level, Size, TestType } from '@ohos/hypium';
-import { common, appManager, ApplicationStateChangeCallback } from '@kit.AbilityKit';
+import { common, appManager, ApplicationStateChangeCallback, AbilityLifecycleCallback, UIAbility } from '@kit.AbilityKit';
 import { process } from '@kit.ArkTS';
 import { ConfigurationBuilder } from '../main/ets/config/Configuration';
 import { TrackingConsent } from '../main/ets/privacy/TrackingConsent';
@@ -12,6 +12,8 @@ let instanceSeq: number = 0;
  * process probe answers `state` for this process. */
 class FakeApp {
   callback: ApplicationStateChangeCallback | null = null;
+  abilities: AbilityLifecycleCallback | null = null;
+  abilitiesOff: number = 0;
   state: appManager.ProcessState;
 
   constructor(state: appManager.ProcessState) {
@@ -23,10 +25,19 @@ class FakeApp {
       'filesDir': `/tmp/flashcat-foreground-test-${Date.now()}-${instanceSeq++}`,
       'getApplicationContext': (): Record<string, Object> => {
         return {
-          'on': (_type: string, callback: ApplicationStateChangeCallback): void => {
-            this.callback = callback;
+          'on': (type: string, callback: Object): number => {
+            if (type === 'abilityLifecycle') {
+              this.abilities = callback as AbilityLifecycleCallback;
+              return 7;
+            }
+            this.callback = callback as ApplicationStateChangeCallback;
+            return 0;
           },
-          'off': (): void => {},
+          'off': (type: string, id?: number): void => {
+            if (type === 'abilityLifecycle' && id === 7) {
+              this.abilitiesOff += 1;
+            }
+          },
           'getRunningProcessInformation': (): Promise<Array<Record<string, Object>>> => {
             const info: Record<string, Object> = { 'pid': process.pid, 'state': this.state };
             return Promise.resolve([info]);
@@ -107,6 +118,20 @@ export default function appForegroundTests(): void {
       (app.callback as ApplicationStateChangeCallback).onApplicationBackground();
       expect(received.join(',')).assertEqual('app_background,keep_alive');
       core.stop();
+    });
+
+    it('abilityCreationAndDestructionReachRum', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+      const received: string[] = [];
+      const app: FakeApp = new FakeApp(appManager.ProcessState.STATE_BACKGROUND);
+      const core: FlashcatCore = build(app, received);
+      const abilities: AbilityLifecycleCallback = app.abilities as AbilityLifecycleCallback;
+      received.length = 0;
+      abilities.onAbilityCreate({} as UIAbility);
+      abilities.onAbilityForeground({} as UIAbility);
+      abilities.onAbilityDestroy({} as UIAbility);
+      expect(received.join(',')).assertEqual('ability_created,ability_destroyed');
+      core.stop();
+      expect(app.abilitiesOff).assertEqual(1);
     });
 
     it('userAndConsentChangesAreAnnouncedToRum', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
