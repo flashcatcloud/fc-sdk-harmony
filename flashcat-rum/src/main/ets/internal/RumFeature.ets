@@ -631,6 +631,18 @@ export class RumFeature implements Feature, FeatureEventReceiver {
     if (typeof arch === 'string' && arch.length > 0) {
       attributes['error.meta.code_type'] = arch;
     }
+    const threads: Object | undefined = event['threads'];
+    if (Array.isArray(threads) && threads.length > 0) {
+      attributes['error.threads'] = threads;
+    }
+    // Memory at the fault stays a plain attribute, so it lands in the error's
+    // context next to the other crash.* details.
+    const memory: Record<string, Object> = RumFeature.recordValue(event['memory']);
+    for (const key of Object.keys(memory)) {
+      if (typeof memory[key] === 'number') {
+        attributes[`crash.memory.${key}`] = memory[key];
+      }
+    }
     const kind: Object | undefined = event['crash_kind'];
     // APP_FREEZE is the system watchdog's application-not-responding verdict
     // (delivered on next launch, like Android ANRs) — not a self-sampled hang,
