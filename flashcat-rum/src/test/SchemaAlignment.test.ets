@@ -100,6 +100,22 @@ export default function schemaAlignmentTests(): void {
       expect(usr['id']).assertUndefined();
     });
 
+    it('liftsCrashThreadsOutOfContext', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+      const threads: Array<Record<string, Object>> = [
+        { 'name': 'example.app', 'crashed': true, 'stack': '#0 pc 0000000000001e10 /data/libentry.so' }
+      ];
+      const attributes: Record<string, Object> = { 'error.threads': threads, 'crash.memory.rss_kb': 201674 };
+      const event = RumEventAssembler.error(
+        testContext(), 'app-1', 'session-1', undefined, undefined,
+        'NativeCrash', 'source', '#0 pc 0000000000001e10 /data/libentry.so', true, 'unhandled', 1000, attributes);
+
+      const error = record(event['error']);
+      const context = record(event['context']);
+      expect(error['threads']).assertEqual(threads);
+      expect(context['error.threads']).assertUndefined();
+      expect(context['crash.memory.rss_kb']).assertEqual(201674);
+    });
+
     it('emitsAnonymousIdAlongsideUserId', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
       const context: FlashcatContext = testContext();
       context.user = { id: 'alice' };

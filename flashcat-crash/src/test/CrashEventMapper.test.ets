@@ -240,6 +240,154 @@ export default function crashEventMapperTests(): void {
       expect((ev['binary_images'] as Array<Record<string, Object>>).length).assertEqual(0);
     });
 
+    it('mapsNativeCrashThreadsFaultingFirst', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+      const ev: Record<string, Object> = CrashEventMapper.fromAppCrash(nativeCrashWithThreads());
+      const threads: Array<Record<string, Object>> = ev['threads'] as Array<Record<string, Object>>;
+      expect(threads.length).assertEqual(2);
+      expect(threads[0]['name']).assertEqual('example.app');
+      expect(threads[0]['crashed']).assertEqual(true);
+      expect(threads[0]['state']).assertEqual('R');
+      expect(threads[0]['stack']).assertEqual(
+        '#0 pc 0000000000001e10 /data/storage/el1/bundle/libs/arm64/libentry.so (crashHere+16)\n' +
+        '#1 pc 0000000000001df4 /data/storage/el1/bundle/libs/arm64/libentry.so');
+      expect(threads[1]['name']).assertEqual('worker');
+      expect(threads[1]['crashed']).assertEqual(false);
+      expect(threads[1]['state']).assertUndefined();
+      expect(threads[1]['stack']).assertEqual(
+        '#0 pc 00000000000ebcc4 /system/lib/ld-musl-aarch64.so.1 (pthread_cond_timedwait+188)');
+    });
+
+    it('takesFaultingThreadFromExceptionWhenDumpLacksIt',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        const params: Record<string, Object> = nativeCrashWithThreads();
+        params['threads'] = [(params['threads'] as Array<Object>)[0]]; // only the worker
+        const threads: Array<Record<string, Object>> =
+          CrashEventMapper.fromAppCrash(params)['threads'] as Array<Record<string, Object>>;
+        expect(threads.length).assertEqual(2);
+        expect(threads[0]['name']).assertEqual('example.app');
+        expect(threads[0]['crashed']).assertEqual(true);
+        expect(threads[1]['crashed']).assertEqual(false);
+      });
+
+    it('skipsThreadsWithoutFrames', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+      const params: Record<string, Object> = nativeCrashWithThreads();
+      const worker: Record<string, Object> = { 'thread_name': 'idle', 'tid': 102, 'frames': [] };
+      params['threads'] = (params['threads'] as Array<Object>).concat([worker, 'not-a-thread']);
+      const threads: Array<Record<string, Object>> =
+        CrashEventMapper.fromAppCrash(params)['threads'] as Array<Record<string, Object>>;
+      expect(threads.length).assertEqual(2);
+    });
+
+    it('omitsThreadsAndMemoryForArkTsCrash', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+      const exception: Record<string, Object> = {
+        'name': 'TypeError', 'message': 'x is undefined', 'stack': 'at f (entry/src/main/ets/a.ets:1:1)',
+        'thread_name': 'example.app'
+      };
+      const ev: Record<string, Object> = CrashEventMapper.fromAppCrash({ 'crash_type': 'JsError', 'exception': exception });
+      expect(ev['threads']).assertUndefined();
+      expect(ev['memory']).assertUndefined();
+    });
+
+    it('marksFreezeMainThreadAsCrashed', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+      const ev: Record<string, Object> = CrashEventMapper.fromAppFreeze(appFreezeParams('2026-10-27 23:51:37.517'));
+      const threads: Array<Record<string, Object>> = ev['threads'] as Array<Record<string, Object>>;
+      expect(threads.length).assertEqual(2);
+      expect(threads[0]['name']).assertEqual('example.app');
+      expect(threads[0]['crashed']).assertEqual(true);
+      expect(threads[0]['stack']).assertEqual(ev['stack']);
+      expect(threads[1]['name']).assertEqual('OS_DfxWatchdog');
+      expect(threads[1]['crashed']).assertEqual(false);
+    });
+
+    it('capsThreadsKeepingFaultingThread', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+      const params: Record<string, Object> = nativeCrashWithThreads();
+      const frames: Array<Object> = [];
+      for (let i = 0; i < 400; i++) {
+        const frame: Record<string, Object> = {
+          'pc': '0000000000001234', 'file': '/system/lib64/platformsdk/libark_jsruntime.so', 'symbol': `fn${i}`
+        };
+        frames.push(frame);
+      }
+      const dump: Array<Object> = [];
+      for (let i = 0; i < 60; i++) {
+        const thread: Record<string, Object> = { 'thread_name': `pool-${i}`, 'tid': 200 + i, 'frames': frames };
+        dump.push(thread);
+      }
+      params['threads'] = dump.concat(params['threads'] as Array<Object>);
+      const threads: Array<Record<string, Object>> =
+        CrashEventMapper.fromAppCrash(params)['threads'] as Array<Record<string, Object>>;
+      expect(threads[0]['name']).assertEqual('example.app');
+      expect(threads.length < 61).assertTrue();
+      expect(JSON.stringify(threads).length <= 200000).assertTrue();
+    });
+
+    it('budgetsThreadsInUtf8Bytes', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+      const params: Record<string, Object> = nativeCrashWithThreads();
+      const frames: Array<Object> = [];
+      for (let i = 0; i < 400; i++) {
+        const frame: Record<string, Object> = { 'pc': '0000000000001234', 'file': '/data/库.so', 'symbol': `函数${i}` };
+        frames.push(frame);
+      }
+      const dump: Array<Object> = [];
+      for (let i = 0; i < 60; i++) {
+        const thread: Record<string, Object> = { 'thread_name': `线程-${i}`, 'tid': 200 + i, 'frames': frames };
+        dump.push(thread);
+      }
+      params['threads'] = dump.concat(params['threads'] as Array<Object>);
+      const threads: Array<Record<string, Object>> =
+        CrashEventMapper.fromAppCrash(params)['threads'] as Array<Record<string, Object>>;
+      const json: string = JSON.stringify(threads);
+      let bytes: number = 0;
+      for (let i = 0; i < json.length; i++) {
+        const code: number = json.charCodeAt(i);
+        bytes += code < 0x80 ? 1 : (code < 0x800 ? 2 : 3);
+      }
+      expect(threads[0]['name']).assertEqual('example.app');
+      expect(bytes <= 200000).assertTrue();
+    });
+
+    it('keepsAnOversizedFaultingThreadTruncated', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+      const params: Record<string, Object> = nativeCrashWithThreads();
+      const frames: Array<Object> = [];
+      for (let i = 0; i < 5000; i++) {
+        const frame: Record<string, Object> = { 'pc': '0000000000001234', 'file': '/data/libentry.so', 'symbol': `fn${i}` };
+        frames.push(frame);
+      }
+      const faulting: Record<string, Object> = { 'thread_name': 'example.app', 'tid': 100, 'frames': frames };
+      params['threads'] = [faulting];
+      const threads: Array<Record<string, Object>> =
+        CrashEventMapper.fromAppCrash(params)['threads'] as Array<Record<string, Object>>;
+      expect(threads.length).assertEqual(1);
+      expect(threads[0]['crashed']).assertEqual(true);
+      expect((threads[0]['stack'] as string).endsWith('…[truncated]')).assertTrue();
+    });
+
+    it('matchesFaultingThreadAcrossTidTypes', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+      const params: Record<string, Object> = nativeCrashWithThreads();
+      const exception: Record<string, Object> = params['exception'] as Record<string, Object>;
+      exception['tid'] = '100';
+      const threads: Array<Record<string, Object>> =
+        CrashEventMapper.fromAppCrash(params)['threads'] as Array<Record<string, Object>>;
+      expect(threads.length).assertEqual(2);
+      expect(threads[0]['name']).assertEqual('example.app');
+      expect(threads[0]['crashed']).assertEqual(true);
+      expect(threads[1]['crashed']).assertEqual(false);
+    });
+
+    it('mapsMemoryAtFaultIgnoringInvalidValues', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+      const params: Record<string, Object> = nativeCrashWithThreads();
+      const memory: Record<string, Object> = {
+        'rss': 201674, 'sys_free_mem': -1, 'sys_avail_mem': '2641676', 'sys_total_mem': 4006880
+      };
+      params['memory'] = memory;
+      const out: Record<string, Object> = CrashEventMapper.fromAppCrash(params)['memory'] as Record<string, Object>;
+      expect(out['rss_kb']).assertEqual(201674);
+      expect(out['sys_total_kb']).assertEqual(4006880);
+      expect(out['sys_free_kb']).assertUndefined();
+      expect(out['sys_avail_kb']).assertUndefined();
+      expect(Object.keys(out).length).assertEqual(2);
+    });
+
     it('toleratesMissingFields', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
       const empty: Record<string, Object> = {};
       const ev: Record<string, Object> = CrashEventMapper.fromAppCrash(empty);
@@ -251,4 +399,27 @@ export default function crashEventMapperTests(): void {
       expect(ev['build_id']).assertEqual('');
     });
   });
+}
+
+/** A trimmed NativeCrash payload: the faulting thread (tid 100) is listed after a worker. */
+function nativeCrashWithThreads(): Record<string, Object> {
+  const appFrames: Array<Object> = [
+    { 'pc': '0000000000001e10', 'file': '/data/storage/el1/bundle/libs/arm64/libentry.so', 'symbol': 'crashHere',
+      'offset': 16, 'buildId': 'aabbcc' },
+    { 'pc': '0000000000001df4', 'file': '/data/storage/el1/bundle/libs/arm64/libentry.so', 'buildId': 'aabbcc' }
+  ];
+  const workerFrames: Array<Object> = [
+    { 'pc': '00000000000ebcc4', 'file': '/system/lib/ld-musl-aarch64.so.1', 'symbol': 'pthread_cond_timedwait',
+      'offset': 188 }
+  ];
+  const signal: Record<string, Object> = { 'signo': 11, 'code': 1, 'address': '0x0' };
+  const exception: Record<string, Object> = {
+    'message': 'Signal:SIGSEGV(SEGV_MAPERR)', 'signal': signal, 'thread_name': 'example.app', 'tid': 100,
+    'frames': appFrames
+  };
+  const threads: Array<Object> = [
+    { 'thread_name': 'worker', 'tid': 101, 'frames': workerFrames },
+    { 'thread_name': 'example.app', 'tid': 100, 'state': 'R', 'frames': appFrames }
+  ];
+  return { 'crash_type': 'NativeCrash', 'pid': 100, 'cpu_abi': 'arm64-v8a', 'exception': exception, 'threads': threads };
 }
