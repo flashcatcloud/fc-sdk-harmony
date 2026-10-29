@@ -8,6 +8,7 @@ const ERROR_BINARY_IMAGES_ATTRIBUTE: string = 'error.binary_images';
 const ERROR_CATEGORY_ATTRIBUTE: string = 'error.category';
 const ERROR_SOURCE_TYPE_ATTRIBUTE: string = 'error.source_type';
 const ERROR_META_CODE_TYPE_ATTRIBUTE: string = 'error.meta.code_type';
+const ERROR_THREADS_ATTRIBUTE: string = 'error.threads';
 
 /**
  * Builds RUM event objects (View / Error / Resource) for phase 1. Fields follow
@@ -129,6 +130,10 @@ export class RumEventAssembler {
     const binaryImages: Object | undefined = attributes[ERROR_BINARY_IMAGES_ATTRIBUTE];
     if (Array.isArray(binaryImages) && binaryImages.length > 0) {
       error['binary_images'] = binaryImages;
+    }
+    const threads: Object | undefined = attributes[ERROR_THREADS_ATTRIBUTE];
+    if (Array.isArray(threads) && threads.length > 0) {
+      error['threads'] = threads;
     }
     const codeType: string = RumEventAssembler.asString(attributes[ERROR_META_CODE_TYPE_ATTRIBUTE]);
     if (codeType.length > 0) {
@@ -390,7 +395,8 @@ export class RumEventAssembler {
   private static isInternalAttribute(key: string): boolean {
     return key === VIEW_URL_ATTRIBUTE || key === BUILD_ID_ATTRIBUTE ||
       key === ERROR_BINARY_IMAGES_ATTRIBUTE || key === ERROR_CATEGORY_ATTRIBUTE ||
-      key === ERROR_SOURCE_TYPE_ATTRIBUTE || key === ERROR_META_CODE_TYPE_ATTRIBUTE;
+      key === ERROR_SOURCE_TYPE_ATTRIBUTE || key === ERROR_META_CODE_TYPE_ATTRIBUTE ||
+      key === ERROR_THREADS_ATTRIBUTE;
   }
 
   private static asString(value: Object | undefined): string {

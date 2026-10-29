@@ -46,6 +46,20 @@ export default function crashReportTests(): void {
       expect(attrs['freeze.dump_started_at']).assertEqual('2026-10-27 23:51:37.517');
     });
 
+    it('carriesThreadsAndMemoryAtFault', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+      const threads: Array<Record<string, Object>> = [
+        { 'name': 'example.app', 'crashed': true, 'stack': '#0 pc 0000000000001e10 /data/libentry.so' }
+      ];
+      const memory: Record<string, Object> = { 'rss_kb': 201674, 'sys_avail_kb': 2641676 };
+      const event: Record<string, Object> = {
+        'type': 'crash_report', 'crash_kind': 'crash', 'threads': threads, 'memory': memory
+      };
+      const attrs: Record<string, Object> = RumFeature.crashAttributes(event);
+      expect(attrs['error.threads']).assertEqual(threads);
+      expect(attrs['crash.memory.rss_kb']).assertEqual(201674);
+      expect(attrs['crash.memory.sys_avail_kb']).assertEqual(2641676);
+    });
+
     it('omitsEmptyAttributesForArkTsCrash', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
       const event: Record<string, Object> = {
         'type': 'crash_report',
@@ -57,6 +71,8 @@ export default function crashReportTests(): void {
       expect(attrs['error.binary_images']).assertUndefined();
       expect(attrs['build_id']).assertUndefined();
       expect(attrs['error.meta.code_type']).assertUndefined();
+      expect(attrs['error.threads']).assertUndefined();
+      expect(Object.keys(attrs).some((k: string): boolean => k.startsWith('crash.memory.'))).assertFalse();
       expect(attrs['error.source_type']).assertEqual('harmony');
       expect(attrs['error.category']).assertEqual('ANR');
     });
