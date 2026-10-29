@@ -40,6 +40,7 @@ export interface RumRawEvent {
   startupType?: string;         // StartupType value
   launchStartMs?: number;       // epoch ms the launch started: the vital's date
   launchDurationNs?: number;
+  launchFullyDisplayed?: boolean; // ttid: also report it as the ttfd (fully displayed first)
 
   // view loading time (kind === 'addViewLoadingTime'); timestampMs is when the view loaded
   overwrite?: boolean;          // manual: replace a value an earlier manual call set

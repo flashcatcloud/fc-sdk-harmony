@@ -88,7 +88,10 @@ export class RumNavigationTracker {
         }
       });
     RumNavigationTracker.attached.clear();
-    RumNavigationTracker.launch = null; // the feature unhooks its frames
+    // Launch timing stays: a later startViewTracking hands it contexts again.
+    if (RumNavigationTracker.launch !== null) {
+      RumNavigationTracker.launch.detachAllContexts();
+    }
   }
 
   /** Detach the observer bound to one context (e.g. before that ability is destroyed). */

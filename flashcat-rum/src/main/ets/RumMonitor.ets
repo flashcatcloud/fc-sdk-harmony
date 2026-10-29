@@ -21,10 +21,12 @@ export interface RumMonitor {
 
   /**
    * Call when the app has finished loading what its first screen shows (data
-   * included). Reports the time to full display of the current launch: from
-   * the launch's start to now. Counted once per session, and only after the
-   * launch's first frame (time to initial display) was measured and within
-   * 90 s of the launch's start; other calls are ignored and logged.
+   * included). Reports the time to full display of the last cold or warm
+   * launch: from the launch's start to now, if that is within 90 s. Called
+   * before the launch's first frame, it is remembered and reported when that
+   * frame is measured, with the time to initial display as its value (as on
+   * Android). Counted once per session; calls before any launch was detected
+   * are ignored and logged.
    *
    * Launch timing needs `Flashcat.initialize` and `FlashcatRum.enable` in
    * `AbilityStage.onCreate`, and `FlashcatRum.startViewTracking(this.getUIContext())`

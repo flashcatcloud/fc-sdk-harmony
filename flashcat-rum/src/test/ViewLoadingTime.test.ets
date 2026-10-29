@@ -131,12 +131,13 @@ class Bench {
   nowMs: number = 100_000;
   readonly loaded: string[] = [];
   onLoaded: ((key: string, atMs: number) => void) | null = null;
-  private readonly frames: Array<(firstDrawFrame: boolean | null) => void> = [];
+  private readonly frames: Map<Object, (firstDrawFrame: boolean | null) => void> =
+    new Map<Object, (firstDrawFrame: boolean | null) => void>();
   readonly tracker: AppLaunchTracker;
 
   constructor() {
     const sink: AppLaunchSink = {
-      initialDisplay: (_t: StartupType, _s: number, _d: number, _a: number): void => {},
+      initialDisplay: (_t: StartupType, _s: number, _d: number, _a: number, _f: boolean): void => {},
       fullDisplay: (_t: StartupType, _s: number, _d: number, _a: number): void => {},
       viewLoaded: (viewKey: string, atMs: number): void => {
         this.loaded.push(`${viewKey}@${atMs}`);
@@ -146,9 +147,11 @@ class Bench {
       }
     };
     const hooks: FrameHookFactory =
-      (_context: Object, onFrame: (firstDrawFrame: boolean | null) => void): (() => void) | null => {
-        this.frames.push(onFrame);
-        return (): void => {};
+      (context: Object, onFrame: (firstDrawFrame: boolean | null) => void): (() => void) | null => {
+        this.frames.set(context, onFrame);
+        return (): void => {
+          this.frames.delete(context);
+        };
       };
     this.tracker = new AppLaunchTracker(sink, hooks, (): number | null => 0, (): number => this.nowMs);
     this.tracker.attachContext('page');

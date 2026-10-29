@@ -122,9 +122,10 @@ export class FlashcatRum {
     // What it measures goes through the monitor, so it lands in whatever
     // session and view are current, under their sampling.
     const launchSink: AppLaunchSink = {
-      initialDisplay: (type: StartupType, startMs: number, durationNs: number, atMs: number): void => {
+      initialDisplay: (type: StartupType, startMs: number, durationNs: number, atMs: number,
+        fullyDisplayed: boolean): void => {
         if (monitorRef !== null) {
-          monitorRef.reportAppLaunch(APP_LAUNCH_TTID, type, startMs, durationNs, atMs);
+          monitorRef.reportAppLaunch(APP_LAUNCH_TTID, type, startMs, durationNs, atMs, fullyDisplayed);
         }
       },
       fullDisplay: (type: StartupType, startMs: number, durationNs: number, atMs: number): void => {

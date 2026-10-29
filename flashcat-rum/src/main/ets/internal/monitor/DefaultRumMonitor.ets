@@ -182,7 +182,8 @@ export class DefaultRumMonitor implements RumMonitor {
   }
 
   /** Internal: a launch vital measured by the app launch tracker. */
-  reportAppLaunch(metric: string, type: StartupType, startMs: number, durationNs: number, atMs: number): void {
+  reportAppLaunch(metric: string, type: StartupType, startMs: number, durationNs: number, atMs: number,
+    fullyDisplayed: boolean = false): void {
     this.dispatch('appLaunch', () => {
       const e: RumRawEvent = this.raw('appLaunch');
       e.timestampMs = atMs;
@@ -190,6 +191,7 @@ export class DefaultRumMonitor implements RumMonitor {
       e.startupType = type as string;
       e.launchStartMs = startMs;
       e.launchDurationNs = durationNs;
+      e.launchFullyDisplayed = fullyDisplayed;
       return e;
     });
   }

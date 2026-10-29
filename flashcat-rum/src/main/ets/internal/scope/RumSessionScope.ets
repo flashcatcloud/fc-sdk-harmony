@@ -2,7 +2,7 @@ import { FeatureScope, FlashcatContext, EventWriter, SdkCore, FlashcatLog } from
 import { util } from '@kit.ArkTS';
 import { RumScope, RumRawEvent } from './RumScope';
 import { RumViewScope } from './RumViewScope';
-import { RumEventAssembler, LaunchView, APP_LAUNCH_TTID } from '../assembly/RumEventAssembler';
+import { RumEventAssembler, LaunchView, APP_LAUNCH_TTID, APP_LAUNCH_TTFD } from '../assembly/RumEventAssembler';
 import { StartupType } from '../startup/AppLaunchTracker';
 import { writeMapped } from '../RumEventMapperHolder';
 import { DrawnConfiguration } from '../remoteconfig/RemoteConfigStore';
@@ -398,12 +398,23 @@ export class RumSessionScope implements RumScope {
         }
         this.launchInitialDisplayReported = true;
       }
-    } else {
-      if (this.launchFullDisplayReported) {
-        return;
+      this.writeLaunchVital(raw, APP_LAUNCH_TTID);
+      // Fully displayed before its first frame: the same value, as on Android,
+      // and only along with a time to initial display this session reports.
+      if (raw.launchFullyDisplayed === true && !this.launchFullDisplayReported) {
+        this.launchFullDisplayReported = true;
+        this.writeLaunchVital(raw, APP_LAUNCH_TTFD);
       }
-      this.launchFullDisplayReported = true;
+      return;
     }
+    if (this.launchFullDisplayReported) {
+      return;
+    }
+    this.launchFullDisplayReported = true;
+    this.writeLaunchVital(raw, APP_LAUNCH_TTFD);
+  }
+
+  private writeLaunchVital(raw: RumRawEvent, metric: string): void {
     const open: RumViewScope | null = this.activeView;
     let view: LaunchView | null = null;
     if (open !== null) {
@@ -412,8 +423,7 @@ export class RumSessionScope implements RumScope {
     }
     this.featureScope.withWriteContext((context: FlashcatContext, writer: EventWriter) => {
       const event: Record<string, Object> = RumEventAssembler.appLaunch(
-        context, this.applicationId, this.sessionId, view, raw.launchMetric ?? APP_LAUNCH_TTID,
-        raw.startupType ?? '', raw.launchStartMs ?? raw.timestampMs, raw.launchDurationNs ?? 0,
+        context, this.applicationId, this.sessionId, view, metric, raw.startupType ?? '', raw.launchStartMs ?? raw.timestampMs, raw.launchDurationNs ?? 0,
         raw.attributes, this.draw, this.sampledOnError);
       writeMapped(writer, event, false);
     });

@@ -49,6 +49,9 @@ export class FramePeriodEstimator {
   private readonly gaps: number[] = [];
   private next: number = 0;
   private lastVsyncNs: number = -1;
+  // The period of the gaps as they are; recomputed only when a gap is added.
+  private cachedPeriodNs: number = DEFAULT_FRAME_PERIOD_NS;
+  private stale: boolean = false;
 
   /** The next frame does not follow the last one seen (observation restarted). */
   reset(): void {
@@ -65,12 +68,21 @@ export class FramePeriodEstimator {
           this.gaps[this.next] = gap;
           this.next = (this.next + 1) % PERIOD_WINDOW;
         }
+        this.stale = true;
       }
     }
     this.lastVsyncNs = vsyncNs;
   }
 
   periodNs(): number {
+    if (this.stale) {
+      this.cachedPeriodNs = this.computePeriodNs();
+      this.stale = false;
+    }
+    return this.cachedPeriodNs;
+  }
+
+  private computePeriodNs(): number {
     const counts: Map<number, number> = new Map<number, number>();
     const sums: Map<number, number> = new Map<number, number>();
     let best: number = -1;

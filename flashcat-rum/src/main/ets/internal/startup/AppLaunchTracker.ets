@@ -18,8 +18,13 @@ const NOT_OBSERVED: string = 'rum.launch: first frame not observed';
 
 /** Where measured launches and page loads go. */
 export interface AppLaunchSink {
-  /** Time to initial display: from the launch's start to the first frame drawn after it. */
-  initialDisplay: (type: StartupType, startMs: number, durationNs: number, atMs: number) => void;
+  /**
+   * Time to initial display: from the launch's start to the first frame drawn
+   * after it. `fullyDisplayed`: `reportAppFullyDisplayed` came before that
+   * frame, so time to full display is the same value (Android parity).
+   */
+  initialDisplay: (type: StartupType, startMs: number, durationNs: number, atMs: number,
+    fullyDisplayed: boolean) => void;
   /** Time to full display: from the launch's start to `reportAppFullyDisplayed`. */
   fullDisplay: (type: StartupType, startMs: number, durationNs: number, atMs: number) => void;
   /** The first frame drawn after the router showed the page `viewKey`. */
@@ -38,14 +43,15 @@ export type FrameHookFactory =
 class Launch {
   readonly type: StartupType;
   readonly startMs: number;
-  // Which launch this is: frame hooks attached since it began carry the same number.
+  // Which launch this is: contexts handed over since it began carry the same number.
   readonly seq: number;
   // Its time to initial display has been measured.
   displayed: boolean = false;
+  // `reportAppFullyDisplayed` was called for it (before or after its first frame).
   fullyDisplayed: boolean = false;
-  // A frame hook was attached after this launch began.
+  // A context was handed over after this launch began.
   hookedDuringLaunch: boolean = false;
-  // A view started before any frame hook of this launch was attached: a frame
+  // A view started before any context of this launch was handed over: a frame
   // source that cannot name the first frame then cannot be trusted with it.
   viewBeforeHook: boolean = false;
 
@@ -56,10 +62,18 @@ class Launch {
   }
 }
 
+/** One subscription to a context's frames; a callback from an older one is ignored. */
 class Hook {
-  // The launch that was the latest when this hook was attached.
-  readonly seq: number;
   unhook: () => void = (): void => {};
+}
+
+/** A context handed over by `startViewTracking`, hooked only while frames are awaited. */
+class Watched {
+  // The launch that was the latest when the context was handed over.
+  readonly seq: number;
+  hook: Hook | null = null;
+  // Its frames cannot be hooked at all (API level, window gone): never retried.
+  unsupported: boolean = false;
 
   constructor(seq: number) {
     this.seq = seq;
@@ -84,8 +98,9 @@ class PendingViewLoad {
  *   that missed the ones before it, is no launch). The first one of the process
  *   is cold when the process is at most 10 s old, and starts when the process
  *   started; otherwise, and for any later one, it is warm and starts at the
- *   ability's creation. Its first frame is the first one of a window hooked
- *   after it began: windows hooked before belong to abilities that went away.
+ *   ability's creation. Its first frame is the first one of a window handed
+ *   over after it began: windows handed over before belong to abilities that
+ *   went away.
  * - Hot: the app comes back to the foreground with its process and abilities
  *   alive; it starts at that moment. Time to full display belongs to the last
  *   cold or warm launch, never to a hot one (as on Android, which has none).
@@ -96,6 +111,10 @@ class PendingViewLoad {
  * background first, or 90 s passed — nothing is reported, and the reason is
  * logged. No other moment stands in for the frame.
  *
+ * Frames are hooked only while something waits for one — a launch's first
+ * frame or a shown page's — and unhooked as soon as nothing does; a launch or
+ * a page shown hooks them again.
+ *
  * Pure bookkeeping: the clock, the process age and the frame hooks are
  * injected; nothing here calls the system.
  */
@@ -104,7 +123,7 @@ export class AppLaunchTracker {
   private readonly hookFrames: FrameHookFactory;
   private readonly processAgeMs: () => number | null;
   private readonly nowMs: () => number;
-  private readonly hooks: Map<Object, Hook> = new Map<Object, Hook>();
+  private readonly contexts: Map<Object, Watched> = new Map<Object, Watched>();
   // The launch waiting for (or ended by) its first frame.
   private launch: Launch | null = null;
   // The last cold or warm launch: the one `reportAppFullyDisplayed` completes.
@@ -130,6 +149,11 @@ export class AppLaunchTracker {
   }
 
   onAbilityCreated(): void {
+    this.abilityCreated();
+    this.reconcileHooks();
+  }
+
+  private abilityCreated(): void {
     this.liveAbilities += 1;
     if (this.stopped || this.liveAbilities !== 1) {
       return; // another ability is already on screen: not a launch
@@ -170,13 +194,18 @@ export class AppLaunchTracker {
 
   /** The app came back to the foreground (not the startup probe of a running app). */
   onForeground(): void {
+    this.foregrounded();
+    this.reconcileHooks();
+  }
+
+  private foregrounded(): void {
     const returning: boolean = this.backgrounded;
     this.backgrounded = false;
     this.foreground = true;
     if (this.stopped || !returning || this.launchedSinceBackground) {
       return; // the launch's own first foreground, or an ability launch is measuring it
     }
-    if (this.hooks.size === 0) {
+    if (!this.hasFrameSource()) {
       this.launch = null;
       FlashcatLog.d(`${NOT_OBSERVED}: no frame hook; call FlashcatRum.startViewTracking`);
       return;
@@ -198,6 +227,7 @@ export class AppLaunchTracker {
       this.launch = null;
       FlashcatLog.d(`${NOT_OBSERVED}: the app went to the background first`);
     }
+    this.reconcileHooks();
   }
 
   /** A view started (any view, manual or tracked). */
@@ -208,38 +238,39 @@ export class AppLaunchTracker {
     }
   }
 
-  /** Hook the frames drawn for `context`. Once per context. */
+  /** Watch the frames drawn for `context` (hooked while one is awaited). Once per context. */
   attachContext(context: Object): void {
-    if (this.stopped || this.hooks.has(context)) {
+    if (this.stopped || this.contexts.has(context)) {
       return;
     }
-    const hook: Hook = new Hook(this.launchSeq);
-    const unhook: (() => void) | null = this.hookFrames(context,
-      (firstDrawFrame: boolean | null): void => this.onFrameContained(hook, firstDrawFrame));
-    if (unhook === null) {
-      return;
-    }
-    hook.unhook = unhook;
-    this.hooks.set(context, hook);
+    this.contexts.set(context, new Watched(this.launchSeq));
     if (this.launch !== null && !this.launch.displayed) {
       this.launch.hookedDuringLaunch = true;
     }
     if (!this.abilitySeen) {
       FlashcatLog.d(`${NOT_OBSERVED}: no ability creation was seen; initialize the SDK in AbilityStage.onCreate`);
     }
+    this.reconcileHooks();
   }
 
   detachContext(context: Object): void {
-    const hook: Hook | undefined = this.hooks.get(context);
-    if (hook !== undefined) {
-      this.hooks.delete(context);
-      AppLaunchTracker.unhook(hook);
+    const watched: Watched | undefined = this.contexts.get(context);
+    if (watched !== undefined) {
+      this.contexts.delete(context);
+      AppLaunchTracker.unhook(watched);
     }
+  }
+
+  /** Stop watching every context (`stopViewTracking()` without one); later ones are watched again. */
+  detachAllContexts(): void {
+    this.contexts.forEach((watched: Watched) => AppLaunchTracker.unhook(watched));
+    this.contexts.clear();
   }
 
   /** The router showed the page `key`: its first frame is its loading time. */
   expectViewLoad(key: string): void {
     this.pendingViewLoad = new PendingViewLoad(key, this.nowMs());
+    this.reconcileHooks();
   }
 
   /** The page `key` was hidden before it drew. */
@@ -247,20 +278,26 @@ export class AppLaunchTracker {
     if (this.pendingViewLoad !== null && this.pendingViewLoad.key === key) {
       this.pendingViewLoad = null;
     }
+    this.reconcileHooks();
   }
 
-  /** `RumMonitor.reportAppFullyDisplayed`. */
+  /**
+   * `RumMonitor.reportAppFullyDisplayed`. As on Android: called before the
+   * launch's first frame, it is remembered and reported with that frame, with
+   * the time to initial display as its value.
+   */
   onFullyDisplayed(): void {
     const launch: Launch | null = this.abilityLaunch;
     if (this.stopped || launch === null) {
-      FlashcatLog.usage('reportAppFullyDisplayed ignored: no cold or warm launch was seen');
-      return;
-    }
-    if (!launch.displayed) {
-      FlashcatLog.usage('reportAppFullyDisplayed ignored: the first frame of the launch was not measured (yet)');
+      FlashcatLog.usage('reportAppFullyDisplayed ignored: called before an app launch was detected');
       return;
     }
     if (launch.fullyDisplayed) {
+      return;
+    }
+    launch.fullyDisplayed = true;
+    if (!launch.displayed) {
+      FlashcatLog.usage('reportAppFullyDisplayed called before the first frame: it is reported with the time to initial display');
       return;
     }
     const nowMs: number = this.nowMs();
@@ -269,7 +306,6 @@ export class AppLaunchTracker {
       FlashcatLog.usage('reportAppFullyDisplayed ignored: more than 90 s after the launch started');
       return;
     }
-    launch.fullyDisplayed = true;
     this.sink.fullDisplay(launch.type, launch.startMs, elapsedMs * MS_TO_NS, nowMs);
   }
 
@@ -279,20 +315,23 @@ export class AppLaunchTracker {
     this.launch = null;
     this.abilityLaunch = null;
     this.pendingViewLoad = null;
-    this.hooks.forEach((hook: Hook) => AppLaunchTracker.unhook(hook));
-    this.hooks.clear();
+    this.detachAllContexts();
   }
 
   /** Called from the system's frame callback: nothing may escape into it. */
-  private onFrameContained(hook: Hook, firstDrawFrame: boolean | null): void {
+  private onFrameContained(watched: Watched, hook: Hook, firstDrawFrame: boolean | null): void {
     try {
-      this.onFrame(hook, firstDrawFrame);
+      if (watched.hook !== hook) {
+        return; // queued by a subscription that has since been unhooked
+      }
+      this.onFrame(watched, firstDrawFrame);
+      this.reconcileHooks();
     } catch (e) {
       FlashcatLog.e(`rum.launch: frame handling failed: ${e instanceof Error ? e.message : 'error'}`);
     }
   }
 
-  private onFrame(hook: Hook, firstDrawFrame: boolean | null): void {
+  private onFrame(watched: Watched, firstDrawFrame: boolean | null): void {
     if (this.stopped) {
       return;
     }
@@ -310,7 +349,7 @@ export class AppLaunchTracker {
     // A return to the foreground has no "first frame" of its own: the next frame
     // drawn ends it. An ability launch ends at its window's first frame.
     if (launch.type !== StartupType.HOT) {
-      if (hook.seq !== launch.seq) {
+      if (watched.seq !== launch.seq) {
         return; // a window of an ability from before this launch
       }
       if (firstDrawFrame === false) {
@@ -325,7 +364,8 @@ export class AppLaunchTracker {
       }
     }
     launch.displayed = true;
-    this.sink.initialDisplay(launch.type, launch.startMs, (nowMs - launch.startMs) * MS_TO_NS, nowMs);
+    this.sink.initialDisplay(launch.type, launch.startMs, (nowMs - launch.startMs) * MS_TO_NS, nowMs,
+      launch.fullyDisplayed);
   }
 
   private resolveViewLoad(nowMs: number): void {
@@ -348,7 +388,46 @@ export class AppLaunchTracker {
     }
   }
 
-  private static unhook(hook: Hook): void {
+  /** Something waits for a frame: a launch's first one, or a shown page's. */
+  private awaitsFrame(): boolean {
+    return !this.stopped
+      && ((this.launch !== null && !this.launch.displayed) || this.pendingViewLoad !== null);
+  }
+
+  private hasFrameSource(): boolean {
+    let any: boolean = false;
+    this.contexts.forEach((watched: Watched) => {
+      any = any || !watched.unsupported;
+    });
+    return any;
+  }
+
+  /** Hook every watched context while a frame is awaited; unhook them otherwise. */
+  private reconcileHooks(): void {
+    const awaits: boolean = this.awaitsFrame();
+    this.contexts.forEach((watched: Watched, context: Object) => {
+      if (!awaits) {
+        AppLaunchTracker.unhook(watched);
+      } else if (watched.hook === null && !watched.unsupported) {
+        const hook: Hook = new Hook();
+        const unhook: (() => void) | null = this.hookFrames(context,
+          (firstDrawFrame: boolean | null): void => this.onFrameContained(watched, hook, firstDrawFrame));
+        if (unhook === null) {
+          watched.unsupported = true;
+        } else {
+          hook.unhook = unhook;
+          watched.hook = hook;
+        }
+      }
+    });
+  }
+
+  private static unhook(watched: Watched): void {
+    const hook: Hook | null = watched.hook;
+    if (hook === null) {
+      return;
+    }
+    watched.hook = null;
     try {
       hook.unhook();
     } catch (_e) {

@@ -299,6 +299,7 @@ export class RumFeature implements Feature, FeatureEventReceiver {
       this.monitor.stopWithheld(); // and any withheld release still waiting on its jitter
     }
     RumNavigationTracker.detach(); // remove the router observer
+    RumNavigationTracker.configureLaunch(null); // launch timing ends with RUM
     RumAutoInstrumentation.reset(); // make tap/nav trackers inert after stop
     RumEventMapperHolder.reset(); // clear the event mapper
     LastViewSnapshot.reset(); // stop snapshotting through a torn-down core

@@ -11,6 +11,7 @@ import {
 } from '../main/ets/internal/startup/AppLaunchTracker';
 import { systemFrameHooks, systemProcessAgeMs } from '../main/ets/internal/startup/SystemLaunchHooks';
 import { RumFeature } from '../main/ets/internal/RumFeature';
+import { RumNavigationTracker } from '../main/ets/internal/RumNavigationTracker';
 import { DefaultRumMonitor } from '../main/ets/internal/monitor/DefaultRumMonitor';
 import { RumConfiguration, RumConfigurationBuilder } from '../main/ets/RumConfiguration';
 import { APP_LAUNCH_TTID, APP_LAUNCH_TTFD } from '../main/ets/internal/assembly/RumEventAssembler';
@@ -114,6 +115,7 @@ class Bench {
   nowMs: number = 100_000;
   ageMs: number | null = 300;
   hookable: boolean = true;
+  hooksMade: number = 0;
   unhooked: number = 0;
   readonly measured: Measured[] = [];
   readonly loaded: string[] = [];
@@ -123,8 +125,12 @@ class Bench {
 
   constructor() {
     const sink: AppLaunchSink = {
-      initialDisplay: (type: StartupType, startMs: number, durationNs: number, _atMs: number): void => {
+      initialDisplay: (type: StartupType, startMs: number, durationNs: number, _atMs: number,
+        fullyDisplayed: boolean): void => {
         this.measured.push(new Measured('ttid', type, startMs, durationNs));
+        if (fullyDisplayed) {
+          this.measured.push(new Measured('ttfd(=ttid)', type, startMs, durationNs));
+        }
       },
       fullDisplay: (type: StartupType, startMs: number, durationNs: number, _atMs: number): void => {
         this.measured.push(new Measured('ttfd', type, startMs, durationNs));
@@ -135,6 +141,7 @@ class Bench {
     };
     const hooks: FrameHookFactory =
       (context: Object, onFrame: (firstDrawFrame: boolean | null) => void): (() => void) | null => {
+        this.hooksMade += 1;
         if (!this.hookable) {
           return null;
         }
@@ -145,6 +152,16 @@ class Bench {
         };
       };
     this.tracker = new AppLaunchTracker(sink, hooks, (): number | null => this.ageMs, (): number => this.nowMs);
+  }
+
+  /** How many contexts are hooked right now. */
+  live(): number {
+    return this.frames.size;
+  }
+
+  /** The frame callback a context is hooked with now, to call it later as a stale one. */
+  callbackOf(context: string): (firstDrawFrame: boolean | null) => void {
+    return this.frames.get(context) as (firstDrawFrame: boolean | null) => void;
   }
 
   /** A frame drawn `afterMs` from now, on every hooked context. */
@@ -412,13 +429,100 @@ export default function appLaunchTests(): void {
       const b: Bench = new Bench();
       b.tracker.onAbilityCreated();
       b.tracker.attachContext('page-1');
-      b.tracker.onFullyDisplayed(); // before the first frame: dropped
       b.frame(200, true);
       b.nowMs += 1_000;
       b.tracker.onFullyDisplayed();
       b.nowMs += 1_000;
       b.tracker.onFullyDisplayed(); // once per launch
       expect(b.report()).assertEqual('ttid:cold_start@99700+500 ttfd:cold_start@99700+1500');
+    });
+
+    it('fullDisplayBeforeTheFirstFrameIsReportedWithItAtTheSameValue', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+      const b: Bench = new Bench();
+      b.tracker.onAbilityCreated();
+      b.tracker.attachContext('page-1');
+      b.tracker.onFullyDisplayed(); // remembered, as on Android
+      b.nowMs += 1_000;
+      b.tracker.onFullyDisplayed(); // once per launch
+      b.frame(200, true);
+      b.nowMs += 1_000;
+      b.tracker.onFullyDisplayed();
+      expect(b.report()).assertEqual('ttid:cold_start@99700+1500 ttfd(=ttid):cold_start@99700+1500');
+
+      // A launch whose first frame is never seen reports neither.
+      const missed: Bench = new Bench();
+      missed.tracker.onAbilityCreated();
+      missed.tracker.attachContext('page-1');
+      missed.tracker.onFullyDisplayed();
+      missed.tracker.onBackground();
+      missed.frame(200, true);
+      expect(missed.report()).assertEqual('');
+    });
+
+    it('framesAreHookedOnlyWhileOneIsAwaited', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+      const b: Bench = new Bench();
+      b.tracker.attachContext('page-0'); // nothing awaited yet
+      expect(b.hooksMade).assertEqual(0);
+      b.tracker.detachContext('page-0');
+      b.tracker.onAbilityCreated();
+      b.tracker.attachContext('page-1');
+      expect(b.live()).assertEqual(1);
+      b.frame(200, true);
+      expect(b.live()).assertEqual(0); // measured: nothing awaited
+      b.tracker.onBackground();
+      expect(b.live()).assertEqual(0);
+      b.tracker.onForeground(); // a hot start awaits its frame
+      expect(b.live()).assertEqual(1);
+      b.frame(30, false);
+      expect(b.live()).assertEqual(0);
+      b.tracker.expectViewLoad('detail'); // a shown page awaits its frame
+      expect(b.live()).assertEqual(1);
+      b.frame(20, false);
+      expect(b.live()).assertEqual(0);
+      b.tracker.expectViewLoad('other');
+      b.tracker.cancelViewLoad('other');
+      expect(b.live()).assertEqual(0);
+      expect(b.report()).assertEqual('ttid:cold_start@99700+500 ttid:hot_start@100200+30');
+      expect(b.loaded.join(' ')).assertEqual('detail@100250');
+    });
+
+    it('aWarmLaunchHooksAgainAndStillIgnoresOlderWindows', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+      const b: Bench = new Bench();
+      b.coldLaunched();
+      b.tracker.onBackground();
+      b.tracker.onAbilityDestroyed();
+      b.nowMs = 200_000;
+      b.tracker.onAbilityCreated();
+      expect(b.live()).assertEqual(1); // page-1 hooked again: it may still draw
+      b.frameOn('page-1', 10, true); // but it is not this launch's window
+      b.tracker.attachContext('page-2');
+      b.frameOn('page-2', 140, true);
+      expect(b.report()).assertEqual('ttid:cold_start@99700+500 ttid:warm_start@200000+150');
+    });
+
+    it('aFrameQueuedByAnUnhookedSubscriptionIsIgnored', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+      const b: Bench = new Bench();
+      b.coldLaunched();
+      b.tracker.onBackground();
+      b.tracker.onForeground();
+      const first: (firstDrawFrame: boolean | null) => void = b.callbackOf('page-1');
+      b.tracker.onBackground(); // unhooked
+      b.tracker.onForeground(); // hooked anew
+      first(false); // delivered late by the old subscription
+      b.frame(30, false);
+      expect(b.report()).assertEqual('ttid:cold_start@99700+500 ttid:hot_start@100200+30');
+    });
+
+    it('aContextThatCannotBeHookedIsNotAskedAgain', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+      const b: Bench = new Bench();
+      b.hookable = false;
+      b.tracker.onAbilityCreated();
+      b.tracker.attachContext('page-1');
+      b.tracker.expectViewLoad('home');
+      b.tracker.onBackground();
+      b.tracker.onForeground();
+      b.tracker.expectViewLoad('detail');
+      expect(b.hooksMade).assertEqual(1);
     });
 
     it('fullDisplayBelongsToTheColdOrWarmLaunchNeverToAHotStart', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
@@ -482,7 +586,7 @@ export default function appLaunchTests(): void {
       let onFrame: ((firstDrawFrame: boolean | null) => void) | null = null;
       let reached: boolean = false;
       const sink: AppLaunchSink = {
-        initialDisplay: (_t: StartupType, _s: number, _d: number, _a: number): void => {
+        initialDisplay: (_t: StartupType, _s: number, _d: number, _a: number, _f: boolean): void => {
           reached = true;
           throw new Error('sink failed');
         },
@@ -645,6 +749,57 @@ export default function appLaunchTests(): void {
       expect(scope.vitals().length).assertEqual(5);
     });
 
+    it('aFullDisplayBeforeTheFirstFrameIsWrittenWithTheTtidAndOnlyWithIt', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+      const scope: CapturingScope = new CapturingScope();
+      const configuration: RumConfiguration = new RumConfigurationBuilder('app-1').build();
+      const monitor: DefaultRumMonitor = raw(new FakeCore(), configuration, scope);
+      monitor.startView('home', 'Home');
+      const now: number = Date.now();
+      monitor.reportAppLaunch(APP_LAUNCH_TTID, StartupType.COLD, now - 700, 700 * MS_NS, now, true);
+      // The session already reported its launch: neither the TTID nor the TTFD riding on it.
+      monitor.reportAppLaunch(APP_LAUNCH_TTID, StartupType.WARM, now, 300 * MS_NS, now, true);
+      monitor.reportAppLaunch(APP_LAUNCH_TTFD, StartupType.COLD, now - 700, 900 * MS_NS, now);
+      const seen: string[] = scope.vitals().map((e: Record<string, Object>) => {
+        const v: Record<string, Object> = e['vital'] as Record<string, Object>;
+        return `${v['app_launch_metric']}:${v['startup_type']}:${(v['duration'] as number) / MS_NS}@${e['date']}`;
+      });
+      expect(seen.join(' ')).assertEqual(`ttid:cold_start:700@${now - 700} ttfd:cold_start:700@${now - 700}`);
+
+      // A session whose full display is already reported takes only the TTID.
+      monitor.stopSession();
+      monitor.startView('home', 'Home');
+      monitor.reportAppLaunch(APP_LAUNCH_TTFD, StartupType.WARM, now, 900 * MS_NS, now);
+      monitor.reportAppLaunch(APP_LAUNCH_TTID, StartupType.WARM, now, 300 * MS_NS, now, true);
+      const metrics: string[] = scope.vitals().slice(2).map(
+        (e: Record<string, Object>) => (e['vital'] as Record<string, Object>)['app_launch_metric'] as string);
+      expect(metrics.join(' ')).assertEqual('ttfd ttid');
+    });
+
+    it('stoppingViewTrackingForEveryContextKeepsLaunchTiming', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+      const b: Bench = new Bench();
+      const first: UIContext = new UIContext();
+      const second: UIContext = new UIContext();
+      RumNavigationTracker.configureLaunch(b.tracker);
+      try {
+        b.tracker.onAbilityCreated();
+        RumNavigationTracker.attach(first);
+        b.frame(200, true);
+        b.tracker.onBackground();
+        b.tracker.onForeground();
+        expect(b.live()).assertEqual(1);
+        RumNavigationTracker.detach(); // stopViewTracking() without a context
+        expect(b.live()).assertEqual(0);
+        b.tracker.onBackground();
+        RumNavigationTracker.attach(second); // tracking again: launches are timed again
+        b.nowMs = 300_000;
+        b.tracker.onForeground();
+        b.frame(40, false);
+        expect(b.report()).assertEqual('ttid:cold_start@99700+500 ttid:hot_start@300000+40');
+      } finally {
+        RumNavigationTracker.configureLaunch(null);
+      }
+    });
+
     it('anUnsampledSessionWritesNoLaunchVital', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
       const scope: CapturingScope = new CapturingScope();
       const configuration: RumConfiguration = new RumConfigurationBuilder('app-1').setSessionSampleRate(0).build();
@@ -672,8 +827,12 @@ export default function appLaunchTests(): void {
       feature.onReceive({ 'type': 'app_foreground' });
       b.frame(30, false);
       expect(b.report()).assertEqual('ttid:cold_start@99700+500 ttid:hot_start@100210+30');
+      expect(b.live()).assertEqual(0); // nothing awaited after the hot start
+      feature.onReceive({ 'type': 'app_background' });
+      feature.onReceive({ 'type': 'app_foreground' });
+      expect(b.live()).assertEqual(1);
       feature.onStop();
-      expect(b.unhooked).assertEqual(1);
+      expect(b.live()).assertEqual(0);
     });
 
     it('rumTellsTheTrackerAboutAnAppFoundInTheForeground', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
