@@ -38,7 +38,8 @@ export class RumEventAssembler {
     isActive: boolean,
     attributes: Record<string, Object>,
     draw: DrawnConfiguration | null = null,
-    sampledForError: boolean = false
+    sampledForError: boolean = false,
+    vitalFields: Record<string, Object> = {}
   ): Record<string, Object> {
     const event: Record<string, Object> = {};
     event['type'] = 'view';
@@ -66,6 +67,10 @@ export class RumEventAssembler {
     // crash-free rate. Without it every session reads as crash-free even when
     // is_crash errors were reported. Counts is_crash errors, matching 崩溃次数.
     view['crash'] = RumEventAssembler.count(crashCount);
+    // Only the keys that have samples behind them (memory_*, cpu_ticks_*).
+    for (const k of Object.keys(vitalFields)) {
+      view[k] = vitalFields[k];
+    }
     event['view'] = view;
 
     RumEventAssembler.applyContext(event, context, attributes);

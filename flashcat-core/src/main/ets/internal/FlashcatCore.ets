@@ -134,6 +134,9 @@ export class FlashcatCore implements SdkCore {
         onApplicationBackground: () => {
           this.appStateObserved = true;
           this.appForeground = false;
+          // Before the flush: what stops sampling in the background has to stop
+          // before the flush writes the view documents that close this stretch.
+          this.bus.send(RUM_FEATURE_NAME, { 'type': 'app_background' } as Record<string, Object>);
           this.flushAll();
         }
       };

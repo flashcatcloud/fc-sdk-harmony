@@ -4,6 +4,8 @@ import { RumResourceScope } from './RumResourceScope';
 import { RumEventAssembler } from '../assembly/RumEventAssembler';
 import { writeMapped } from '../RumEventMapperHolder';
 import { DrawnConfiguration } from '../remoteconfig/RemoteConfigStore';
+import { ViewVitals } from '../vitals/ViewVitals';
+import { ResourceSampler } from '../vitals/ResourceSampler';
 
 const MS_TO_NS: number = 1e6;
 const MAX_PENDING_RESOURCES: number = 100;
@@ -44,6 +46,10 @@ export class RumViewScope implements RumScope {
   // extended write would credit post-navigation idle time as dwell time.
   private closedAtMs: number = 0;
   private readonly pendingResources: Map<string, RumResourceScope> = new Map<string, RumResourceScope>();
+  // Memory and CPU sampled while this view is open. Registered with the sampler
+  // until the view closes; every document written carries what it holds then.
+  private readonly vitals: ViewVitals = new ViewVitals();
+  private readonly sampler: ResourceSampler | null;
 
   constructor(
     featureScope: FeatureScope,
@@ -56,7 +62,8 @@ export class RumViewScope implements RumScope {
     startedAtMs: number,
     attributes: Record<string, Object>,
     draw: DrawnConfiguration | null = null,
-    sampledForError: boolean = false
+    sampledForError: boolean = false,
+    sampler: ResourceSampler | null = null
   ) {
     this.featureScope = featureScope;
     this.core = core;
@@ -69,6 +76,10 @@ export class RumViewScope implements RumScope {
     this.attributes = attributes;
     this.draw = draw;
     this.sampledForError = sampledForError;
+    this.sampler = sampler;
+    if (sampler !== null) {
+      sampler.register(this.vitals);
+    }
     // Publish the active view so Logs/Trace/Crash can correlate. The URL is the
     // RESOLVED one (caller-supplied view.url, e.g. the nav tracker's route path),
     // not the opaque key — a crash incident snapshots this and must match the
@@ -115,6 +126,7 @@ export class RumViewScope implements RumScope {
         if (event.key === this.key) {
           this.active = false;
           this.closedAtMs = event.timestampMs;
+          this.stopSampling();
           // In-flight resources are NOT dropped: the session keeps this scope in
           // its draining set until they settle (Android parity). Clearing them
           // here systematically lost exactly the slow and failing requests.
@@ -205,8 +217,17 @@ export class RumViewScope implements RumScope {
     }
     this.active = false;
     this.closedAtMs = nowMs;
+    this.stopSampling();
     this.writeViewEvent(nowMs);
     this.clearViewContext();
+  }
+
+  /** The view is closed: later samples belong to the next view. What it holds
+   * stays, so late writes (draining resources) still carry it. */
+  private stopSampling(): void {
+    if (this.sampler !== null) {
+      this.sampler.unregister(this.vitals);
+    }
   }
 
   /**
@@ -273,11 +294,12 @@ export class RumViewScope implements RumScope {
     const resources: number = this.resourceCount;
     const crashes: number = this.crashCount;
     const isActive: boolean = this.active;
+    const vitalFields: Record<string, Object> = this.vitals.toFields(timeSpentNs);
     this.featureScope.withWriteContext((context: FlashcatContext, writer: EventWriter) => {
       const event: Record<string, Object> = RumEventAssembler.view(
         context, this.applicationId, this.sessionId, this.viewId, this.viewName,
         this.startedAtMs, timeSpentNs, actions, errors, resources, crashes, version, isActive,
-        this.viewAttributes(), this.draw, this.sampledForError);
+        this.viewAttributes(), this.draw, this.sampledForError, vitalFields);
       writeMapped(writer, event, false);
     });
   }

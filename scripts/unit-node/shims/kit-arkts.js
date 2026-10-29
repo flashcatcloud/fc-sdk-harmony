@@ -9,4 +9,9 @@ class ProcessManager {
   kill() {}
 }
 const processShim = { ProcessManager, exitRequests: 0, pid: process.pid };
-module.exports = { util, process: processShim };
+// Runs the task in-thread; counts executions so tests can tell the path.
+const taskpool = {
+  executed: 0,
+  execute(fn, ...args) { taskpool.executed += 1; return Promise.resolve().then(() => fn(...args)); }
+};
+module.exports = { util, process: processShim, taskpool };

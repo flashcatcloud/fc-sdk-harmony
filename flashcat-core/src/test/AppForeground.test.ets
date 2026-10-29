@@ -98,6 +98,17 @@ export default function appForegroundTests(): void {
       core.stop();
     });
 
+    it('backgroundIsAnnouncedBeforeTheFlushWritesTheViews', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+      const received: string[] = [];
+      const app: FakeApp = new FakeApp(appManager.ProcessState.STATE_BACKGROUND);
+      const core: FlashcatCore = build(app, received);
+      (app.callback as ApplicationStateChangeCallback).onApplicationForeground();
+      received.length = 0;
+      (app.callback as ApplicationStateChangeCallback).onApplicationBackground();
+      expect(received.join(',')).assertEqual('app_background,keep_alive');
+      core.stop();
+    });
+
     it('userAndConsentChangesAreAnnouncedToRum', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
       const received: string[] = [];
       const core: FlashcatCore =

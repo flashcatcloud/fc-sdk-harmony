@@ -6,6 +6,7 @@ import { RumEventAssembler } from '../assembly/RumEventAssembler';
 import { writeMapped } from '../RumEventMapperHolder';
 import { DrawnConfiguration } from '../remoteconfig/RemoteConfigStore';
 import { WithholdingFeatureScope } from './WithheldEvents';
+import { ResourceSampler } from '../vitals/ResourceSampler';
 
 const SESSION_INACTIVITY_MS: number = 15 * 60 * 1000;     // 15 min
 const SESSION_MAX_DURATION_MS: number = 4 * 60 * 60 * 1000; // 4 h
@@ -51,6 +52,7 @@ export class RumSessionScope implements RumScope {
   // are routed here so the slow and failing requests (exactly the ones that
   // outlive a navigation) are not systematically lost.
   private readonly drainingViews: RumViewScope[] = [];
+  private readonly sampler: ResourceSampler | null;
 
   constructor(
     featureScope: FeatureScope,
@@ -59,8 +61,10 @@ export class RumSessionScope implements RumScope {
     sampleRate: number,
     startedAtMs: number,
     forced: boolean = false,
-    draw: DrawnConfiguration = new DrawnConfiguration(0, sampleRate)
+    draw: DrawnConfiguration = new DrawnConfiguration(0, sampleRate),
+    sampler: ResourceSampler | null = null
   ) {
+    this.sampler = sampler;
     this.core = core;
     this.applicationId = applicationId;
     this.sessionId = util.generateRandomUUID(true);
@@ -159,7 +163,7 @@ export class RumSessionScope implements RumScope {
       this.activeView = new RumViewScope(
         this.featureScope, this.core, this.applicationId, this.sessionId,
         event.key ?? '', event.name ?? '', viewId, event.timestampMs, event.attributes, this.draw,
-        this.sampledOnError);
+        this.sampledOnError, this.sampler);
       return this;
     }
 

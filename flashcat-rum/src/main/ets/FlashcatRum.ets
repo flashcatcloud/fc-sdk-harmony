@@ -7,9 +7,12 @@ import { DefaultRumMonitor } from './internal/monitor/DefaultRumMonitor';
 import { RumAutoInstrumentation } from './internal/RumAutoInstrumentation';
 import { RumNavigationTracker, NavContext } from './internal/RumNavigationTracker';
 import { RumEventMapperHolder } from './internal/RumEventMapperHolder';
-import { RemoteConfigStore } from './internal/remoteconfig/RemoteConfigStore';
+import { RemoteConfigStore, RemoteConfigValues } from './internal/remoteconfig/RemoteConfigStore';
 import { RemoteConfigController } from './internal/remoteconfig/RemoteConfigController';
 import { HttpRemoteConfigFetcher, buildConfigUrl } from './internal/remoteconfig/RemoteConfigFetcher';
+import { ResourceSampler } from './internal/vitals/ResourceSampler';
+import { systemResourceReaders } from './internal/vitals/SystemResourceReaders';
+import { VitalsUpdateFrequency, vitalsPeriodMs } from './VitalsUpdateFrequency';
 
 /**
  * Enables Real User Monitoring. Call after `Flashcat.initialize`.
@@ -67,6 +70,7 @@ export class FlashcatRum {
     // back — by which time it is there. The controller has to exist first
     // because the monitor owns it.
     let monitorRef: DefaultRumMonitor | null = null;
+    let samplerRef: ResourceSampler | null = null;
     if (configuration.remoteConfigurationEnabled) {
       try {
         const intake: IntakeTarget = core.getIntakeTarget();
@@ -81,6 +85,10 @@ export class FlashcatRum {
             if (monitorRef !== null) {
               monitorRef.onRemoteConfigurationChanged(activation, before, after);
             }
+            // A published frequency applies at once, not at the next session.
+            if (samplerRef !== null) {
+              samplerRef.refreshPeriod();
+            }
           }
         );
       } catch (e) {
@@ -92,9 +100,11 @@ export class FlashcatRum {
       }
     }
 
-    const monitor: DefaultRumMonitor = new DefaultRumMonitor(core, scope, configuration, store, controller);
+    const sampler: ResourceSampler = FlashcatRum.buildSampler(core, configuration, store);
+    samplerRef = sampler;
+    const monitor: DefaultRumMonitor = new DefaultRumMonitor(core, scope, configuration, store, controller, sampler);
     monitorRef = monitor;
-    feature.attachMonitor(monitor);
+    feature.attachMonitor(monitor, sampler);
     GlobalRumMonitor.register(monitor);
 
     // Phase 2: make the auto-instrumentation toggles consultable by the tap /
@@ -108,6 +118,18 @@ export class FlashcatRum {
     }
   }
 
+  /** The console's published frequency, when there is one, over the init value. */
+  private static buildSampler(core: SdkCore, configuration: RumConfiguration,
+    store: RemoteConfigStore | null): ResourceSampler {
+    const periodOf: () => number = (): number => {
+      const stored: RemoteConfigValues | null = store === null ? null : store.read();
+      const frequency: VitalsUpdateFrequency =
+        stored !== null && stored.vitalsUpdateFrequency !== null
+          ? stored.vitalsUpdateFrequency : configuration.vitalsUpdateFrequency;
+      return vitalsPeriodMs(frequency);
+    };
+    return new ResourceSampler(systemResourceReaders(core.getContext().device.apiVersion), periodOf);
+  }
 
   /**
    * Auto-record a TAP action on `target`. No-op unless RUM is enabled with

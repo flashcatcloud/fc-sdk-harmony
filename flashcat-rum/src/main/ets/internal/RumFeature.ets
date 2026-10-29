@@ -24,6 +24,7 @@ import { RumNavigationTracker } from './RumNavigationTracker';
 import { RumEventMapperHolder } from './RumEventMapperHolder';
 import { LastViewSnapshot } from './LastViewSnapshot';
 import { ActiveDeviceBeacon, HttpActiveBeaconSender } from './ActiveDeviceBeacon';
+import { ResourceSampler } from './vitals/ResourceSampler';
 
 // Internal core receiver owning the crash sidecar files. MessageBus contract.
 const CRASH_STORAGE_TARGET: string = '__flashcat_crash_storage';
@@ -62,6 +63,8 @@ export class RumFeature implements Feature, FeatureEventReceiver {
   // whole run because a hiAppEvent replay can arrive well after startup.
   private previousRunView: Record<string, Object> | null = null;
   private activeBeacon: ActiveDeviceBeacon | null = null;
+  // Memory/CPU sampling for the open view; runs only in the foreground.
+  private sampler: ResourceSampler | null = null;
 
   constructor(core: SdkCore, configuration: RumConfiguration) {
     this.core = core;
@@ -69,9 +72,15 @@ export class RumFeature implements Feature, FeatureEventReceiver {
   }
 
   /** Set by FlashcatRum.enable once the monitor is built (after registration). */
-  attachMonitor(monitor: DefaultRumMonitor): void {
+  attachMonitor(monitor: DefaultRumMonitor, sampler: ResourceSampler | null = null): void {
     this.monitor = monitor;
+    this.sampler = sampler;
     FlashcatLog.d('rum: monitor attached');
+    // RUM enabled after the core already learned it is in the foreground: no
+    // foreground message is coming, so sampling starts now.
+    if (sampler !== null && this.core.isAppInForeground()) {
+      sampler.setForeground(true);
+    }
     // If the crash feature was enabled BEFORE RUM, its startup replay found no
     // RUM receiver and retained the pending incidents — ask it to replay now.
     // Without this, a crash-before-RUM enable order strands every pending
@@ -269,6 +278,12 @@ export class RumFeature implements Feature, FeatureEventReceiver {
       this.activeBeacon.stop();
       this.activeBeacon = null;
     }
+    // The core's stop wrote the final view documents (with what was sampled)
+    // just before this; nothing samples after it.
+    if (this.sampler !== null) {
+      this.sampler.stop();
+      this.sampler = null;
+    }
     if (this.monitor !== null) {
       this.monitor.stopKeepAlive(); // stop the keep-alive timer so it doesn't leak
       this.monitor.stopRemoteConfig(); // and the configuration refresh with it
@@ -327,8 +342,14 @@ export class RumFeature implements Feature, FeatureEventReceiver {
       if (m !== null) {
         m.refreshRemoteConfig();
       }
+      this.setForeground(true);
       this.triggerActiveBeacon();
-    } else if (type === 'app_foreground_detected' || type === 'consent_granted' || type === 'user_changed') {
+    } else if (type === 'app_foreground_detected') {
+      this.setForeground(true);
+      this.triggerActiveBeacon();
+    } else if (type === 'app_background') {
+      this.setForeground(false);
+    } else if (type === 'consent_granted' || type === 'user_changed') {
       this.triggerActiveBeacon();
     } else if (type === 'keep_alive') {
       // App backgrounded — refresh the active view so its final time_spent is sent
@@ -354,6 +375,12 @@ export class RumFeature implements Feature, FeatureEventReceiver {
       if (this.activeBeacon !== null) {
         this.activeBeacon.forget();
       }
+    }
+  }
+
+  private setForeground(foreground: boolean): void {
+    if (this.sampler !== null) {
+      this.sampler.setForeground(foreground);
     }
   }
 

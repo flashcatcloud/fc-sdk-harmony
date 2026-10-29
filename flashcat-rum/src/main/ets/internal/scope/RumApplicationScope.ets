@@ -3,6 +3,7 @@ import { RumScope, RumRawEvent } from './RumScope';
 import { RumSessionScope } from './RumSessionScope';
 import { RemoteConfigStore, RemoteConfigValues, DrawnConfiguration } from '../remoteconfig/RemoteConfigStore';
 import { BeforeSamplingCallback, BeforeSamplingContext } from '../../RumTypes';
+import { ResourceSampler } from '../vitals/ResourceSampler';
 
 /** What a forced session reports: it is kept whatever the rates say, so it stands for itself. */
 const FORCED_SAMPLE_RATE: number = 100;
@@ -46,6 +47,7 @@ export class RumApplicationScope implements RumScope {
   // last resolved settings so republishing them cannot turn a deferral into a redraw.
   private lastResolved: DrawnConfiguration | null = null;
   private invokingBeforeSampling: boolean = false;
+  private readonly sampler: ResourceSampler | null;
 
   constructor(
     featureScope: FeatureScope,
@@ -55,8 +57,10 @@ export class RumApplicationScope implements RumScope {
     remoteConfig: RemoteConfigStore | null = null,
     beforeSampling: BeforeSamplingCallback | null = null,
     onSessionStarted: (() => void) | null = null,
-    sessionOnError: boolean = false
+    sessionOnError: boolean = false,
+    sampler: ResourceSampler | null = null
   ) {
+    this.sampler = sampler;
     this.featureScope = featureScope;
     this.core = core;
     this.applicationId = applicationId;
@@ -270,7 +274,8 @@ export class RumApplicationScope implements RumScope {
     // have the console weight one debugging visitor as thirty-three sessions.
     const draw: DrawnConfiguration = this.forced ? new DrawnConfiguration(0, FORCED_SAMPLE_RATE) : resolved;
     const session: RumSessionScope = new RumSessionScope(
-      this.featureScope, this.core, this.applicationId, resolved.sessionSampleRate, nowMs, this.forced, draw);
+      this.featureScope, this.core, this.applicationId, resolved.sessionSampleRate, nowMs, this.forced, draw,
+      this.sampler);
     if (this.onSessionStarted !== null) {
       this.onSessionStarted();
     }
