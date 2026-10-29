@@ -10,9 +10,14 @@ export enum StartupType {
 // Android's rule: a process whose first ability is created more than 10 s
 // after the process started was not started for it — the launch is warm.
 const COLD_START_MAX_PROCESS_AGE_MS: number = 10_000;
-// Nothing measured here is believed past 90 s: a first frame or a fully
-// displayed report that comes later is dropped (Android caps TTFD the same).
-export const MAX_LAUNCH_DURATION_MS: number = 90_000;
+// Android's caps: a first frame more than 60 s after the launch's start is no
+// time to initial display, a full display more than 90 s after it no time to
+// full display.
+export const MAX_INITIAL_DISPLAY_MS: number = 60_000;
+export const MAX_FULL_DISPLAY_MS: number = 90_000;
+// Android has no automatic page loading time; this SDK's waits at most as long
+// as a full display may take.
+export const MAX_VIEW_LOAD_MS: number = MAX_FULL_DISPLAY_MS;
 const MS_TO_NS: number = 1e6;
 const NOT_OBSERVED: string = 'rum.launch: first frame not observed';
 
@@ -108,7 +113,7 @@ class PendingViewLoad {
  * Every launch ends at the first frame drawn after it. Where that frame cannot
  * be observed — the SDK started after the ability, frames were hooked after
  * the first one, no frames are hooked at all, the app went back to the
- * background first, or 90 s passed — nothing is reported, and the reason is
+ * background first, or 60 s passed — nothing is reported, and the reason is
  * logged. No other moment stands in for the frame.
  *
  * Frames are hooked only while something waits for one — a launch's first
@@ -302,7 +307,7 @@ export class AppLaunchTracker {
     }
     const nowMs: number = this.nowMs();
     const elapsedMs: number = nowMs - launch.startMs;
-    if (elapsedMs > MAX_LAUNCH_DURATION_MS) {
+    if (elapsedMs > MAX_FULL_DISPLAY_MS) {
       FlashcatLog.usage('reportAppFullyDisplayed ignored: more than 90 s after the launch started');
       return;
     }
@@ -341,9 +346,9 @@ export class AppLaunchTracker {
     if (launch === null || launch.displayed) {
       return;
     }
-    if (nowMs - launch.startMs > MAX_LAUNCH_DURATION_MS) {
+    if (nowMs - launch.startMs > MAX_INITIAL_DISPLAY_MS) {
       this.launch = null;
-      FlashcatLog.d(`${NOT_OBSERVED} within 90 s of the launch`);
+      FlashcatLog.d(`${NOT_OBSERVED} within 60 s of the launch`);
       return;
     }
     // A return to the foreground has no "first frame" of its own: the next frame
@@ -374,7 +379,7 @@ export class AppLaunchTracker {
       return;
     }
     this.pendingViewLoad = null;
-    if (nowMs - pending.sinceMs <= MAX_LAUNCH_DURATION_MS) {
+    if (nowMs - pending.sinceMs <= MAX_VIEW_LOAD_MS) {
       this.sink.viewLoaded(pending.key, nowMs);
     }
   }

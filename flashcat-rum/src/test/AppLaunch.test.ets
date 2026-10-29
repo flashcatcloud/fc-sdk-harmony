@@ -393,20 +393,20 @@ export default function appLaunchTests(): void {
       expect(inTime.report()).assertEqual('ttid:cold_start@99700+500');
     });
 
-    it('aFrameMoreThan90sAfterTheStartReportsNoLaunch', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+    it('aFrameMoreThan60sAfterTheStartReportsNoLaunch', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
       const b: Bench = new Bench();
       b.ageMs = 0;
       b.tracker.onAbilityCreated();
       b.tracker.attachContext('page-1');
-      b.frame(90_001, true);
+      b.frame(60_001, true); // Android's cap: past one minute is no time to initial display
       expect(b.report()).assertEqual('');
 
       const atLimit: Bench = new Bench();
       atLimit.ageMs = 0;
       atLimit.tracker.onAbilityCreated();
       atLimit.tracker.attachContext('page-1');
-      atLimit.frame(90_000, true);
-      expect(atLimit.report()).assertEqual('ttid:cold_start@100000+90000');
+      atLimit.frame(60_000, true);
+      expect(atLimit.report()).assertEqual('ttid:cold_start@100000+60000');
     });
 
     it('goingToTheBackgroundBeforeTheFirstFrameReportsNoLaunch', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
