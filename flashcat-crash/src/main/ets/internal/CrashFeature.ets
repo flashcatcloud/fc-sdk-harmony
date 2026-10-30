@@ -9,8 +9,10 @@ import {
   FlashcatLog,
   TrackingConsent
 } from '@flashcatcloud/core';
-import { util } from '@kit.ArkTS';
+import { process, util } from '@kit.ArkTS';
 import { hiAppEvent } from '@kit.PerformanceAnalysisKit';
+import { deviceInfo } from '@kit.BasicServicesKit';
+import { fileIo } from '@kit.CoreFileKit';
 import appRecovery from '@ohos.app.ability.appRecovery';
 import { CrashConfiguration, JsCrashPolicy } from '../CrashConfiguration';
 import { CrashEventMapper } from './CrashEventMapper';
@@ -36,10 +38,29 @@ const CONSUMED_RETENTION_MS: number = 24 * 60 * 60 * 1000;
 // of the same crash type in a restart loop are seconds apart. A wide window
 // deleted every other report in a crash burst.
 const REPLAY_CONSUMED_MATCH_WINDOW_MS: number = 5000;
+// MAIN_THREAD_JANK sampling, settable from API 15. log_type 1 samples stacks only
+// (never a trace, which the SDK cannot use) and then requires every other key.
+// sample_count is set to the system default value: an APP_FREEZE dump samples as
+// many stacks as this configures. report_times_per_app 3 lifts the default of 1 a
+// process. The config is per process, so it replaces one the host app set.
+const JANK_CONFIG_MIN_API: number = 15;
+const JANK_EVENT_CONFIG: Record<string, string> = {
+  'log_type': '1',
+  'sample_interval': '150',
+  'ignore_startup_time': '10',
+  'sample_count': '10',
+  'report_times_per_app': '3'
+};
+// The external log holding a jank's sampled call tree is
+// .../watchdog/MAIN_THREAD_JANK_<time>_<pid>.txt; a trace-only jank's is a binary .trace.
+const JANK_STACK_LOG_PREFIX: string = 'MAIN_THREAD_JANK_';
+const JANK_STACK_LOG_SUFFIX: string = '.txt';
+// A sampled call tree is a few KB; anything far larger is not one, and is not read.
+const JANK_STACK_LOG_MAX_BYTES: number = 512 * 1024;
 
 /**
  * Crash feature. Owns JS crash policy, durable incident replay, and hiAppEvent
- * APP_CRASH/APP_FREEZE capture. All callbacks are contained: crash reporting
+ * APP_CRASH/APP_FREEZE/MAIN_THREAD_JANK capture. All callbacks are contained: crash reporting
  * must never introduce a second host failure.
  */
 export class CrashFeature implements Feature, FeatureEventReceiver {
@@ -586,6 +607,9 @@ export class CrashFeature implements Feature, FeatureEventReceiver {
     if (this.configuration.trackAppHangs) {
       names.push(hiAppEvent.event.APP_FREEZE);
     }
+    if (this.configuration.trackMainThreadJank) {
+      names.push(hiAppEvent.event.MAIN_THREAD_JANK);
+    }
     if (names.length === 0) {
       FlashcatLog.d('crash: watcher disabled by configuration');
       return;
@@ -603,7 +627,96 @@ export class CrashFeature implements Feature, FeatureEventReceiver {
     } catch (error) {
       this.watching = false;
       FlashcatLog.e(`crash: watcher registration failed: ${CrashFeature.errorText(error)}`);
+      return;
     }
+    if (this.configuration.trackMainThreadJank) {
+      CrashFeature.configureJankSampling();
+    }
+  }
+
+  private static configureJankSampling(): void {
+    if (deviceInfo.sdkApiVersion < JANK_CONFIG_MIN_API) {
+      return; // the system defaults apply: one stack or trace a process
+    }
+    try {
+      hiAppEvent.setEventConfig(hiAppEvent.event.MAIN_THREAD_JANK, JANK_EVENT_CONFIG)
+        .catch((error: Object) => {
+          FlashcatLog.e(`crash: jank sampling config failed: ${CrashFeature.errorText(error)}`);
+        });
+    } catch (error) {
+      FlashcatLog.e(`crash: jank sampling config failed: ${CrashFeature.errorText(error)}`);
+    }
+  }
+
+  /**
+   * A jank is reported live, into the current session: the process survives it,
+   * so there is nothing to persist or replay. One delivered after its process
+   * died (another pid) belongs to a session this launch cannot name, and is
+   * dropped. Its stack logs are deleted once handled — the system caps the app's
+   * watchdog log directory.
+   */
+  private handleJank(rum: FeatureScope, params: Record<string, Object>): void {
+    try {
+      const logs: string[] = CrashFeature.jankStackLogs(params);
+      let text: string = '';
+      for (const path of logs) {
+        if (text.length === 0) {
+          text = CrashFeature.readJankLog(path);
+        }
+        try {
+          fileIo.unlinkSync(path);
+        } catch (_error) {
+          // Already gone.
+        }
+      }
+      if (params['pid'] !== process.pid) {
+        FlashcatLog.d(`crash: jank of another process dropped pid=${params['pid']}`);
+        return;
+      }
+      if (!CrashFeature.sampled(this.configuration.sampleRate)) {
+        FlashcatLog.d('crash: dropped by sample rate');
+        return;
+      }
+      const event: Record<string, Object> | null = CrashEventMapper.fromMainThreadJank(params, text);
+      if (event === null) {
+        FlashcatLog.d('crash: jank dropped because it carries no stack');
+        return;
+      }
+      FlashcatLog.d(`crash: send to RUM kind=jank duration_ms=${event['jank.duration_ms']}`);
+      rum.sendEvent(event);
+    } catch (error) {
+      FlashcatLog.e(`crash: jank handling failed: ${CrashFeature.errorText(error)}`);
+    }
+  }
+
+  private static readJankLog(path: string): string {
+    try {
+      if (fileIo.statSync(path).size > JANK_STACK_LOG_MAX_BYTES) {
+        return '';
+      }
+      return fileIo.readTextSync(path);
+    } catch (error) {
+      FlashcatLog.d(`crash: jank log unreadable: ${CrashFeature.errorText(error)}`);
+      return '';
+    }
+  }
+
+  private static jankStackLogs(params: Record<string, Object>): string[] {
+    const value: Object | undefined = params['external_log'];
+    if (!Array.isArray(value)) {
+      return [];
+    }
+    const out: string[] = [];
+    for (const entry of value as Array<Object>) {
+      if (typeof entry !== 'string') {
+        continue;
+      }
+      const name: string = entry.substring(entry.lastIndexOf('/') + 1);
+      if (name.startsWith(JANK_STACK_LOG_PREFIX) && name.endsWith(JANK_STACK_LOG_SUFFIX)) {
+        out.push(entry);
+      }
+    }
+    return out;
   }
 
   private handle(groups: Array<hiAppEvent.AppEventGroup>): void {
@@ -616,13 +729,18 @@ export class CrashFeature implements Feature, FeatureEventReceiver {
       }
       for (const group of groups) {
         const isFreeze: boolean = group.name === hiAppEvent.event.APP_FREEZE;
+        const isJank: boolean = group.name === hiAppEvent.event.MAIN_THREAD_JANK;
         FlashcatLog.d(`crash: group name=${group.name} events=${group.appEventInfos.length}`);
         for (const info of group.appEventInfos) {
+          const params: Record<string, Object> = info.params as Record<string, Object>;
+          if (isJank) {
+            this.handleJank(rum, params);
+            continue;
+          }
           if (!CrashFeature.sampled(this.configuration.sampleRate)) {
             FlashcatLog.d('crash: dropped by sample rate');
             continue;
           }
-          const params: Record<string, Object> = info.params as Record<string, Object>;
           const event: Record<string, Object> =
             isFreeze ? CrashEventMapper.fromAppFreeze(params) : CrashEventMapper.fromAppCrash(params);
           // Carry the real fault time on every watcher event. Native crashes /

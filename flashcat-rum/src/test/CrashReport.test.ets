@@ -46,6 +46,23 @@ export default function crashReportTests(): void {
       expect(attrs['freeze.dump_started_at']).assertEqual('2026-10-27 23:51:37.517');
     });
 
+    it('categorizesFaultsByKind', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+      const jank: Record<string, Object> = RumFeature.crashAttributes({
+        'type': 'crash_report', 'crash_kind': 'jank', 'jank.duration_ms': 1001, 'jank.sampled_at': 1793317690154
+      });
+      expect(jank['error.category']).assertEqual('Jank');
+      expect(jank['error.type']).assertEqual('MAIN_THREAD_JANK');
+      expect(jank['jank.duration_ms']).assertEqual(1001);
+      expect(jank['jank.sampled_at']).assertEqual(1793317690154);
+      const freeze: Record<string, Object> = RumFeature.crashAttributes({ 'crash_kind': 'freeze' });
+      expect(freeze['error.category']).assertEqual('ANR');
+      expect(freeze['error.type'] === undefined).assertTrue();
+      const crash: Record<string, Object> = RumFeature.crashAttributes({ 'crash_kind': 'crash' });
+      expect(crash['error.category']).assertEqual('Exception');
+      expect(crash['error.type'] === undefined).assertTrue();
+      expect(crash['jank.duration_ms'] === undefined).assertTrue();
+    });
+
     it('carriesThreadsAndMemoryAtFault', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
       const threads: Array<Record<string, Object>> = [
         { 'name': 'example.app', 'crashed': true, 'stack': '#0 pc 0000000000001e10 /data/libentry.so' }
