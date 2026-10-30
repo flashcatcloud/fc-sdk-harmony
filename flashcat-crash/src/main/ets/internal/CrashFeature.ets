@@ -42,7 +42,8 @@ const REPLAY_CONSUMED_MATCH_WINDOW_MS: number = 5000;
 // (never a trace, which the SDK cannot use) and then requires every other key.
 // sample_count is set to the system default value: an APP_FREEZE dump samples as
 // many stacks as this configures. report_times_per_app 3 lifts the default of 1 a
-// process. The config is per process, so it replaces one the host app set.
+// process. The config is process-wide: it may override a MAIN_THREAD_JANK config
+// the host app set itself, and the host's own watchers get stack-only samples too.
 const JANK_CONFIG_MIN_API: number = 15;
 const JANK_EVENT_CONFIG: Record<string, string> = {
   'log_type': '1',
@@ -652,23 +653,11 @@ export class CrashFeature implements Feature, FeatureEventReceiver {
    * A jank is reported live, into the current session: the process survives it,
    * so there is nothing to persist or replay. One delivered after its process
    * died (another pid) belongs to a session this launch cannot name, and is
-   * dropped. Its stack logs are deleted once handled — the system caps the app's
-   * watchdog log directory.
+   * dropped. Its stack log is only read, never deleted: other watchers in the
+   * same app may read this file too.
    */
   private handleJank(rum: FeatureScope, params: Record<string, Object>): void {
     try {
-      const logs: string[] = CrashFeature.jankStackLogs(params);
-      let text: string = '';
-      for (const path of logs) {
-        if (text.length === 0) {
-          text = CrashFeature.readJankLog(path);
-        }
-        try {
-          fileIo.unlinkSync(path);
-        } catch (_error) {
-          // Already gone.
-        }
-      }
       if (params['pid'] !== process.pid) {
         FlashcatLog.d(`crash: jank of another process dropped pid=${params['pid']}`);
         return;
@@ -676,6 +665,13 @@ export class CrashFeature implements Feature, FeatureEventReceiver {
       if (!CrashFeature.sampled(this.configuration.sampleRate)) {
         FlashcatLog.d('crash: dropped by sample rate');
         return;
+      }
+      let text: string = '';
+      for (const path of CrashFeature.jankStackLogs(params)) {
+        text = CrashFeature.readJankLog(path);
+        if (text.length > 0) {
+          break;
+        }
       }
       const event: Record<string, Object> | null = CrashEventMapper.fromMainThreadJank(params, text);
       if (event === null) {

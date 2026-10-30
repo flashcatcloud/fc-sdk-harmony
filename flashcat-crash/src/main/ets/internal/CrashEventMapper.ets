@@ -126,8 +126,7 @@ export class CrashEventMapper {
       'source': RumErrorSource.SOURCE as string,
       'is_crash': false,
       'crash_kind': 'jank',
-      'binary_images': binaryImages.length > 0 &&
-        JSON.stringify(binaryImages).length <= MAX_BINARY_IMAGES_CHARS ? binaryImages : [],
+      'binary_images': JSON.stringify(binaryImages).length <= MAX_BINARY_IMAGES_CHARS ? binaryImages : [],
       'arch': '',
       'build_id': CrashEventMapper.buildId(params, binaryImages),
       'source_type': SOURCE_TYPE

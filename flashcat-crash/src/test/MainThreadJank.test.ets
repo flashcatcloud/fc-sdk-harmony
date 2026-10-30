@@ -280,7 +280,7 @@ export default function mainThreadJankTests(): void {
       }
     });
 
-    it('reportsAJankLiveAndDeletesItsLog', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+    it('reportsAJankLiveAndNeverDeletesItsLog', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
       const core: FakeCore = new FakeCore();
       const watcher: hiAppEvent.Watcher = startFeature(core, new CrashConfigurationBuilder().build());
       const commandsBefore: number = core.crashScope.sent.length;
@@ -299,23 +299,11 @@ export default function mainThreadJankTests(): void {
       // Reported live: no fault time to backdate to, no deduplication.
       expect(reports[0]['timestamp_ms'] === undefined).assertTrue();
       expect(reports[0]['dedup_fingerprint'] === undefined).assertTrue();
-      expect(fileIo.accessSync(log)).assertEqual(false);
+      // Other watchers in the same app may still need the file.
+      expect(fileIo.accessSync(log)).assertEqual(true);
+      expect(fileIo.readTextSync(log)).assertEqual(IDLE_HEAVIEST_JANK_EXTERNAL_LOG);
       // Nothing is persisted for a next launch.
       expect(core.crashScope.sent.length).assertEqual(commandsBefore);
-    });
-
-    it('deletesTheLogOfASampledOutJank', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
-      const core: FakeCore = new FakeCore();
-      const watcher: hiAppEvent.Watcher = startFeature(core, new CrashConfigurationBuilder().setSampleRate(0).build());
-      const params: Record<string, Object> = busyJankParams();
-      params['pid'] = process.pid;
-      const log: string = writeLog(BUSY_JANK_EXTERNAL_LOG);
-      params['external_log'] = [log];
-
-      deliverJank(watcher, params);
-
-      expect(core.rumScope.ofType('crash_report').length).assertEqual(0);
-      expect(fileIo.accessSync(log)).assertEqual(false);
     });
 
     it('dropsAJankOfAnotherProcess', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
@@ -329,7 +317,6 @@ export default function mainThreadJankTests(): void {
       deliverJank(watcher, params);
 
       expect(core.rumScope.ofType('crash_report').length).assertEqual(0);
-      expect(fileIo.accessSync(log)).assertEqual(false);
       // Negative control: the same jank of this process is reported.
       const own: Record<string, Object> = busyJankParams();
       own['pid'] = process.pid;
@@ -337,30 +324,31 @@ export default function mainThreadJankTests(): void {
       expect(core.rumScope.ofType('crash_report').length).assertEqual(1);
     });
 
-    it('neverDeletesAFileThatIsNotAJankStackLog', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+    it('readsOnlyFilesNamedAsAJankStackLog', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
       const core: FakeCore = new FakeCore();
       const watcher: hiAppEvent.Watcher = startFeature(core, new CrashConfigurationBuilder().build());
-      const log: string = writeLog(BUSY_JANK_EXTERNAL_LOG);
+      // A call tree whose heaviest path differs from heaviest_stack, under another name.
+      const log: string = writeLog(IDLE_HEAVIEST_JANK_EXTERNAL_LOG);
       const other: string = log.replace(/MAIN_THREAD_JANK_[^/]*$/, 'notes.txt');
       fileIo.renameSync(log, other);
-      const params: Record<string, Object> = busyJankParams();
+      const params: Record<string, Object> = idleHeaviestJankParams();
       params['pid'] = process.pid;
       params['external_log'] = [other];
 
       deliverJank(watcher, params);
 
-      expect(fileIo.accessSync(other)).assertEqual(true);
-      // Not read either: the stack is the system's heaviest_stack.
+      // Not read: the stack is the system's heaviest_stack.
       const reports: Array<Record<string, Object>> = core.rumScope.ofType('crash_report');
       expect(reports.length).assertEqual(1);
       expect(reports[0]['stack']).assertEqual(
-        CrashEventMapper.fromMainThreadJank(busyJankParams(), '')!['stack']);
+        CrashEventMapper.fromMainThreadJank(idleHeaviestJankParams(), '')!['stack']);
     });
 
     it('leavesATraceLogAlone', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
       const core: FakeCore = new FakeCore();
       const watcher: hiAppEvent.Watcher = startFeature(core, new CrashConfigurationBuilder().build());
-      const trace: string = writeLog('binary').replace(/\.txt$/, '.trace');
+      // Text that would yield a stack if it were read as one.
+      const trace: string = writeLog(BUSY_JANK_EXTERNAL_LOG).replace(/\.txt$/, '.trace');
       fileIo.renameSync(trace.replace(/\.trace$/, '.txt'), trace);
       const params: Record<string, Object> = traceOnlyJankParams();
       params['pid'] = process.pid;

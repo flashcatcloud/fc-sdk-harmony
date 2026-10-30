@@ -32,9 +32,9 @@ export class CrashConfiguration {
   /**
    * Report main-thread janks (hiAppEvent MAIN_THREAD_JANK) as handled errors carrying
    * the sampled stack. The system decides when to sample and caps the reports per
-   * process. From API 15 the SDK sets the process's MAIN_THREAD_JANK sampling config
-   * (stacks only, up to 3 reports), replacing one the app set, and deletes each
-   * jank's stack log once handled. Default true.
+   * process. From API 15 the SDK sets the process-wide MAIN_THREAD_JANK sampling
+   * config (stacks only, up to 3 reports), which may override one the app set
+   * itself. Default true.
    */
   readonly trackMainThreadJank: boolean;
 
