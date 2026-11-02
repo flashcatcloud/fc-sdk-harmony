@@ -78,8 +78,10 @@ class FakeCore implements SdkCore {
   isActive(): boolean {
     return true;
   }
+  foreground: boolean = false;
+
   isAppInForeground(): boolean {
-    return false;
+    return this.foreground;
   }
   setUserInfo(_user: UserInfo): void {}
   clearUserInfo(): void {}
@@ -935,6 +937,28 @@ export default function appLaunchTests(): void {
       b.frame(200, true);
       expect(b.report()).assertEqual('');
       feature.onStop();
+    });
+
+    it('rumEnabledInTheForegroundSeesNoLaunchInAnAbilityOpenedLater', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+      // RUM enabled after the core's foreground probe answered (e.g. behind a
+      // consent dialog): no foreground message is coming for it.
+      const run = (foreground: boolean): string => {
+        const core: FakeCore = new FakeCore();
+        core.foreground = foreground;
+        const configuration: RumConfiguration = new RumConfigurationBuilder('app-1').setTrackActiveDevices(false).build();
+        const feature: RumFeature = new RumFeature(core, configuration);
+        feature.onInitialize();
+        const b: Bench = new Bench();
+        feature.attachMonitor(raw(core, configuration, new CapturingScope()), null, b.tracker);
+        feature.onReceive({ 'type': 'ability_created' }); // a second ability the user opens
+        b.tracker.attachContext('page-2');
+        b.frame(200, true);
+        feature.onStop();
+        return b.report();
+      };
+      expect(run(true)).assertEqual('');
+      // Negative control: an app the core has not seen in the foreground launches.
+      expect(run(false)).assertEqual('ttid:cold_start@99700+500');
     });
 
     it('reportAppFullyDisplayedGoesThroughTheTracker', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {

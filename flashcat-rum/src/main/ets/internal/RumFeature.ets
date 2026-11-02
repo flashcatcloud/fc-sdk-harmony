@@ -82,9 +82,15 @@ export class RumFeature implements Feature, FeatureEventReceiver {
     this.launch = launch;
     FlashcatLog.d('rum: monitor attached');
     // RUM enabled after the core already learned it is in the foreground: no
-    // foreground message is coming, so sampling starts now.
-    if (collector !== null && this.core.isAppInForeground()) {
-      collector.setForeground(true);
+    // foreground message is coming. Sampling starts now, and an ability created
+    // from here on is opened in front of the user, not launched.
+    if (this.core.isAppInForeground()) {
+      if (collector !== null) {
+        collector.setForeground(true);
+      }
+      if (launch !== null) {
+        launch.onForegroundDetected();
+      }
     }
     // If the crash feature was enabled BEFORE RUM, its startup replay found no
     // RUM receiver and retained the pending incidents — ask it to replay now.
