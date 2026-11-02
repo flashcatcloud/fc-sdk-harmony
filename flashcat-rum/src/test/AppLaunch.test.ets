@@ -6,6 +6,7 @@ import {
 import { common } from '@kit.AbilityKit';
 import { window, UIContext } from '@kit.ArkUI';
 import { process } from '@kit.ArkTS';
+import { systemDateTime } from '@kit.BasicServicesKit';
 import {
   AppLaunchTracker, AppLaunchSink, StartupType, FrameHookFactory
 } from '../main/ets/internal/startup/AppLaunchTracker';
@@ -785,13 +786,18 @@ export default function appLaunchTests(): void {
       expect(callbacksOf(fakeWindow(), 'frameMetricsMeasured').length).assertEqual(0);
     });
 
-    it('processAgeIsUptimeMinusTheProcessStartAndNeverNegative', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+    it('processAgeIsTheElapsedClockMinusTheProcessStartAndNeverNegative', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
       const p: Record<string, Object> = process as Object as Record<string, Object>;
-      p['uptimeSeconds'] = 3600;
-      p['startRealtimeMs'] = 3_599_250;
-      expect(systemProcessAgeMs()).assertEqual(750);
-      p['startRealtimeMs'] = 3_600_001;
+      const clock: Record<string, Object | null> = systemDateTime as Object as Record<string, Object | null>;
+      // A device 345.006 s after boot, its process started 147 ms ago: uptime()
+      // answers 346 (whole seconds, rounded up), which made it 1141 ms.
+      clock['elapsedMs'] = 345_006;
+      p['uptimeSeconds'] = 346;
+      p['startRealtimeMs'] = 344_859;
+      expect(systemProcessAgeMs()).assertEqual(147);
+      p['startRealtimeMs'] = 345_007;
       expect(systemProcessAgeMs()).assertNull();
+      clock['elapsedMs'] = null;
       p['uptimeSeconds'] = 0;
       p['startRealtimeMs'] = 0;
     });

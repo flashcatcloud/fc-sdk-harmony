@@ -18,8 +18,15 @@ const zlib = {
     }
   })
 };
+// elapsedMs: what the elapsed clock answers when a test sets it; null reads the host's.
 const systemDateTime = {
   TimeType: { STARTUP: 0, ACTIVE: 1 },
-  getUptime: (_type, nanoseconds) => Number(process.hrtime.bigint() / (nanoseconds ? 1n : 1000000n))
+  elapsedMs: null,
+  getUptime: (_type, nanoseconds) => {
+    if (systemDateTime.elapsedMs !== null) {
+      return nanoseconds ? systemDateTime.elapsedMs * 1e6 : systemDateTime.elapsedMs;
+    }
+    return Number(process.hrtime.bigint() / (nanoseconds ? 1n : 1000000n));
+  }
 };
 module.exports = { deviceInfo, zlib, systemDateTime };
