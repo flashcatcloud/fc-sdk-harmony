@@ -167,7 +167,7 @@ export class RumViewScope implements RumScope {
             this.pendingResources.delete(oldest);
           }
           this.pendingResources.set(key, new RumResourceScope(
-            this.featureScope, this.applicationId, this.sessionId,
+            this.featureScope, this.core, this.applicationId, this.sessionId,
             this.viewId, this.viewName, this.resolvedViewUrl(), event));
         }
         return this;

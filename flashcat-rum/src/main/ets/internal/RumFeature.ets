@@ -24,6 +24,7 @@ import { RumNavigationTracker } from './RumNavigationTracker';
 import { RumEventMapperHolder } from './RumEventMapperHolder';
 import { LastViewSnapshot } from './LastViewSnapshot';
 import { ActiveDeviceBeacon, HttpActiveBeaconSender } from './ActiveDeviceBeacon';
+import { AppForegroundHistory } from './AppForegroundHistory';
 
 // Internal core receiver owning the crash sidecar files. MessageBus contract.
 const CRASH_STORAGE_TARGET: string = '__flashcat_crash_storage';
@@ -91,6 +92,10 @@ export class RumFeature implements Feature, FeatureEventReceiver {
   }
 
   onInitialize(): void {
+    // RUM may be enabled after the core already found the app in the foreground.
+    if (this.core.isAppInForeground()) {
+      AppForegroundHistory.foundInForeground();
+    }
     this.core.setEventReceiver(RUM_FEATURE_NAME, this);
     FlashcatLog.d('rum: event receiver registered');
 
@@ -320,6 +325,7 @@ export class RumFeature implements Feature, FeatureEventReceiver {
       this.activeJsCrashPolicy = policy.length > 0 ? policy : null;
       FlashcatLog.d(`rum.error: crash policy owner enabled policy=${policy}`);
     } else if (type === 'app_foreground') {
+      AppForegroundHistory.enteredForeground();
       // Back from the background, where an in-process timer may not have run for
       // hours. Whether this is worth a request is the controller's call (the
       // console has to have asked for it, and the values have to be stale).
@@ -328,7 +334,10 @@ export class RumFeature implements Feature, FeatureEventReceiver {
         m.refreshRemoteConfig();
       }
       this.triggerActiveBeacon();
-    } else if (type === 'app_foreground_detected' || type === 'consent_granted' || type === 'user_changed') {
+    } else if (type === 'app_foreground_detected') {
+      AppForegroundHistory.foundInForeground();
+      this.triggerActiveBeacon();
+    } else if (type === 'consent_granted' || type === 'user_changed') {
       this.triggerActiveBeacon();
     } else if (type === 'keep_alive') {
       // App backgrounded — refresh the active view so its final time_spent is sent
