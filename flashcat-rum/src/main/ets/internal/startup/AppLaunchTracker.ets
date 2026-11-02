@@ -55,6 +55,8 @@ class Launch {
   readonly seq: number;
   // Its time to initial display has been measured.
   displayed: boolean = false;
+  // Its time to initial display, once measured: no full display is shorter.
+  initialDisplayMs: number = 0;
   // `reportAppFullyDisplayed` was called for it (before or after its first frame).
   fullyDisplayed: boolean = false;
   // A context was handed over after this launch began.
@@ -333,6 +335,10 @@ export class AppLaunchTracker {
       FlashcatLog.d('rum.launch: reportAppFullyDisplayed not measured: the elapsed clock ran backwards');
       return;
     }
+    if (durationMs < launch.initialDisplayMs) {
+      FlashcatLog.d('rum.launch: reportAppFullyDisplayed not measured: shorter than the time to initial display');
+      return;
+    }
     if (durationMs > MAX_FULL_DISPLAY_MS) {
       FlashcatLog.usage('reportAppFullyDisplayed ignored: more than 90 s after the launch started');
       return;
@@ -401,6 +407,7 @@ export class AppLaunchTracker {
       }
     }
     launch.displayed = true;
+    launch.initialDisplayMs = durationMs;
     this.sink.initialDisplay(launch.type, launch.startMs, durationMs * MS_TO_NS, nowMs, launch.fullyDisplayed);
   }
 

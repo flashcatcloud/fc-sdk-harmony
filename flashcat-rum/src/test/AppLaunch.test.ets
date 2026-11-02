@@ -274,6 +274,21 @@ export default function appLaunchTests(): void {
       expect(ok.report()).assertEqual('ttid:cold_start@99700+1300');
     });
 
+    it('aFullDisplayMeasuredShorterThanTheInitialDisplayIsNotReported', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+      const b: Bench = new Bench();
+      b.ageMs = 300;
+      b.coldLaunched(); // ttid 500 ms
+      b.nowMs -= 400; // a clock that should only move forwards moved back
+      b.tracker.onFullyDisplayed();
+      expect(b.report()).assertEqual('ttid:cold_start@99700+500');
+      // Negative control: measured at or after the first frame, it is reported.
+      const ok: Bench = new Bench();
+      ok.ageMs = 300;
+      ok.coldLaunched();
+      ok.tracker.onFullyDisplayed();
+      expect(ok.report()).assertEqual('ttid:cold_start@99700+500 ttfd:cold_start@99700+500');
+    });
+
     it('tenSecondsOfProcessAgeIsStillCold', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
       const b: Bench = new Bench();
       b.ageMs = 10_000;
