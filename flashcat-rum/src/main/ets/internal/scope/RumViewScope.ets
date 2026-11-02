@@ -97,7 +97,7 @@ export class RumViewScope implements RumScope {
   }
 
   /** Caller-supplied view.url (real route path) wins over the opaque key. */
-  private resolvedViewUrl(): string {
+  resolvedViewUrl(): string {
     const fromAttributes: Object | undefined = this.attributes['view.url'];
     if (typeof fromAttributes === 'string' && fromAttributes.length > 0) {
       return fromAttributes;
@@ -306,9 +306,6 @@ export class RumViewScope implements RumScope {
     return this.viewName;
   }
 
-  getViewUrl(): string {
-    return this.resolvedViewUrl();
-  }
 
   private writeViewEvent(nowMs: number): void {
     this.documentVersion += 1;

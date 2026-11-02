@@ -418,8 +418,7 @@ export class RumSessionScope implements RumScope {
     const open: RumViewScope | null = this.activeView;
     let view: LaunchView | null = null;
     if (open !== null) {
-      const openView: LaunchView = { id: open.getViewId(), name: open.getViewName(), url: open.getViewUrl() };
-      view = openView;
+      view = { id: open.getViewId(), name: open.getViewName(), url: open.resolvedViewUrl() };
     }
     this.featureScope.withWriteContext((context: FlashcatContext, writer: EventWriter) => {
       const event: Record<string, Object> = RumEventAssembler.appLaunch(

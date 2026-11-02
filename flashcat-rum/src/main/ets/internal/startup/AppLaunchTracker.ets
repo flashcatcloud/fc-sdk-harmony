@@ -85,6 +85,15 @@ class Watched {
   }
 }
 
+/** Where the app is, as far as the tracker has been told. */
+enum AppState {
+  /** No foreground or background seen yet (the process is still starting). */
+  UNKNOWN,
+  FOREGROUND,
+  /** Sent to the background and not back since. */
+  BACKGROUND
+}
+
 class PendingViewLoad {
   readonly key: string;
   readonly sinceMs: number;
@@ -136,11 +145,9 @@ export class AppLaunchTracker {
   // The last cold or warm launch: the one `reportAppFullyDisplayed` completes.
   private abilityLaunch: Launch | null = null;
   private launchSeq: number = 0;
-  private foreground: boolean = false;
+  private appState: AppState = AppState.UNKNOWN;
   private liveAbilities: number = 0;
   private abilitySeen: boolean = false;
-  // The app was sent to the background and has not come back since.
-  private backgrounded: boolean = false;
   // An ability launch began since the app last went to the background: the
   // return to the foreground that goes with it is that launch, not a hot one.
   private launchedSinceBackground: boolean = false;
@@ -173,7 +180,7 @@ export class AppLaunchTracker {
     // for its frame — then that return is this ability's warm launch.
     const pendingHot: boolean =
       this.launch !== null && this.launch.type === StartupType.HOT && !this.launch.displayed;
-    if (this.foreground && !pendingHot) {
+    if (this.appState === AppState.FOREGROUND && !pendingHot) {
       FlashcatLog.d('rum.launch: ability created while the app is in the foreground; not a launch');
       return;
     }
@@ -206,9 +213,8 @@ export class AppLaunchTracker {
   }
 
   private foregrounded(): void {
-    const returning: boolean = this.backgrounded;
-    this.backgrounded = false;
-    this.foreground = true;
+    const returning: boolean = this.appState === AppState.BACKGROUND;
+    this.appState = AppState.FOREGROUND;
     if (this.stopped || !returning || this.launchedSinceBackground) {
       return; // the launch's own first foreground, or an ability launch is measuring it
     }
@@ -220,14 +226,16 @@ export class AppLaunchTracker {
     this.begin(StartupType.HOT, this.nowMs());
   }
 
-  /** The SDK started in an app already in the foreground: no return, no launch. */
+  /** The SDK started in an app already in the foreground: no return, no launch.
+   * A startup probe: once a real foreground or background was seen, it is older news. */
   onForegroundDetected(): void {
-    this.foreground = true;
+    if (this.appState === AppState.UNKNOWN) {
+      this.appState = AppState.FOREGROUND;
+    }
   }
 
   onBackground(): void {
-    this.backgrounded = true;
-    this.foreground = false;
+    this.appState = AppState.BACKGROUND;
     this.launchedSinceBackground = false;
     this.pendingViewLoad = null;
     if (this.launch !== null && !this.launch.displayed) {
