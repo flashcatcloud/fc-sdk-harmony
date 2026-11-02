@@ -81,9 +81,6 @@ export class RumViewScope implements RumScope {
     this.draw = draw;
     this.sampledForError = sampledForError;
     this.collector = collector;
-    if (collector !== null) {
-      collector.register(this.vitals);
-    }
     // Publish the active view so Logs/Trace/Crash can correlate. The URL is the
     // RESOLVED one (caller-supplied view.url, e.g. the nav tracker's route path),
     // not the opaque key — a crash incident snapshots this and must match the
@@ -94,6 +91,11 @@ export class RumViewScope implements RumScope {
     update['view.url'] = this.resolvedViewUrl();
     this.core.updateFeatureContext('rum', update);
     this.writeViewEvent(startedAtMs);
+    // Last: a view whose opening failed above is never assigned anywhere, so
+    // nothing would unregister it, and it would keep the samplers running.
+    if (collector !== null) {
+      collector.register(this.vitals);
+    }
   }
 
   /** Caller-supplied view.url (real route path) wins over the opaque key. */

@@ -175,6 +175,15 @@ class FakeReaders {
   }
 }
 
+/** A core that cannot take the open view's context (the view fails to open). */
+class RejectingContextCore extends FakeCore {
+  updateFeatureContext(_featureName: string, update: Record<string, Object>): void {
+    if (update['view.id'] !== undefined) {
+      throw new Error('context rejected');
+    }
+  }
+}
+
 /** A view whose sample handling fails. */
 class ThrowingVitals extends ViewVitals {
   onMemorySample(_bytes: number): void {
@@ -594,6 +603,31 @@ export default function viewVitalsTests(): void {
         expect((late['resource'] as Record<string, Object>)['count']).assertEqual(1);
         expect(late['cpu_ticks_count']).assertEqual(10);
       }
+    });
+
+    it('aViewThatFailsToOpenIsNotSampled', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+      const cores: FakeCore[] = [new RejectingContextCore(), new FakeCore()];
+      const running: boolean[] = [];
+      for (const core of cores) {
+        const readers: FakeReaders = new FakeReaders();
+        const timer: FakeTimer = new FakeTimer();
+        const s: ResourceSampler = sampler(readers, timer);
+        s.setForeground(true);
+        const app: RumApplicationScope = new RumApplicationScope(
+          new CapturingScope(), core, 'app-1', 100, null, null, null, false, s);
+        for (let i = 0; i < 3; i++) {
+          try {
+            app.handleEvent(raw('startView', Date.now(), `page-${i}`));
+          } catch (_e) {
+            // the monitor contains it; the scope tree lets it through
+          }
+        }
+        running.push(s.isRunning());
+      }
+      // No view exists, so nothing is sampled for one.
+      expect(running[0]).assertFalse();
+      // Negative control: views that did open keep the sampler running.
+      expect(running[1]).assertTrue();
     });
 
     it('aViewWithoutReadingsHasNoVitalFields', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
