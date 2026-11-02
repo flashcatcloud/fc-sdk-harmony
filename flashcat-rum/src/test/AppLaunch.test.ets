@@ -676,6 +676,29 @@ export default function appLaunchTests(): void {
       expect(callbacksOf(fakeWindow(), 'frameMetricsMeasured').length).assertEqual(0);
     });
 
+    it('aMalformedFrameReportStaysOutOfTheSystemCallback', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, async (): Promise<void> => {
+      (fakes()['resetFakes'] as () => void)();
+      const seen: Array<boolean | null> = [];
+      systemFrameHooks(22)(new UIContext(), (firstDrawFrame: boolean | null): void => {
+        seen.push(firstDrawFrame);
+      });
+      await settle();
+      const callback: (m: Record<string, Object>) => void =
+        callbacksOf(fakeWindow(), 'frameMetricsMeasured')[0] as (m: Record<string, Object>) => void;
+      let threw: boolean = false;
+      try {
+        callback(null as Object as Record<string, Object>);
+      } catch (_e) {
+        threw = true;
+      }
+      expect(threw).assertFalse();
+      expect(seen.length).assertEqual(0);
+      // Negative control: a well-formed report still counts.
+      callback({ 'firstDrawFrame': true });
+      expect(seen.join(',')).assertEqual('true');
+      (fakes()['resetFakes'] as () => void)();
+    });
+
     it('api12to21HooksEveryWillDrawWhichCannotNameTheFirstFrame', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, async (): Promise<void> => {
       (fakes()['resetFakes'] as () => void)();
       const seen: Array<boolean | null> = [];

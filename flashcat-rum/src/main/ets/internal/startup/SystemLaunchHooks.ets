@@ -43,7 +43,15 @@ export function systemFrameHooks(apiVersion: number): FrameHookFactory {
         case FramePath.FRAME_METRICS:
           return hook<(m: window.FrameMetrics) => void>(
             windowOf(context).then((win: window.Window) => new WindowFrameMetrics(win)),
-            (m: window.FrameMetrics): void => onFrame(m.firstDrawFrame === true));
+            (m: window.FrameMetrics): void => {
+              let first: boolean;
+              try {
+                first = m.firstDrawFrame === true;
+              } catch (_e) {
+                return; // a malformed report is no frame, and never a throw into the system's callback
+              }
+              onFrame(first);
+            });
         case FramePath.SCROLL_DRAW:
           return hook<() => void>(
             uiContextOf(context).then((ui: UIContext) => new ObserverDraw(ui.getUIObserver())),
