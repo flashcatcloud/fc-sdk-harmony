@@ -655,46 +655,62 @@ export class CrashFeature implements Feature, FeatureEventReceiver {
    * died (another pid) belongs to a session this launch cannot name, and is
    * dropped. Its stack log is only read, never deleted: other watchers in the
    * same app may read this file too.
+   *
+   * The watcher runs on the main thread, right after it janked, so the log is
+   * read asynchronously; only the cheap checks and the parse of the text run
+   * on it.
    */
   private handleJank(rum: FeatureScope, params: Record<string, Object>): void {
+    if (params['pid'] !== process.pid) {
+      FlashcatLog.d(`crash: jank of another process dropped pid=${params['pid']}`);
+      return;
+    }
+    if (!CrashFeature.sampled(this.configuration.sampleRate)) {
+      FlashcatLog.d('crash: dropped by sample rate');
+      return;
+    }
+    let logs: string[];
     try {
-      if (params['pid'] !== process.pid) {
-        FlashcatLog.d(`crash: jank of another process dropped pid=${params['pid']}`);
-        return;
-      }
-      if (!CrashFeature.sampled(this.configuration.sampleRate)) {
-        FlashcatLog.d('crash: dropped by sample rate');
-        return;
-      }
-      let text: string = '';
-      for (const path of CrashFeature.jankStackLogs(params)) {
-        text = CrashFeature.readJankLog(path);
-        if (text.length > 0) {
-          break;
-        }
-      }
-      const event: Record<string, Object> | null = CrashEventMapper.fromMainThreadJank(params, text);
-      if (event === null) {
-        FlashcatLog.d('crash: jank dropped because it carries no stack');
-        return;
-      }
-      FlashcatLog.d(`crash: send to RUM kind=jank duration_ms=${event['jank.duration_ms']}`);
-      rum.sendEvent(event);
+      logs = CrashFeature.jankStackLogs(params);
     } catch (error) {
       FlashcatLog.e(`crash: jank handling failed: ${CrashFeature.errorText(error)}`);
+      return;
     }
+    CrashFeature.readJankStackLog(logs, 0)
+      .then((text: string) => {
+        if (!this.watching) {
+          return; // stopped while the log was read
+        }
+        const event: Record<string, Object> | null = CrashEventMapper.fromMainThreadJank(params, text);
+        if (event === null) {
+          FlashcatLog.d('crash: jank dropped because it carries no stack');
+          return;
+        }
+        FlashcatLog.d(`crash: send to RUM kind=jank duration_ms=${event['jank.duration_ms']}`);
+        rum.sendEvent(event);
+      })
+      .catch((error: Object) => {
+        FlashcatLog.e(`crash: jank handling failed: ${CrashFeature.errorText(error)}`);
+      });
   }
 
-  private static readJankLog(path: string): string {
-    try {
-      if (fileIo.statSync(path).size > JANK_STACK_LOG_MAX_BYTES) {
-        return '';
-      }
-      return fileIo.readTextSync(path);
-    } catch (error) {
-      FlashcatLog.d(`crash: jank log unreadable: ${CrashFeature.errorText(error)}`);
+  /** The text of the first readable stack log from `index` on, or '' when none is. */
+  private static async readJankStackLog(paths: string[], index: number): Promise<string> {
+    if (index >= paths.length) {
       return '';
     }
+    try {
+      const stat: fileIo.Stat = await fileIo.stat(paths[index]);
+      if (stat.size <= JANK_STACK_LOG_MAX_BYTES) {
+        const text: string = await fileIo.readText(paths[index]);
+        if (text.length > 0) {
+          return text;
+        }
+      }
+    } catch (error) {
+      FlashcatLog.d(`crash: jank log unreadable: ${CrashFeature.errorText(error)}`);
+    }
+    return CrashFeature.readJankStackLog(paths, index + 1);
   }
 
   private static jankStackLogs(params: Record<string, Object>): string[] {

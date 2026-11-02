@@ -98,12 +98,52 @@ function writeLog(text: string): string {
 
 /** Starts a crash feature and returns the watcher it registered. */
 function startFeature(core: FakeCore, configuration: CrashConfiguration): hiAppEvent.Watcher {
+  return startedFeature(core, configuration).watcher;
+}
+
+class StartedFeature {
+  readonly feature: CrashFeature;
+  readonly watcher: hiAppEvent.Watcher;
+
+  constructor(feature: CrashFeature, watcher: hiAppEvent.Watcher) {
+    this.feature = feature;
+    this.watcher = watcher;
+  }
+}
+
+// Features a test started; each new start stops the previous ones, so watchers never pile up.
+const running: Array<CrashFeature> = [];
+
+function startedFeature(core: FakeCore, configuration: CrashConfiguration): StartedFeature {
+  while (running.length > 0) {
+    running.pop()!.onStop();
+  }
   const feature: CrashFeature = new CrashFeature(core, configuration);
+  running.push(feature);
   feature.onInitialize();
   const watchers: Array<hiAppEvent.Watcher> = shim().watchers;
-  const watcher: hiAppEvent.Watcher = watchers[watchers.length - 1];
-  feature.onStop();
-  return watcher;
+  return new StartedFeature(feature, watchers[watchers.length - 1]);
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise<void>((resolve: () => void) => setTimeout(resolve, ms));
+}
+
+/** Waits for the asynchronous log read to deliver `count` reports, or gives up after 2 s. */
+async function reportsOf(core: FakeCore, count: number): Promise<Array<Record<string, Object>>> {
+  for (let waited = 0; waited < 2000 && core.rumScope.ofType('crash_report').length < count; waited += 10) {
+    await sleep(10);
+  }
+  return core.rumScope.ofType('crash_report');
+}
+
+function fileCalls(): Record<string, number> {
+  return (fileIo as Object as Record<string, Object>)['calls'] as Record<string, number>;
+}
+
+/** The shim's count of synchronous file reads. */
+function syncReads(): number {
+  return fileCalls()['statSync'] + fileCalls()['readTextSync'];
 }
 
 function deliverJank(watcher: hiAppEvent.Watcher, params: Record<string, Object>): void {
@@ -280,7 +320,8 @@ export default function mainThreadJankTests(): void {
       }
     });
 
-    it('reportsAJankLiveAndNeverDeletesItsLog', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+    it('reportsAJankLiveAndNeverDeletesItsLog', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0,
+      async (): Promise<void> => {
       const core: FakeCore = new FakeCore();
       const watcher: hiAppEvent.Watcher = startFeature(core, new CrashConfigurationBuilder().build());
       const commandsBefore: number = core.crashScope.sent.length;
@@ -291,7 +332,7 @@ export default function mainThreadJankTests(): void {
 
       deliverJank(watcher, params);
 
-      const reports: Array<Record<string, Object>> = core.rumScope.ofType('crash_report');
+      const reports: Array<Record<string, Object>> = await reportsOf(core, 1);
       expect(reports.length).assertEqual(1);
       expect(reports[0]['crash_kind']).assertEqual('jank');
       // The stack came from the log, not from heaviest_stack (the idle loop).
@@ -306,7 +347,8 @@ export default function mainThreadJankTests(): void {
       expect(core.crashScope.sent.length).assertEqual(commandsBefore);
     });
 
-    it('dropsAJankOfAnotherProcess', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+    it('dropsAJankOfAnotherProcess', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0,
+      async (): Promise<void> => {
       const core: FakeCore = new FakeCore();
       const watcher: hiAppEvent.Watcher = startFeature(core, new CrashConfigurationBuilder().build());
       const params: Record<string, Object> = busyJankParams();
@@ -316,15 +358,17 @@ export default function mainThreadJankTests(): void {
 
       deliverJank(watcher, params);
 
+      await sleep(100);
       expect(core.rumScope.ofType('crash_report').length).assertEqual(0);
       // Negative control: the same jank of this process is reported.
       const own: Record<string, Object> = busyJankParams();
       own['pid'] = process.pid;
       deliverJank(watcher, own);
-      expect(core.rumScope.ofType('crash_report').length).assertEqual(1);
+      expect((await reportsOf(core, 1)).length).assertEqual(1);
     });
 
-    it('readsOnlyFilesNamedAsAJankStackLog', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+    it('readsOnlyFilesNamedAsAJankStackLog', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0,
+      async (): Promise<void> => {
       const core: FakeCore = new FakeCore();
       const watcher: hiAppEvent.Watcher = startFeature(core, new CrashConfigurationBuilder().build());
       // A call tree whose heaviest path differs from heaviest_stack, under another name.
@@ -338,13 +382,14 @@ export default function mainThreadJankTests(): void {
       deliverJank(watcher, params);
 
       // Not read: the stack is the system's heaviest_stack.
-      const reports: Array<Record<string, Object>> = core.rumScope.ofType('crash_report');
+      const reports: Array<Record<string, Object>> = await reportsOf(core, 1);
       expect(reports.length).assertEqual(1);
       expect(reports[0]['stack']).assertEqual(
         CrashEventMapper.fromMainThreadJank(idleHeaviestJankParams(), '')!['stack']);
     });
 
-    it('leavesATraceLogAlone', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+    it('leavesATraceLogAlone', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0,
+      async (): Promise<void> => {
       const core: FakeCore = new FakeCore();
       const watcher: hiAppEvent.Watcher = startFeature(core, new CrashConfigurationBuilder().build());
       // Text that would yield a stack if it were read as one.
@@ -356,8 +401,72 @@ export default function mainThreadJankTests(): void {
 
       deliverJank(watcher, params);
 
+      await sleep(100);
       expect(core.rumScope.ofType('crash_report').length).assertEqual(0);
       expect(fileIo.accessSync(trace)).assertEqual(true);
     });
+
+    it('readsTheLogOffTheWatcherCallback', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0,
+      async (): Promise<void> => {
+        const core: FakeCore = new FakeCore();
+        const watcher: hiAppEvent.Watcher = startFeature(core, new CrashConfigurationBuilder().build());
+        const params: Record<string, Object> = idleHeaviestJankParams();
+        params['pid'] = process.pid;
+        params['external_log'] = [writeLog(IDLE_HEAVIEST_JANK_EXTERNAL_LOG)];
+        const before: number = syncReads();
+        const asyncBefore: number = fileCalls()['readText'];
+
+        deliverJank(watcher, params);
+
+        // The callback returned without touching the file: no synchronous read, no report yet.
+        expect(syncReads()).assertEqual(before);
+        expect(core.rumScope.ofType('crash_report').length).assertEqual(0);
+        const reports: Array<Record<string, Object>> = await reportsOf(core, 1);
+        expect(reports.length).assertEqual(1);
+        expect(fileCalls()['readText'] - asyncBefore).assertEqual(1);
+        expect((reports[0]['stack'] as string).indexOf('TimerCallback') >= 0).assertTrue();
+      });
+
+    it('readsTheFirstUsableOfSeveralLogs', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0,
+      async (): Promise<void> => {
+        const core: FakeCore = new FakeCore();
+        const watcher: hiAppEvent.Watcher = startFeature(core, new CrashConfigurationBuilder().build());
+        const missing: string = writeLog('').replace(/[^/]*$/, 'MAIN_THREAD_JANK_0_0.txt');
+        // A valid tree over the size cap, naming a library no other log has.
+        let huge: string = '9 #00 pc 0000000000000001 /system/lib64/liboversized.so';
+        while (huge.length <= 512 * 1024) {
+          huge += '\n  1 #01 pc 0000000000000002 /system/lib64/liboversized.so';
+        }
+        const oversized: string = writeLog(huge);
+        const usable: string = writeLog(IDLE_HEAVIEST_JANK_EXTERNAL_LOG);
+        const params: Record<string, Object> = idleHeaviestJankParams();
+        params['pid'] = process.pid;
+        params['external_log'] = [missing, oversized, usable];
+        const readsBefore: number = fileCalls()['readText'];
+
+        deliverJank(watcher, params);
+
+        const reports: Array<Record<string, Object>> = await reportsOf(core, 1);
+        expect(reports.length).assertEqual(1);
+        // Missing and oversized logs are skipped without reading them; the usable one is the tree.
+        expect(fileCalls()['readText'] - readsBefore).assertEqual(1);
+        expect((reports[0]['stack'] as string).indexOf('TimerCallback') >= 0).assertTrue();
+        expect((reports[0]['stack'] as string).indexOf('liboversized')).assertEqual(-1);
+      });
+
+    it('dropsAJankWhoseLogLandsAfterStop', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0,
+      async (): Promise<void> => {
+        const core: FakeCore = new FakeCore();
+        const started: StartedFeature = startedFeature(core, new CrashConfigurationBuilder().build());
+        const params: Record<string, Object> = busyJankParams();
+        params['pid'] = process.pid;
+        params['external_log'] = [writeLog(BUSY_JANK_EXTERNAL_LOG)];
+
+        deliverJank(started.watcher, params);
+        started.feature.onStop();
+
+        await sleep(100);
+        expect(core.rumScope.ofType('crash_report').length).assertEqual(0);
+      });
   });
 }
