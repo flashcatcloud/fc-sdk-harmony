@@ -47,7 +47,10 @@ export type FrameHookFactory =
 
 class Launch {
   readonly type: StartupType;
+  // Wall-clock start: the vital's date.
   readonly startMs: number;
+  // Elapsed-clock start: what the launch's duration is measured from.
+  readonly startElapsedMs: number;
   // Which launch this is: contexts handed over since it began carry the same number.
   readonly seq: number;
   // Its time to initial display has been measured.
@@ -60,9 +63,10 @@ class Launch {
   // source that cannot name the first frame then cannot be trusted with it.
   viewBeforeHook: boolean = false;
 
-  constructor(type: StartupType, startMs: number, seq: number) {
+  constructor(type: StartupType, startMs: number, startElapsedMs: number, seq: number) {
     this.type = type;
     this.startMs = startMs;
+    this.startElapsedMs = startElapsedMs;
     this.seq = seq;
   }
 }
@@ -131,7 +135,12 @@ class PendingViewLoad {
  * frame or a shown page's — and unhooked as soon as nothing does; a launch or
  * a page shown hooks them again.
  *
- * Pure bookkeeping: the clock, the process age and the frame hooks are
+ * Durations are measured on an elapsed clock, which the user or the network
+ * time cannot set: a wall clock set back mid-launch would otherwise report a
+ * negative launch, and one set forward a launch over the cap. The wall clock
+ * only dates the launch.
+ *
+ * Pure bookkeeping: the clocks, the process age and the frame hooks are
  * injected; nothing here calls the system.
  */
 export class AppLaunchTracker {
@@ -139,6 +148,7 @@ export class AppLaunchTracker {
   private readonly hookFrames: FrameHookFactory;
   private readonly processAgeMs: () => number | null;
   private readonly nowMs: () => number;
+  private readonly elapsedMs: () => number;
   private readonly contexts: Map<Object, Watched> = new Map<Object, Watched>();
   // The launch waiting for (or ended by) its first frame.
   private launch: Launch | null = null;
@@ -154,12 +164,14 @@ export class AppLaunchTracker {
   private pendingViewLoad: PendingViewLoad | null = null;
   private stopped: boolean = false;
 
+  /** `nowMs`: the wall clock (epoch ms). `elapsedMs`: a clock that only moves forwards (ms since boot). */
   constructor(sink: AppLaunchSink, hookFrames: FrameHookFactory, processAgeMs: () => number | null,
-    nowMs: () => number = (): number => Date.now()) {
+    nowMs: () => number, elapsedMs: () => number) {
     this.sink = sink;
     this.hookFrames = hookFrames;
     this.processAgeMs = processAgeMs;
     this.nowMs = nowMs;
+    this.elapsedMs = elapsedMs;
   }
 
   onAbilityCreated(): void {
@@ -173,6 +185,7 @@ export class AppLaunchTracker {
       return; // another ability is already on screen: not a launch
     }
     const nowMs: number = this.nowMs();
+    const elapsedMs: number = this.elapsedMs();
     const first: boolean = !this.abilitySeen;
     this.abilitySeen = true;
     // In front of the user already: the SDK missed the ability that is showing.
@@ -186,7 +199,7 @@ export class AppLaunchTracker {
     }
     this.launchedSinceBackground = true;
     if (!first) {
-      this.begin(StartupType.WARM, nowMs);
+      this.begin(StartupType.WARM, nowMs, elapsedMs);
       return;
     }
     const ageMs: number | null = this.processAgeMs();
@@ -196,9 +209,9 @@ export class AppLaunchTracker {
       return;
     }
     if (ageMs <= COLD_START_MAX_PROCESS_AGE_MS) {
-      this.begin(StartupType.COLD, nowMs - ageMs);
+      this.begin(StartupType.COLD, nowMs - ageMs, elapsedMs - ageMs);
     } else {
-      this.begin(StartupType.WARM, nowMs);
+      this.begin(StartupType.WARM, nowMs, elapsedMs);
     }
   }
 
@@ -223,7 +236,7 @@ export class AppLaunchTracker {
       FlashcatLog.d(`${NOT_OBSERVED}: no frame hook; call FlashcatRum.startViewTracking`);
       return;
     }
-    this.begin(StartupType.HOT, this.nowMs());
+    this.begin(StartupType.HOT, this.nowMs(), this.elapsedMs());
   }
 
   /** The SDK started in an app already in the foreground: no return, no launch.
@@ -315,13 +328,16 @@ export class AppLaunchTracker {
       FlashcatLog.usage('reportAppFullyDisplayed called before the first frame: it is reported with the time to initial display');
       return;
     }
-    const nowMs: number = this.nowMs();
-    const elapsedMs: number = nowMs - launch.startMs;
-    if (elapsedMs > MAX_FULL_DISPLAY_MS) {
+    const durationMs: number = this.elapsedMs() - launch.startElapsedMs;
+    if (!AppLaunchTracker.isDuration(durationMs)) {
+      FlashcatLog.d('rum.launch: reportAppFullyDisplayed not measured: the elapsed clock ran backwards');
+      return;
+    }
+    if (durationMs > MAX_FULL_DISPLAY_MS) {
       FlashcatLog.usage('reportAppFullyDisplayed ignored: more than 90 s after the launch started');
       return;
     }
-    this.sink.fullDisplay(launch.type, launch.startMs, elapsedMs * MS_TO_NS, nowMs);
+    this.sink.fullDisplay(launch.type, launch.startMs, durationMs * MS_TO_NS, this.nowMs());
   }
 
   /** SDK stop: unhook every frame source; nothing is measured afterwards. */
@@ -356,7 +372,13 @@ export class AppLaunchTracker {
     if (launch === null || launch.displayed) {
       return;
     }
-    if (nowMs - launch.startMs > MAX_INITIAL_DISPLAY_MS) {
+    const durationMs: number = this.elapsedMs() - launch.startElapsedMs;
+    if (!AppLaunchTracker.isDuration(durationMs)) {
+      this.launch = null;
+      FlashcatLog.d(`${NOT_OBSERVED}: the elapsed clock ran backwards`);
+      return;
+    }
+    if (durationMs > MAX_INITIAL_DISPLAY_MS) {
       this.launch = null;
       FlashcatLog.d(`${NOT_OBSERVED} within 60 s of the launch`);
       return;
@@ -379,8 +401,7 @@ export class AppLaunchTracker {
       }
     }
     launch.displayed = true;
-    this.sink.initialDisplay(launch.type, launch.startMs, (nowMs - launch.startMs) * MS_TO_NS, nowMs,
-      launch.fullyDisplayed);
+    this.sink.initialDisplay(launch.type, launch.startMs, durationMs * MS_TO_NS, nowMs, launch.fullyDisplayed);
   }
 
   private resolveViewLoad(nowMs: number): void {
@@ -394,13 +415,17 @@ export class AppLaunchTracker {
     }
   }
 
-  private begin(type: StartupType, startMs: number): void {
+  private begin(type: StartupType, startMs: number, startElapsedMs: number): void {
     this.launchSeq += 1;
-    const launch: Launch = new Launch(type, startMs, this.launchSeq);
+    const launch: Launch = new Launch(type, startMs, startElapsedMs, this.launchSeq);
     this.launch = launch;
     if (type !== StartupType.HOT) {
       this.abilityLaunch = launch;
     }
+  }
+
+  private static isDuration(ms: number): boolean {
+    return Number.isFinite(ms) && ms >= 0;
   }
 
   /** Something waits for a frame: a launch's first one, or a shown page's. */

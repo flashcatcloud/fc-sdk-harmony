@@ -17,7 +17,7 @@ import { systemFrameSources } from './internal/vitals/SystemFrameSources';
 import { VitalsCollectors } from './internal/vitals/VitalsCollector';
 import { VitalsUpdateFrequency, vitalsPeriodMs } from './VitalsUpdateFrequency';
 import { AppLaunchTracker, AppLaunchSink, StartupType } from './internal/startup/AppLaunchTracker';
-import { systemFrameHooks, systemProcessAgeMs } from './internal/startup/SystemLaunchHooks';
+import { systemFrameHooks, systemProcessAgeMs, systemElapsedMs } from './internal/startup/SystemLaunchHooks';
 import { APP_LAUNCH_TTID, APP_LAUNCH_TTFD } from './internal/assembly/RumEventAssembler';
 
 /**
@@ -140,7 +140,8 @@ export class FlashcatRum {
       }
     };
     const launch: AppLaunchTracker =
-      new AppLaunchTracker(launchSink, systemFrameHooks(apiVersion), systemProcessAgeMs);
+      new AppLaunchTracker(launchSink, systemFrameHooks(apiVersion), systemProcessAgeMs, (): number => Date.now(),
+        systemElapsedMs);
     const monitor: DefaultRumMonitor =
       new DefaultRumMonitor(core, scope, configuration, store, controller, collectors, launch);
     monitorRef = monitor;

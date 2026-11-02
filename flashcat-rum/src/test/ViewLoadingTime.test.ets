@@ -153,7 +153,8 @@ class Bench {
           this.frames.delete(context);
         };
       };
-    this.tracker = new AppLaunchTracker(sink, hooks, (): number | null => 0, (): number => this.nowMs);
+    this.tracker = new AppLaunchTracker(sink, hooks, (): number | null => 0, (): number => this.nowMs,
+      (): number => this.nowMs);
     this.tracker.attachContext('page');
   }
 

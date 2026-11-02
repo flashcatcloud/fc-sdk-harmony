@@ -1,5 +1,6 @@
 import { window, UIContext } from '@kit.ArkUI';
 import { process } from '@kit.ArkTS';
+import { systemDateTime } from '@kit.BasicServicesKit';
 import { FlashcatLog } from '@flashcatcloud/core';
 import { FrameHookFactory } from './AppLaunchTracker';
 import {
@@ -18,6 +19,11 @@ export function systemProcessAgeMs(): number | null {
   } catch (_e) {
     return null;
   }
+}
+
+/** Milliseconds since boot, deep sleep included: the clock launch durations are measured on. */
+export function systemElapsedMs(): number {
+  return systemDateTime.getUptime(systemDateTime.TimeType.STARTUP, false);
 }
 
 /**

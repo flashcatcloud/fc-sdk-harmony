@@ -112,7 +112,9 @@ class Measured {
 
 /** A launch tracker on a clock, a process age and frame hooks the test drives. */
 class Bench {
+  // The elapsed (monotonic) clock; the wall clock reads it plus `wallSkewMs`.
   nowMs: number = 100_000;
+  wallSkewMs: number = 0;
   ageMs: number | null = 300;
   hookable: boolean = true;
   hooksMade: number = 0;
@@ -151,7 +153,8 @@ class Bench {
           this.frames.delete(context);
         };
       };
-    this.tracker = new AppLaunchTracker(sink, hooks, (): number | null => this.ageMs, (): number => this.nowMs);
+    this.tracker = new AppLaunchTracker(sink, hooks, (): number | null => this.ageMs,
+      (): number => this.nowMs + this.wallSkewMs, (): number => this.nowMs);
   }
 
   /** How many contexts are hooked right now. */
@@ -223,6 +226,52 @@ export default function appLaunchTests(): void {
       b.coldLaunched();
       // Started 300 ms before the ability was created, ended at the frame 200 ms after it.
       expect(b.report()).assertEqual('ttid:cold_start@99700+500');
+    });
+
+    it('aWallClockSetBackDoesNotShortenALaunch', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+      const b: Bench = new Bench();
+      b.ageMs = 300;
+      b.tracker.onAbilityCreated();
+      b.tracker.attachContext('page-1');
+      b.wallSkewMs = -5_000; // the user (or the network time) sets the clock back
+      b.frame(200, true);
+      b.frame(100, null);
+      b.tracker.onFullyDisplayed();
+      // Dated by the wall clock at the launch's start; measured on the elapsed clock.
+      expect(b.report()).assertEqual('ttid:cold_start@99700+500 ttfd:cold_start@99700+600');
+
+      b.tracker.onBackground();
+      b.tracker.onForeground();
+      b.wallSkewMs = -6_000;
+      b.frame(150, null);
+      expect(b.measured[2].toString()).assertEqual('ttid:hot_start@95300+150');
+    });
+
+    it('aWallClockSetForwardDoesNotLengthenALaunch', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+      const b: Bench = new Bench();
+      b.ageMs = 300;
+      b.tracker.onAbilityCreated();
+      b.tracker.attachContext('page-1');
+      b.wallSkewMs = 120_000; // past the 60 s cap if the wall clock measured it
+      b.frame(200, true);
+      expect(b.report()).assertEqual('ttid:cold_start@99700+500');
+    });
+
+    it('anElapsedClockThatRunsBackwardsReportsNothing', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+      const b: Bench = new Bench();
+      b.ageMs = 300;
+      b.tracker.onAbilityCreated();
+      b.tracker.attachContext('page-1');
+      b.frame(-1_000, true);
+      b.tracker.onFullyDisplayed();
+      expect(b.report()).assertEqual('');
+      // Negative control: the same launch on a clock that runs forwards is measured.
+      const ok: Bench = new Bench();
+      ok.ageMs = 300;
+      ok.tracker.onAbilityCreated();
+      ok.tracker.attachContext('page-1');
+      ok.frame(1_000, true);
+      expect(ok.report()).assertEqual('ttid:cold_start@99700+1300');
     });
 
     it('tenSecondsOfProcessAgeIsStillCold', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
@@ -597,7 +646,7 @@ export default function appLaunchTests(): void {
         (_c: Object, cb: (firstDrawFrame: boolean | null) => void): (() => void) | null => {
           onFrame = cb;
           return (): void => {};
-        }, (): number | null => 0);
+        }, (): number | null => 0, (): number => 0, (): number => 0);
       tracker.onAbilityCreated();
       tracker.attachContext('page-1');
       (onFrame as (firstDrawFrame: boolean | null) => void)(true); // must not throw
