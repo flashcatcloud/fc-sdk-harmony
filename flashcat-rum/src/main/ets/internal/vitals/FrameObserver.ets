@@ -15,7 +15,10 @@ export interface FrameSource {
 export type FrameSourceFactory = (context: Object) => Promise<FrameSource | null>;
 
 /**
- * Hands every drawn frame to the open views. Sources listen only while the
+ * Hands every drawn frame to the open views. Frames are app-wide: a frame
+ * drawn in any attached window goes to every open view, whichever window the
+ * view is shown in (launch timing and the router page's first frame read
+ * frames the same way). Sources listen only while the
  * app is in the foreground, at least one view is open, and vitals are not
  * turned off (`VitalsUpdateFrequency.NEVER`): otherwise no system callback is
  * registered at all.
@@ -28,8 +31,11 @@ export class FrameObserver implements VitalsCollector {
   private readonly sourceFor: FrameSourceFactory;
   private readonly periodOf: () => number;
   private readonly sources: Map<Object, FrameSource> = new Map<Object, FrameSource>();
-  // Contexts whose source is still being built; detach or stop cancels them.
-  private readonly pending: Set<Object> = new Set<Object>();
+  // Contexts whose source is still being built, each with the token of its
+  // current request. Detach or stop cancels them; a request answered after its
+  // context was detached (and maybe attached again) is no longer current.
+  private readonly pending: Map<Object, number> = new Map<Object, number>();
+  private nextRequest: number = 0;
   private readonly views: Set<ViewVitals> = new Set<ViewVitals>();
   private readonly onFrame: (sample: FrameSample) => void;
   private foreground: boolean = false;
@@ -50,7 +56,9 @@ export class FrameObserver implements VitalsCollector {
     if (this.stopped || this.sources.has(context) || this.pending.has(context)) {
       return;
     }
-    this.pending.add(context);
+    this.nextRequest += 1;
+    const token: number = this.nextRequest;
+    this.pending.set(context, token);
     let request: Promise<FrameSource | null>;
     try {
       request = this.sourceFor(context);
@@ -60,15 +68,21 @@ export class FrameObserver implements VitalsCollector {
       return;
     }
     request.then((source: FrameSource | null) => {
-      if (!this.pending.delete(context) || source === null) {
-        return; // detached or stopped meanwhile, or nothing to observe
+      if (this.pending.get(context) !== token) {
+        return; // detached or stopped meanwhile, or superseded by a newer request
+      }
+      this.pending.delete(context);
+      if (source === null) {
+        return; // nothing to observe
       }
       this.sources.set(context, source);
       if (this.observing) {
         this.startSource(context, source);
       }
     }).catch((e: Object) => {
-      this.pending.delete(context);
+      if (this.pending.get(context) === token) {
+        this.pending.delete(context);
+      }
       FrameObserver.log('no frame source', e);
     });
   }

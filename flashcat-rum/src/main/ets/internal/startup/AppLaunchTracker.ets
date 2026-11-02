@@ -116,7 +116,9 @@ class PendingViewLoad {
  * background first, or 60 s passed — nothing is reported, and the reason is
  * logged. No other moment stands in for the frame.
  *
- * Frames are hooked only while something waits for one — a launch's first
+ * Frames are app-wide: a hot start and a shown page's load end at the next
+ * frame of any watched window (only a cold or warm launch looks at which
+ * window it was). Frames are hooked only while something waits for one — a launch's first
  * frame or a shown page's — and unhooked as soon as nothing does; a launch or
  * a page shown hooks them again.
  *

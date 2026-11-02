@@ -85,6 +85,26 @@ class FakeFactory {
   }
 }
 
+/** One new source per request; each request resolves when the test says. */
+class OrderedFactory {
+  readonly sources: FakeSource[] = [];
+  private readonly resolvers: Array<() => void> = [];
+
+  factory(): FrameSourceFactory {
+    return (_context: Object): Promise<FrameSource | null> => {
+      const source: FakeSource = new FakeSource();
+      this.sources.push(source);
+      return new Promise<FrameSource | null>((resolve: (s: FrameSource | null) => void) => {
+        this.resolvers.push(() => resolve(source));
+      });
+    };
+  }
+
+  resolve(request: number): void {
+    this.resolvers[request]();
+  }
+}
+
 /** A system subscription that remembers the callbacks registered on it. */
 class FakeSubscription<C> implements Subscription<C> {
   readonly live: C[] = [];
@@ -513,6 +533,25 @@ export default function frameVitalsTests(): void {
       expect(factory.source.starts).assertEqual(0);
       frames.attach('other');
       expect(factory.calls).assertEqual(2); // stopped: no more lookups
+    });
+
+    it('aStaleLookupAnsweredFirstLosesToTheCurrentOne', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, async (): Promise<void> => {
+      const ordered: OrderedFactory = new OrderedFactory();
+      const frames: FrameObserver = new FrameObserver(ordered.factory(), (): number => 500);
+      frames.setForeground(true);
+      frames.register(new ViewVitals());
+      frames.attach('ctx');
+      frames.detach('ctx');
+      frames.attach('ctx'); // a second, current request for the same context
+      ordered.resolve(0); // the stale one answers first
+      await settle();
+      ordered.resolve(1);
+      await settle();
+      expect(ordered.sources[0].starts).assertEqual(0);
+      expect(ordered.sources[1].starts).assertEqual(1);
+      frames.detach('ctx');
+      expect(ordered.sources[1].stops).assertEqual(1); // and it is the one detach reaches
+      frames.stop();
     });
 
     it('aFailingWindowLookupNeverThrows', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, async (): Promise<void> => {
