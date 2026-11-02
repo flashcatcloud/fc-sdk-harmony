@@ -854,14 +854,56 @@ export default function appLaunchTests(): void {
       });
       expect(seen.join(' ')).assertEqual(`ttid:cold_start:700@${now - 700} ttfd:cold_start:700@${now - 700}`);
 
-      // A session whose full display is already reported takes only the TTID.
+      // A new session reports its own launch, with the full display riding on it.
       monitor.stopSession();
       monitor.startView('home', 'Home');
-      monitor.reportAppLaunch(APP_LAUNCH_TTFD, StartupType.WARM, now, 900 * MS_NS, now);
       monitor.reportAppLaunch(APP_LAUNCH_TTID, StartupType.WARM, now, 300 * MS_NS, now, true);
       const metrics: string[] = scope.vitals().slice(2).map(
         (e: Record<string, Object>) => (e['vital'] as Record<string, Object>)['app_launch_metric'] as string);
-      expect(metrics.join(' ')).assertEqual('ttfd ttid');
+      expect(metrics.join(' ')).assertEqual('ttid ttfd');
+    });
+
+    it('aFullDisplayGoesOnlyWithTheLaunchWhoseInitialDisplayTheSessionReported', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+      const scope: CapturingScope = new CapturingScope();
+      const configuration: RumConfiguration = new RumConfigurationBuilder('app-1').build();
+      const monitor: DefaultRumMonitor = raw(new FakeCore(), configuration, scope);
+      monitor.startView('home', 'Home');
+      const now: number = Date.now();
+      monitor.reportAppLaunch(APP_LAUNCH_TTID, StartupType.COLD, now - 5000, 500 * MS_NS, now - 4500);
+      // A warm launch later in the same session: its TTID is the session's second, dropped...
+      monitor.reportAppLaunch(APP_LAUNCH_TTID, StartupType.WARM, now, 100 * MS_NS, now + 100);
+      // ...and its TTFD would pair a 150 ms warm full display with a 500 ms cold initial one.
+      monitor.reportAppLaunch(APP_LAUNCH_TTFD, StartupType.WARM, now, 150 * MS_NS, now + 150);
+      const seen = (): string => scope.vitals().map((e: Record<string, Object>) => {
+        const v: Record<string, Object> = e['vital'] as Record<string, Object>;
+        return `${v['app_launch_metric']}:${v['startup_type']}:${(v['duration'] as number) / MS_NS}`;
+      }).join(' ');
+      expect(seen()).assertEqual('ttid:cold_start:500');
+      // The reported launch's own full display is still taken.
+      monitor.reportAppLaunch(APP_LAUNCH_TTFD, StartupType.COLD, now - 5000, 900 * MS_NS, now - 4100);
+      expect(seen()).assertEqual('ttid:cold_start:500 ttfd:cold_start:900');
+
+      // Negative control: the same warm launch in a session of its own is reported in full.
+      monitor.stopSession();
+      monitor.startView('home', 'Home');
+      monitor.reportAppLaunch(APP_LAUNCH_TTID, StartupType.WARM, now, 100 * MS_NS, now + 100);
+      monitor.reportAppLaunch(APP_LAUNCH_TTFD, StartupType.WARM, now, 150 * MS_NS, now + 150);
+      expect(seen()).assertEqual('ttid:cold_start:500 ttfd:cold_start:900 ttid:warm_start:100 ttfd:warm_start:150');
+    });
+
+    it('aFullDisplayAfterItsSessionEndedIsNotReportedInTheNextOne', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+      const scope: CapturingScope = new CapturingScope();
+      const configuration: RumConfiguration = new RumConfigurationBuilder('app-1').build();
+      const monitor: DefaultRumMonitor = raw(new FakeCore(), configuration, scope);
+      monitor.startView('home', 'Home');
+      const now: number = Date.now();
+      monitor.reportAppLaunch(APP_LAUNCH_TTID, StartupType.COLD, now - 700, 700 * MS_NS, now);
+      monitor.stopSession();
+      monitor.startView('home', 'Home');
+      monitor.reportAppLaunch(APP_LAUNCH_TTFD, StartupType.COLD, now - 700, 900 * MS_NS, now + 200);
+      const sessions: string[] = scope.vitals().map((e: Record<string, Object>) =>
+        `${(e['vital'] as Record<string, Object>)['app_launch_metric']}`);
+      expect(sessions.join(' ')).assertEqual('ttid');
     });
 
     it('stoppingViewTrackingForEveryContextKeepsLaunchTiming', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {

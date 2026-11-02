@@ -56,7 +56,9 @@ export class RumSessionScope implements RumScope {
   private readonly collector: VitalsCollector | null;
   // Android parity: one cold / warm time to initial display per session, one
   // time to full display per session. A hot start is reported every time.
-  private launchInitialDisplayReported: boolean = false;
+  // The cold or warm launch whose time to initial display this session
+  // reported: the only one whose time to full display it takes.
+  private reportedLaunch: string | null = null;
   private launchFullDisplayReported: boolean = false;
 
   constructor(
@@ -393,10 +395,10 @@ export class RumSessionScope implements RumScope {
   private writeAppLaunch(raw: RumRawEvent): void {
     if (raw.launchMetric === APP_LAUNCH_TTID) {
       if (raw.startupType !== StartupType.HOT) {
-        if (this.launchInitialDisplayReported) {
+        if (this.reportedLaunch !== null) {
           return;
         }
-        this.launchInitialDisplayReported = true;
+        this.reportedLaunch = RumSessionScope.launchOf(raw);
       }
       this.writeLaunchVital(raw, APP_LAUNCH_TTID);
       // Fully displayed before its first frame: the same value, as on Android,
@@ -407,11 +409,22 @@ export class RumSessionScope implements RumScope {
       }
       return;
     }
-    if (this.launchFullDisplayReported) {
+    // A full display completes the launch whose initial display this session
+    // reported. Another launch's - a later one whose initial display was
+    // dropped as the session's second, or one reported in an earlier session -
+    // would sit beside an initial display it does not belong to, of another
+    // startup type and possibly longer than its own full display.
+    if (this.launchFullDisplayReported || this.reportedLaunch !== RumSessionScope.launchOf(raw)) {
+      FlashcatLog.d('rum.launch: time to full display not reported: its launch is not the one this session reported');
       return;
     }
     this.launchFullDisplayReported = true;
     this.writeLaunchVital(raw, APP_LAUNCH_TTFD);
+  }
+
+  /** Which launch a launch vital measures: its startup type and start. */
+  private static launchOf(raw: RumRawEvent): string {
+    return `${raw.startupType ?? ''}@${raw.launchStartMs ?? raw.timestampMs}`;
   }
 
   private writeLaunchVital(raw: RumRawEvent, metric: string): void {
