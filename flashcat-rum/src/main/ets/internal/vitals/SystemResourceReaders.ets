@@ -1,5 +1,5 @@
 import { hidebug } from '@kit.PerformanceAnalysisKit';
-import { taskpool } from '@kit.ArkTS';
+import { buffer, taskpool } from '@kit.ArkTS';
 import { fileIo } from '@kit.CoreFileKit';
 import { ResourceReaders } from './ResourceSampler';
 
@@ -9,6 +9,8 @@ const STAT_PATH: string = '/proc/self/stat';
 // Field 14 of /proc/<pid>/stat; fields 3.. follow the ")" that closes field 2.
 const UTIME_FIELD: number = 14;
 const FIRST_FIELD_AFTER_COMM: number = 3;
+// A stat line is a few hundred bytes; utime comes well before the end of it.
+const STAT_READ_BYTES: number = 1024;
 
 /**
  * How resident memory is read on a given API level. Each path is the cheapest
@@ -81,8 +83,17 @@ function memoryReaderFor(path: MemoryPath): (() => Promise<number | null>) | nul
   }
 }
 
+/** Read with a buffer of its own, not readTextSync: a /proc file's size is 0,
+ * and readTextSync reads only as many bytes as the size says — none. */
 function readCpuTicks(): number | null {
-  return parseUtimeTicks(fileIo.readTextSync(STAT_PATH));
+  const file: fileIo.File = fileIo.openSync(STAT_PATH, fileIo.OpenMode.READ_ONLY);
+  try {
+    const bytes: ArrayBuffer = new ArrayBuffer(STAT_READ_BYTES);
+    const read: number = fileIo.readSync(file.fd, bytes);
+    return parseUtimeTicks(buffer.from(bytes, 0, read).toString('utf-8'));
+  } finally {
+    fileIo.closeSync(file);
+  }
 }
 
 /** The readers for a device on `apiVersion`. Each one's failures reach the

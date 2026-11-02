@@ -20,4 +20,8 @@ const taskpool = {
   executed: 0,
   execute(fn, ...args) { taskpool.executed += 1; return Promise.resolve().then(() => fn(...args)); }
 };
-module.exports = { util, process: processShim, taskpool };
+// The bytes of an ArrayBuffer as text, as @kit.ArkTS buffer does.
+const buffer = {
+  from: (arrayBuffer, byteOffset, length) => Buffer.from(arrayBuffer, byteOffset, length)
+};
+module.exports = { util, process: processShim, taskpool, buffer };

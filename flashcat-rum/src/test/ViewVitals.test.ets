@@ -5,6 +5,7 @@ import {
 } from '@flashcatcloud/core';
 import { hidebug } from '@kit.PerformanceAnalysisKit';
 import { taskpool } from '@kit.ArkTS';
+import { fileIo } from '@kit.CoreFileKit';
 import { ViewVitals } from '../main/ets/internal/vitals/ViewVitals';
 import { ResourceSampler, ResourceReaders, SamplerTimer } from '../main/ets/internal/vitals/ResourceSampler';
 import {
@@ -298,6 +299,19 @@ export default function viewVitalsTests(): void {
       expect(parseUtimeTicks('1234 (app) S 1 2 3')).assertNull();
       expect(parseUtimeTicks('not a stat line')).assertNull();
       expect(parseUtimeTicks('1 (a) S 1 1 0 0 -1 0 0 0 0 0 -5 0')).assertNull();
+    });
+
+    it('cpuTimeIsReadFromAProcFileWhoseSizeIsZero', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+      // As on the device: /proc/self/stat has content, and a size of 0.
+      const pseudo: Map<string, string> = (fileIo as Object as Record<string, Object>)['pseudoFiles'] as Map<string, string>;
+      pseudo.set('/proc/self/stat', STAT_LINE);
+      try {
+        expect(fileIo.readTextSync('/proc/self/stat')).assertEqual(''); // the trap the reader must avoid
+        const read: (() => number | null) | null = systemResourceReaders(24).cpuTicks;
+        expect(read === null ? null : read()).assertEqual(4242);
+      } finally {
+        pseudo.delete('/proc/self/stat');
+      }
     });
 
     it('eachApiLevelReadsMemoryThroughItsOwnPath', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, async (): Promise<void> => {
