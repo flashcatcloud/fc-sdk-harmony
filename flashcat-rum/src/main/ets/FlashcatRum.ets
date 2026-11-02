@@ -1,3 +1,4 @@
+import { UIContext } from '@kit.ArkUI';
 import { Flashcat, SdkCore, FeatureScope, FlashcatContext, IntakeTarget,
   RUM_FEATURE_NAME, FlashcatLog } from '@flashcatcloud/core';
 import { RumConfiguration } from './RumConfiguration';
@@ -34,6 +35,11 @@ import { APP_LAUNCH_TTID, APP_LAUNCH_TTFD } from './internal/assembly/RumEventAs
 export class FlashcatRum {
   // The frames of every context passed to startViewTracking; one per enable.
   private static frames: FrameObserver | null = null;
+  // The context first handed over for each ability, by that ability's context.
+  // `getUIContext()` returns a new object on every call, and everything that
+  // tracks a context tells contexts apart by identity: a second one for the
+  // same ability would observe its pages and frames twice.
+  private static readonly tracked: Map<Object, NavContext> = new Map<Object, NavContext>();
 
   static enable(configuration: RumConfiguration, sdkCore?: SdkCore): void {
     // Called from the host's startup path (and possibly before initialize): a
@@ -188,7 +194,8 @@ export class FlashcatRum {
    * (a UIAbilityContext or a UIContext from UI land). Each page show/hide then
    * emits start/stopView automatically, and each shown page's first frame sets
    * its `view.loading_time`. Router tracking is a no-op unless RUM is enabled
-   * with `setTrackNavigation(true)`. Idempotent.
+   * with `setTrackNavigation(true)`. Idempotent per ability: every
+   * `getUIContext()` of its windows and the ability's own context count as one.
    *
    * Call it in every app, router-based or not: app launch timing (time to
    * initial display, cold / warm / hot) ends at the first frame drawn, and
@@ -199,7 +206,7 @@ export class FlashcatRum {
    * `VitalsUpdateFrequency`: `NEVER` does not turn it off.
    *
    * IMPORTANT: pair with `stopViewTracking(context)` in the ability's
-   * onDestroy — the registry holds a strong reference per context, so
+   * onDestroy (`this.context` there will do) — the registry holds a strong reference per context, so
    * create/destroy churn without the stop call pins each dead context for the
    * lifetime of the RUM enablement.
    *
@@ -216,9 +223,12 @@ export class FlashcatRum {
    * redrew nothing, which raises the frame rate RUM reports.
    */
   static startViewTracking(context: NavContext): void {
-    RumNavigationTracker.attach(context);
+    const key: Object = FlashcatRum.abilityOf(context);
+    const tracked: NavContext = FlashcatRum.tracked.get(key) ?? context;
+    FlashcatRum.tracked.set(key, tracked);
+    RumNavigationTracker.attach(tracked);
     if (FlashcatRum.frames !== null) {
-      FlashcatRum.frames.attach(context);
+      FlashcatRum.frames.attach(tracked);
     }
   }
 
@@ -227,13 +237,30 @@ export class FlashcatRum {
    * observer (call before an ability is destroyed); without, detaches all.
    */
   static stopViewTracking(context?: NavContext): void {
+    let tracked: NavContext | undefined = undefined;
     if (context !== undefined) {
-      RumNavigationTracker.detachContext(context);
+      const key: Object = FlashcatRum.abilityOf(context);
+      tracked = FlashcatRum.tracked.get(key) ?? context;
+      FlashcatRum.tracked.delete(key);
+      RumNavigationTracker.detachContext(tracked);
     } else {
+      FlashcatRum.tracked.clear();
       RumNavigationTracker.detach();
     }
     if (FlashcatRum.frames !== null) {
-      FlashcatRum.frames.detach(context);
+      FlashcatRum.frames.detach(tracked);
     }
+  }
+
+  /** The ability a context belongs to: a UIContext's host context, the same
+   * object on every call and the ability's own `this.context`. */
+  private static abilityOf(context: NavContext): Object {
+    if (context instanceof UIContext) {
+      const host: Object | undefined = context.getHostContext() as Object | undefined;
+      if (host !== undefined) {
+        return host;
+      }
+    }
+    return context;
   }
 }

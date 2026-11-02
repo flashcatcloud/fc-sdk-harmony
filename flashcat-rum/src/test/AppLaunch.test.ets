@@ -4,7 +4,7 @@ import {
   Feature, FeatureEventReceiver, UserInfo, IntakeTarget
 } from '@flashcatcloud/core';
 import { common } from '@kit.AbilityKit';
-import { window, UIContext } from '@kit.ArkUI';
+import { window, UIContext, uiObserver } from '@kit.ArkUI';
 import { process } from '@kit.ArkTS';
 import { systemDateTime } from '@kit.BasicServicesKit';
 import {
@@ -13,6 +13,8 @@ import {
 import { systemFrameHooks, systemProcessAgeMs } from '../main/ets/internal/startup/SystemLaunchHooks';
 import { RumFeature } from '../main/ets/internal/RumFeature';
 import { RumNavigationTracker } from '../main/ets/internal/RumNavigationTracker';
+import { RumAutoInstrumentation } from '../main/ets/internal/RumAutoInstrumentation';
+import { FlashcatRum } from '../main/ets/FlashcatRum';
 import { DefaultRumMonitor } from '../main/ets/internal/monitor/DefaultRumMonitor';
 import { RumConfiguration, RumConfigurationBuilder } from '../main/ets/RumConfiguration';
 import { APP_LAUNCH_TTID, APP_LAUNCH_TTFD } from '../main/ets/internal/assembly/RumEventAssembler';
@@ -954,6 +956,36 @@ export default function appLaunchTests(): void {
         expect(b.report()).assertEqual('ttid:cold_start@99700+500 ttid:hot_start@300000+40');
       } finally {
         RumNavigationTracker.configureLaunch(null);
+      }
+    });
+
+    it('everyUIContextOfOneAbilityIsTrackedOnce', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+      // getUIContext() answers a new object on every call; its host context is the ability's.
+      const host: Object = new Object();
+      const ofAbility = (): UIContext => {
+        const ui: UIContext = new UIContext();
+        (ui as Object as Record<string, Object>)['getHostContext'] = (): Object => host;
+        return ui;
+      };
+      const routers = (): number => ((uiObserver as Object as Record<string, Object>)['routerPageUpdate'] as Array<Object>).length;
+      const b: Bench = new Bench();
+      RumNavigationTracker.configureLaunch(b.tracker);
+      RumAutoInstrumentation.configure(new RumConfigurationBuilder('app-1').setTrackNavigation(true).build());
+      const routersBefore: number = routers();
+      try {
+        b.tracker.onForeground();
+        b.tracker.onAbilityCreated();
+        FlashcatRum.startViewTracking(ofAbility());
+        FlashcatRum.startViewTracking(ofAbility()); // the first page again, or another page of the ability
+        expect(b.live()).assertEqual(1);
+        expect(routers() - routersBefore).assertEqual(1);
+        FlashcatRum.stopViewTracking(ofAbility());
+        expect(b.live()).assertEqual(0);
+        expect(routers() - routersBefore).assertEqual(0);
+      } finally {
+        FlashcatRum.stopViewTracking();
+        RumNavigationTracker.configureLaunch(null);
+        RumAutoInstrumentation.reset();
       }
     });
 
