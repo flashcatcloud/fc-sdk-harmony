@@ -701,7 +701,9 @@ export class CrashFeature implements Feature, FeatureEventReceiver {
     }
     try {
       const stat: fileIo.Stat = await fileIo.stat(paths[index]);
-      if (stat.size <= JANK_STACK_LOG_MAX_BYTES) {
+      // A stack log is a regular file: a device or a pipe behind the name could
+      // keep the read going for ever.
+      if (stat.isFile() && stat.size <= JANK_STACK_LOG_MAX_BYTES) {
         const text: string = await fileIo.readText(paths[index]);
         if (text.length > 0) {
           return text;

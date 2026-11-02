@@ -44,7 +44,7 @@ const fileIo = {
   listFileSync: (dir) => { calls.listFileSync += 1; return nodeFs.readdirSync(dir); },
   readTextSync: (p) => { calls.readTextSync += 1; return nodeFs.readFileSync(p, 'utf8'); },
   readText: (p) => { calls.readText += 1; return nodeFs.promises.readFile(p, 'utf8'); },
-  stat: (p) => { calls.stat += 1; return nodeFs.promises.stat(p).then((s) => ({ size: s.size, mtimeMs: s.mtimeMs, isDirectory: () => s.isDirectory() })); },
+  stat: (p) => { calls.stat += 1; return nodeFs.promises.stat(p).then((s) => ({ size: s.size, mtimeMs: s.mtimeMs, isDirectory: () => s.isDirectory(), isFile: () => s.isFile() })); },
   statSync: (p) => {
     calls.statSync += 1;
     const s = nodeFs.statSync(p);

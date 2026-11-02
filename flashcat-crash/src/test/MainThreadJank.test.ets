@@ -253,6 +253,51 @@ export default function mainThreadJankTests(): void {
       expect(event['jank.sampled_at'] === undefined).assertTrue();
     });
 
+    it('readsArkTsFramesWithAndWithoutASymbol', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+      const heaviest: string = [
+        '#00 at spin (entry/src/main/ets/pages/Index.ets:12:5)',
+        '#01 at entry/src/main/ets/pages/Index.ets:3:1',
+        '#02 at outer (inner) (entry/src/main/ets/pages/Other.ets:7:9)',
+        '#03 at glued(entry/src/main/ets/pages/Other.ets:1:1)'
+      ].join('\\n');
+      const event: Record<string, Object> = CrashEventMapper.fromMainThreadJank(
+        { 'heaviest_stack': heaviest }, '') as Record<string, Object>;
+      expect(event['stack']).assertEqual([
+        'at spin (entry/src/main/ets/pages/Index.ets:12:5)',
+        'at entry/src/main/ets/pages/Index.ets:3:1',
+        'at outer (inner) (entry/src/main/ets/pages/Other.ets:7:9)'
+      ].join('\n'));
+    });
+
+    it('parsesALongMalformedLineInLinearTime', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+      // An ArkTS-looking line that is no frame: a long run of blanks before a token.
+      const line: string = `#00 at f${' '.repeat(200000)}x`;
+      const started: number = Date.now();
+      const fromHeaviest: Record<string, Object> | null =
+        CrashEventMapper.fromMainThreadJank({ 'heaviest_stack': line }, '');
+      const fromTree: Record<string, Object> | null =
+        CrashEventMapper.fromMainThreadJank({}, `1 ${line}\n`);
+      expect(fromHeaviest === null && fromTree === null).assertTrue();
+      // The watcher runs on the main thread: this must not cost seconds.
+      expect(Date.now() - started < 500).assertTrue();
+    });
+
+    it('leavesOutJankTimesThatAreNotFinite', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+      // A number too large for a double parses as Infinity.
+      const params: Record<string, Object> = JSON.parse(
+        '{"begin_time":1793317689153,"end_time":1e400,"time":1e400}') as Record<string, Object>;
+      params['heaviest_stack'] = '#00 at spin (entry/src/main/ets/pages/Index.ets:12:5)';
+      const event: Record<string, Object> = CrashEventMapper.fromMainThreadJank(params, '') as Record<string, Object>;
+      expect(event['jank.duration_ms'] === undefined).assertTrue();
+      expect(event['jank.sampled_at'] === undefined).assertTrue();
+      // Negative control: the same event with finite times carries both.
+      params['end_time'] = 1793317690154;
+      params['time'] = 1793317690154;
+      const finite: Record<string, Object> = CrashEventMapper.fromMainThreadJank(params, '') as Record<string, Object>;
+      expect(finite['jank.duration_ms']).assertEqual(1001);
+      expect(finite['jank.sampled_at']).assertEqual(1793317690154);
+    });
+
     it('capsTheStack', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
       const frames: string[] = [];
       for (let i = 0; i < 3000; i++) {
@@ -452,6 +497,28 @@ export default function mainThreadJankTests(): void {
         expect(fileCalls()['readText'] - readsBefore).assertEqual(1);
         expect((reports[0]['stack'] as string).indexOf('TimerCallback') >= 0).assertTrue();
         expect((reports[0]['stack'] as string).indexOf('liboversized')).assertEqual(-1);
+      });
+
+    it('readsOnlyRegularFilesAsStackLogs', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0,
+      async (): Promise<void> => {
+        const core: FakeCore = new FakeCore();
+        const watcher: hiAppEvent.Watcher = startFeature(core, new CrashConfigurationBuilder().build());
+        // Named like a stack log, but not a regular file (a device or a pipe would never end).
+        const notAFile: string = writeLog('').replace(/[^/]*$/, 'MAIN_THREAD_JANK_1_1.txt');
+        fileIo.mkdirSync(notAFile, true);
+        const usable: string = writeLog(IDLE_HEAVIEST_JANK_EXTERNAL_LOG);
+        const params: Record<string, Object> = idleHeaviestJankParams();
+        params['pid'] = process.pid;
+        params['external_log'] = [notAFile, usable];
+        const readsBefore: number = fileCalls()['readText'];
+
+        deliverJank(watcher, params);
+
+        const reports: Array<Record<string, Object>> = await reportsOf(core, 1);
+        expect(reports.length).assertEqual(1);
+        // Only the regular file was opened for reading.
+        expect(fileCalls()['readText'] - readsBefore).assertEqual(1);
+        expect((reports[0]['stack'] as string).indexOf('TimerCallback') >= 0).assertTrue();
       });
 
     it('dropsAJankWhoseLogLandsAfterStop', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0,

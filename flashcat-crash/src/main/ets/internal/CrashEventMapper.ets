@@ -53,7 +53,10 @@ const FREEZE_DUMP_TIME_MARKER: string = 'Main handler dump start time:';
 const JANK_MESSAGE: string = 'Main thread jank';
 // One sampled frame: "#NN pc <hexaddr> <rest>", and an ArkTS frame "#NN at <fn> (<file>:<line>:<col>)".
 const SAMPLED_NATIVE_FRAME: RegExp = /^#\d+\s+pc\s+([0-9a-fA-F]+)\s+(.+)$/;
-const SAMPLED_ARKTS_FRAME: RegExp = /^#\d+\s+at\s+(?:(.+?)\s+\()?([^()\s]+?):(\d+):(\d+)\)?$/;
+// Matched in two steps, each linear: a single pattern with an optional "<fn> (" ahead
+// of the location backtracks quadratically over a long line that is no frame.
+const SAMPLED_ARKTS_FRAME: RegExp = /^#\d+\s+at\s+(.*)$/;
+const ARKTS_LOCATION: RegExp = /^([^()\s]+):(\d+):(\d+)$/;
 // A native frame's trailing "(<build id>)".
 const SAMPLED_BUILD_ID: RegExp = /\(([0-9a-fA-F]{16,})\)$/;
 const SYMBOL_OFFSET: RegExp = /^(.*)\+(\d+)$/;
@@ -133,11 +136,12 @@ export class CrashEventMapper {
     };
     const begin: Object | undefined = params['begin_time'];
     const end: Object | undefined = params['end_time'];
-    if (typeof begin === 'number' && typeof end === 'number' && end >= begin) {
+    if (typeof begin === 'number' && typeof end === 'number' && Number.isFinite(begin) && Number.isFinite(end)
+      && end >= begin) {
       event['jank.duration_ms'] = end - begin;
     }
     const time: Object | undefined = params['time'];
-    if (typeof time === 'number' && time > 0) {
+    if (typeof time === 'number' && Number.isFinite(time) && time > 0) {
       event['jank.sampled_at'] = time;
     }
     return event;
@@ -201,12 +205,7 @@ export class CrashEventMapper {
   private static sampledFrame(line: string): Record<string, Object> | null {
     const arkts: RegExpMatchArray | null = line.match(SAMPLED_ARKTS_FRAME);
     if (arkts !== null) {
-      return {
-        'symbol': arkts[1] ?? '',
-        'file': arkts[2],
-        'line': Number(arkts[3]),
-        'column': Number(arkts[4])
-      };
+      return CrashEventMapper.sampledArkTsFrame(arkts[1]);
     }
     const native: RegExpMatchArray | null = line.match(SAMPLED_NATIVE_FRAME);
     if (native === null) {
@@ -235,6 +234,34 @@ export class CrashEventMapper {
       frame['symbol'] = symbol;
     }
     return frame;
+  }
+
+  /**
+   * An ArkTS frame after its "#NN at ": "<fn> (<file>:<line>:<col>)" or "<file>:<line>:<col>".
+   * The location holds no parenthesis, so a symbol ends at the last "(", which a blank precedes.
+   */
+  private static sampledArkTsFrame(text: string): Record<string, Object> | null {
+    let location: string = text.endsWith(')') ? text.substring(0, text.length - 1) : text;
+    let symbol: string = '';
+    const open: number = location.lastIndexOf('(');
+    if (open >= 0) {
+      const head: string = location.substring(0, open);
+      symbol = head.trim();
+      if (symbol.length === 0 || head.length === head.trimEnd().length) {
+        return null; // no "<fn> " ahead of the "("
+      }
+      location = location.substring(open + 1);
+    }
+    const parts: RegExpMatchArray | null = location.match(ARKTS_LOCATION);
+    if (parts === null) {
+      return null;
+    }
+    const line: number = Number(parts[2]);
+    const column: number = Number(parts[3]);
+    if (!Number.isFinite(line) || !Number.isFinite(column)) {
+      return null; // digits beyond a double are no position
+    }
+    return { 'symbol': symbol, 'file': parts[1], 'line': line, 'column': column };
   }
 
   /** Frames of the thread whose tid is the process id (the main thread), or []. */
