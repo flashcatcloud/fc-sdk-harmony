@@ -165,9 +165,10 @@ export class AppLaunchTracker {
   // An ability launch began since the app last went to the background: the
   // return to the foreground that goes with it is that launch, not a hot one.
   private launchedSinceBackground: boolean = false;
-  // The app came to the foreground (a transition seen, not found by the
-  // startup probe) and has shown nothing since: an ability created now is the
-  // one the foreground was for.
+  // The app came to the foreground with no ability alive (a transition seen,
+  // not found by the startup probe) and has shown nothing since: an ability
+  // created now is the one the foreground was for. A foreground with abilities
+  // alive is a return to them, never awaiting one.
   private foregroundAwaitsAbility: boolean = false;
   private pendingViewLoad: PendingViewLoad | null = null;
   private stopped: boolean = false;
@@ -236,8 +237,10 @@ export class AppLaunchTracker {
 
   private foregrounded(): void {
     const returning: boolean = this.appState === AppState.BACKGROUND;
+    if (this.appState !== AppState.FOREGROUND) {
+      this.foregroundAwaitsAbility = this.liveAbilities === 0;
+    }
     this.appState = AppState.FOREGROUND;
-    this.foregroundAwaitsAbility = true;
     if (this.stopped || !returning || this.launchedSinceBackground) {
       return; // the launch's own first foreground, or an ability launch is measuring it
     }

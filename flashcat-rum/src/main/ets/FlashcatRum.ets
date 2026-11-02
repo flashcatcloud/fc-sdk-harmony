@@ -196,6 +196,8 @@ export class FlashcatRum {
    * its `view.loading_time`. Router tracking is a no-op unless RUM is enabled
    * with `setTrackNavigation(true)`. Idempotent per ability: every
    * `getUIContext()` of its windows and the ability's own context count as one.
+   * One window per ability is tracked: sub-windows of the same ability share its
+   * host context and are not observed separately.
    *
    * Call it in every app, router-based or not: app launch timing (time to
    * initial display, cold / warm / hot) ends at the first frame drawn, and

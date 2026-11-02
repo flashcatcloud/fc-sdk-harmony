@@ -23,9 +23,15 @@ export function systemProcessAgeMs(): number | null {
   }
 }
 
-/** Milliseconds since boot, deep sleep included: the clock launch durations are measured on. */
+/** Milliseconds since boot, deep sleep included: the clock launch durations are
+ * measured on. NaN when the clock cannot be read: it is read inside lifecycle and
+ * frame callbacks, where nothing may throw, and NaN measures nothing. */
 export function systemElapsedMs(): number {
-  return systemDateTime.getUptime(systemDateTime.TimeType.STARTUP, false);
+  try {
+    return systemDateTime.getUptime(systemDateTime.TimeType.STARTUP, false);
+  } catch (_e) {
+    return NaN;
+  }
 }
 
 /**

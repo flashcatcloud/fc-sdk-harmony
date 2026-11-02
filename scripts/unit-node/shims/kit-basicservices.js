@@ -19,10 +19,15 @@ const zlib = {
   })
 };
 // elapsedMs: what the elapsed clock answers when a test sets it; null reads the host's.
+// failing: the clock throws, as a system call may.
 const systemDateTime = {
   TimeType: { STARTUP: 0, ACTIVE: 1 },
   elapsedMs: null,
+  failing: false,
   getUptime: (_type, nanoseconds) => {
+    if (systemDateTime.failing) {
+      throw new Error('13000001: Network connection error or OS error.');
+    }
     if (systemDateTime.elapsedMs !== null) {
       return nanoseconds ? systemDateTime.elapsedMs * 1e6 : systemDateTime.elapsedMs;
     }

@@ -10,7 +10,7 @@ import { systemDateTime } from '@kit.BasicServicesKit';
 import {
   AppLaunchTracker, AppLaunchSink, StartupType, FrameHookFactory
 } from '../main/ets/internal/startup/AppLaunchTracker';
-import { systemFrameHooks, systemProcessAgeMs } from '../main/ets/internal/startup/SystemLaunchHooks';
+import { systemFrameHooks, systemProcessAgeMs, systemElapsedMs } from '../main/ets/internal/startup/SystemLaunchHooks';
 import { RumFeature } from '../main/ets/internal/RumFeature';
 import { RumNavigationTracker } from '../main/ets/internal/RumNavigationTracker';
 import { RumAutoInstrumentation } from '../main/ets/internal/RumAutoInstrumentation';
@@ -378,6 +378,23 @@ export default function appLaunchTests(): void {
       b.tracker.attachContext('page-2');
       b.frame(150, true);
       expect(b.report()).assertEqual('ttid:cold_start@99700+500 ttid:warm_start@200000+150');
+    });
+
+    it('aReturnToLiveAbilitiesAwaitsNoAbility', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+      // An app that never hands over a context: its hot return measures nothing,
+      // and must not leave the next ability it creates taken for a launch.
+      const b: Bench = new Bench();
+      b.tracker.onForeground();
+      b.tracker.onAbilityCreated();
+      b.tracker.onBackground();
+      b.tracker.onForeground(); // a return: the ability is alive
+      b.tracker.onAbilityDestroyed();
+      b.tracker.onForeground(); // the same news again, no ability alive now
+      b.nowMs = 200_000;
+      b.tracker.onAbilityCreated(); // opened in front of the user, not launched
+      b.tracker.attachContext('page-2');
+      b.frame(100, true);
+      expect(b.report()).assertEqual('');
     });
 
     it('aWindowFromBeforeTheLaunchNeitherEndsNorCancelsIt', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
@@ -802,6 +819,20 @@ export default function appLaunchTests(): void {
       clock['elapsedMs'] = null;
       p['uptimeSeconds'] = 0;
       p['startRealtimeMs'] = 0;
+    });
+
+    it('anUnreadableElapsedClockIsNoReadingNotAThrow', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+      const clock: Record<string, Object> = systemDateTime as Object as Record<string, Object>;
+      const p: Record<string, Object> = process as Object as Record<string, Object>;
+      p['startRealtimeMs'] = 1_000;
+      clock['failing'] = true;
+      try {
+        expect(Number.isNaN(systemElapsedMs())).assertTrue();
+        expect(systemProcessAgeMs()).assertNull();
+      } finally {
+        clock['failing'] = false;
+        p['startRealtimeMs'] = 0;
+      }
     });
 
     it('theVitalIsAnAndroidShapedAppLaunchOnTheOpenView', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
