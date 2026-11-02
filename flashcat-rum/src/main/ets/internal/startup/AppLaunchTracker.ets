@@ -113,9 +113,11 @@ class PendingViewLoad {
 /**
  * Decides what kind of launch is happening and when it is over.
  *
- * - Cold / warm: the first ability created while none is alive and the app is
- *   not in the foreground (an ability created in front of the user, by an SDK
- *   that missed the ones before it, is no launch). The first one of the process
+ * - Cold / warm: the first ability created while none is alive, unless it
+ *   opens in front of the user: the app was found already in the foreground,
+ *   or showed something since it came there (an SDK that missed the abilities
+ *   before it). The system announces the foreground just before it creates the
+ *   launched ability, so a foreground with nothing shown yet is the launch's. The first one of the process
  *   is cold when the process is at most 10 s old, and starts when the process
  *   started; otherwise, and for any later one, it is warm and starts at the
  *   ability's creation. Its first frame is the first one of a window handed
@@ -163,6 +165,10 @@ export class AppLaunchTracker {
   // An ability launch began since the app last went to the background: the
   // return to the foreground that goes with it is that launch, not a hot one.
   private launchedSinceBackground: boolean = false;
+  // The app came to the foreground (a transition seen, not found by the
+  // startup probe) and has shown nothing since: an ability created now is the
+  // one the foreground was for.
+  private foregroundAwaitsAbility: boolean = false;
   private pendingViewLoad: PendingViewLoad | null = null;
   private stopped: boolean = false;
 
@@ -191,11 +197,12 @@ export class AppLaunchTracker {
     const first: boolean = !this.abilitySeen;
     this.abilitySeen = true;
     // In front of the user already: the SDK missed the ability that is showing.
-    // Unless this is the ability of a return to the foreground still waiting
-    // for its frame — then that return is this ability's warm launch.
-    const pendingHot: boolean =
-      this.launch !== null && this.launch.type === StartupType.HOT && !this.launch.displayed;
-    if (this.appState === AppState.FOREGROUND && !pendingHot) {
+    // Unless the foreground was announced for this ability, as the system does
+    // for cold and warm launches (a hot start begun by that foreground becomes
+    // this warm launch).
+    const awaited: boolean = this.foregroundAwaitsAbility;
+    this.foregroundAwaitsAbility = false;
+    if (this.appState === AppState.FOREGROUND && !awaited) {
       FlashcatLog.d('rum.launch: ability created while the app is in the foreground; not a launch');
       return;
     }
@@ -230,6 +237,7 @@ export class AppLaunchTracker {
   private foregrounded(): void {
     const returning: boolean = this.appState === AppState.BACKGROUND;
     this.appState = AppState.FOREGROUND;
+    this.foregroundAwaitsAbility = true;
     if (this.stopped || !returning || this.launchedSinceBackground) {
       return; // the launch's own first foreground, or an ability launch is measuring it
     }
@@ -252,6 +260,7 @@ export class AppLaunchTracker {
   onBackground(): void {
     this.appState = AppState.BACKGROUND;
     this.launchedSinceBackground = false;
+    this.foregroundAwaitsAbility = false;
     this.pendingViewLoad = null;
     if (this.launch !== null && !this.launch.displayed) {
       this.launch = null;
@@ -262,6 +271,7 @@ export class AppLaunchTracker {
 
   /** A view started (any view, manual or tracked). */
   onViewStarted(): void {
+    this.foregroundAwaitsAbility = false;
     const launch: Launch | null = this.launch;
     if (launch !== null && !launch.displayed && !launch.hookedDuringLaunch) {
       launch.viewBeforeHook = true;

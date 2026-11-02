@@ -344,6 +344,7 @@ export default function appLaunchTests(): void {
       // creation, so the next one is not the first of an empty app.
       const returned: Bench = new Bench();
       returned.tracker.onForeground();
+      returned.tracker.onViewStarted(); // the running ability is showing a page
       returned.tracker.onAbilityCreated();
       returned.tracker.attachContext('page-2');
       returned.frame(200, true);
@@ -355,6 +356,25 @@ export default function appLaunchTests(): void {
       probed.tracker.attachContext('page-2');
       probed.frame(200, true);
       expect(probed.report()).assertEqual('');
+    });
+
+    it('theForegroundAnnouncedBeforeTheLaunchedAbilityIsThatLaunchs', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+      // The order the system uses: applicationStateChange's foreground first,
+      // then onAbilityCreate — for a cold start and for a warm one alike.
+      const b: Bench = new Bench();
+      b.tracker.onForeground();
+      b.tracker.onAbilityCreated();
+      b.tracker.attachContext('page-1');
+      b.frame(200, true);
+      b.tracker.onBackground();
+      b.tracker.onAbilityDestroyed();
+      b.tracker.detachContext('page-1'); // stopViewTracking as the ability goes: no frame hook left
+      b.nowMs = 200_000;
+      b.tracker.onForeground();
+      b.tracker.onAbilityCreated();
+      b.tracker.attachContext('page-2');
+      b.frame(150, true);
+      expect(b.report()).assertEqual('ttid:cold_start@99700+500 ttid:warm_start@200000+150');
     });
 
     it('aWindowFromBeforeTheLaunchNeitherEndsNorCancelsIt', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
