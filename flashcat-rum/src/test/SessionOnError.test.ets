@@ -86,6 +86,9 @@ class FakeCore implements SdkCore {
   isActive(): boolean {
     return true;
   }
+  isAppInForeground(): boolean {
+    return false;
+  }
   setUserInfo(_user: UserInfo): void {}
   clearUserInfo(): void {}
   getIntakeTarget(): IntakeTarget {

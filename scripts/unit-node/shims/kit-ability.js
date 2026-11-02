@@ -19,4 +19,7 @@ const bundleManager = {
   })
 };
 const common = {};
-module.exports = { errorManager, bundleManager, common, ApplicationStateChangeCallback: undefined };
+const appManager = {
+  ProcessState: { STATE_CREATE: 0, STATE_FOREGROUND: 1, STATE_ACTIVE: 2, STATE_BACKGROUND: 3, STATE_DESTROY: 4 }
+};
+module.exports = { errorManager, bundleManager, common, appManager, ApplicationStateChangeCallback: undefined };
