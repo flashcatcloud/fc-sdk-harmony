@@ -13,6 +13,8 @@
   startAction/stopAction are guarded the same way.
 - `addAttribute` refuses a key that is not a string; such a key made every
   later event fail.
+- Crash reports forward the `freeze.dump_started_at` attribute set by
+  `@flashcatcloud/crash` for app freezes.
 
 ## 0.7.4
 

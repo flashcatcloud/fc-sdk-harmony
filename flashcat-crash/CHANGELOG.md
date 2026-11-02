@@ -2,7 +2,13 @@
 
 ## 0.7.5
 
-- No changes; released with the other packages.
+- App freezes (`APP_FREEZE`) now carry the blocked main thread's stack:
+  the frames of the thread whose tid equals the process id are taken from the
+  fault's thread dump. Previously the error had no stack.
+- The freeze message no longer embeds the watchdog dump's wall-clock time
+  (`THREAD_BLOCK_6S: App main thread is not response!`), so repeated freezes
+  share one message; the time is kept in the `freeze.dump_started_at`
+  attribute.
 
 ## 0.7.4
 

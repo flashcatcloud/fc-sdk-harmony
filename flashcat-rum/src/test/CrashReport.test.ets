@@ -36,6 +36,16 @@ export default function crashReportTests(): void {
         expect(attrs['crash.recovered']).assertEqual(true);
       });
 
+    it('carriesFreezeDumpTimeAsAttribute', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+      const event: Record<string, Object> = {
+        'type': 'crash_report',
+        'crash_kind': 'freeze',
+        'freeze.dump_started_at': '2026-10-27 23:51:37.517'
+      };
+      const attrs: Record<string, Object> = RumFeature.crashAttributes(event);
+      expect(attrs['freeze.dump_started_at']).assertEqual('2026-10-27 23:51:37.517');
+    });
+
     it('omitsEmptyAttributesForArkTsCrash', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
       const event: Record<string, Object> = {
         'type': 'crash_report',

@@ -653,6 +653,7 @@ export class RumFeature implements Feature, FeatureEventReceiver {
     if (event['crash.recovered'] === true) {
       attributes['crash.recovered'] = true;
     }
+    RumFeature.copyNonEmptyString(event, attributes, 'freeze.dump_started_at', 'freeze.dump_started_at');
     return attributes;
   }
 
