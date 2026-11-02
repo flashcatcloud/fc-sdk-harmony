@@ -20,7 +20,9 @@ import { JsCrashPolicy } from '../CrashConfiguration';
  *   binary_images: Array<Record<string, Object>>, // native symbol metadata
  *   arch: string,            // normalized: arm64 / arm / x64 / x86, or ''
  *   build_id: string,        // first app native image build id, or ''
- *   source_type: 'harmony'
+ *   source_type: 'harmony',
+ *   threads?: Array<{ name, crashed, state?, stack }>, // every thread of the dump
+ *   memory?: { rss_kb?, sys_free_kb?, sys_avail_kb?, sys_total_kb? } // at the fault
  * }
  * ```
  */
@@ -30,8 +32,18 @@ import { JsCrashPolicy } from '../CrashConfiguration';
 const MAX_MESSAGE_CHARS: number = 2000;
 const MAX_STACK_CHARS: number = 50000;
 const MAX_BINARY_IMAGES_CHARS: number = 100000;
+// Threads are budgeted in UTF-8 bytes: the event store drops any event line over
+// 512 KiB outright, so non-ASCII names or symbols must not push the crash past it.
+const MAX_THREADS_BYTES: number = 200000;
 const TRUNCATION_SUFFIX: string = '…[truncated]';
 const SOURCE_TYPE: string = 'harmony';
+// hiAppEvent `params.memory` keys (KB) → the names reported to RUM.
+const MEMORY_FIELDS: string[][] = [
+  ['rss', 'rss_kb'],
+  ['sys_free_mem', 'sys_free_kb'],
+  ['sys_avail_mem', 'sys_avail_kb'],
+  ['sys_total_mem', 'sys_total_kb']
+];
 // Separates an APP_FREEZE message from the watchdog dump's wall-clock time.
 const FREEZE_DUMP_TIME_MARKER: string = 'Main handler dump start time:';
 
@@ -163,7 +175,114 @@ export class CrashEventMapper {
       'build_id': CrashEventMapper.buildId(params, binaryImages),
       'source_type': SOURCE_TYPE
     };
+    const threads: Array<Record<string, Object>> = CrashEventMapper.threads(params, exception, kind);
+    if (threads.length > 0) {
+      event['threads'] = threads;
+    }
+    const memory: Record<string, Object> = CrashEventMapper.memory(params);
+    if (Object.keys(memory).length > 0) {
+      event['memory'] = memory;
+    }
     return event;
+  }
+
+  /**
+   * Every thread of the fault's dump (`params.threads`, present for NativeCrash
+   * and APP_FREEZE, never for JsError) as RUM error threads. The faulting thread is
+   * the signalled one for a native crash (`exception.tid`) and the blocked main
+   * thread for a freeze (tid == pid); it is listed first, and taken from
+   * `exception.frames` when the dump does not include it. Each stack is bounded
+   * like `error.stack`, and the list is cut at a byte budget that always fits the
+   * faulting thread.
+   */
+  private static threads(
+    params: Record<string, Object>,
+    exception: Record<string, Object>,
+    kind: string
+  ): Array<Record<string, Object>> {
+    const value: Object | undefined = params['threads'];
+    if (!Array.isArray(value)) {
+      return [];
+    }
+    // Compared as text: a tid read as a number on one side and a string on the
+    // other must still identify the same thread.
+    const faultTid: string = CrashEventMapper.asString(kind === 'freeze' ? params['pid'] : exception['tid']);
+    const crashed: Array<Record<string, Object>> = [];
+    const others: Array<Record<string, Object>> = [];
+    const list: Array<Object> = value as Array<Object>;
+    for (let i = 0; i < list.length; i++) {
+      const thread: Record<string, Object> = CrashEventMapper.asRecord(list[i]);
+      const isCrashed: boolean = faultTid.length > 0 && CrashEventMapper.asString(thread['tid']) === faultTid;
+      const out: Record<string, Object> | null = CrashEventMapper.thread(thread, isCrashed);
+      if (out === null) {
+        continue;
+      }
+      if (isCrashed) {
+        crashed.push(out);
+      } else {
+        others.push(out);
+      }
+    }
+    if (crashed.length === 0 && kind === 'crash') {
+      const out: Record<string, Object> | null = CrashEventMapper.thread(exception, true);
+      if (out !== null) {
+        crashed.push(out);
+      }
+    }
+    const ordered: Array<Record<string, Object>> = crashed.concat(others);
+    const kept: Array<Record<string, Object>> = [];
+    let size: number = 2; // the enclosing brackets
+    for (let i = 0; i < ordered.length; i++) {
+      size += CrashEventMapper.utf8Length(JSON.stringify(ordered[i])) + 1;
+      if (size > MAX_THREADS_BYTES) {
+        break;
+      }
+      kept.push(ordered[i]);
+    }
+    return kept;
+  }
+
+  /** One dump thread (`{ thread_name, tid, state?, frames }`) as a RUM thread, or null without frames. */
+  private static thread(thread: Record<string, Object>, crashed: boolean): Record<string, Object> | null {
+    const stack: string = CrashEventMapper.truncate(CrashEventMapper.framesToStack(thread['frames']), MAX_STACK_CHARS);
+    if (stack.length === 0) {
+      return null;
+    }
+    const tid: string = CrashEventMapper.asString(thread['tid']);
+    const threadName: string = CrashEventMapper.asString(thread['thread_name']);
+    const out: Record<string, Object> = {
+      'name': threadName.length > 0 ? threadName : `Thread ${tid}`,
+      'crashed': crashed,
+      'stack': stack
+    };
+    const state: string = CrashEventMapper.asString(thread['state']);
+    if (state.length > 0) {
+      out['state'] = state;
+    }
+    return out;
+  }
+
+  /** UTF-8 byte length; a surrogate pair counts 3 + 3, slightly over its real 4. */
+  private static utf8Length(text: string): number {
+    let bytes: number = 0;
+    for (let i = 0; i < text.length; i++) {
+      const code: number = text.charCodeAt(i);
+      bytes += code < 0x80 ? 1 : (code < 0x800 ? 2 : 3);
+    }
+    return bytes;
+  }
+
+  /** Process and device memory at the fault (`params.memory`, API 22+), in KB. */
+  private static memory(params: Record<string, Object>): Record<string, Object> {
+    const memory: Record<string, Object> = CrashEventMapper.asRecord(params['memory']);
+    const out: Record<string, Object> = {};
+    for (let i = 0; i < MEMORY_FIELDS.length; i++) {
+      const value: Object | undefined = memory[MEMORY_FIELDS[i][0]];
+      if (typeof value === 'number' && Number.isFinite(value) && value >= 0) {
+        out[MEMORY_FIELDS[i][1]] = value;
+      }
+    }
+    return out;
   }
 
   /**

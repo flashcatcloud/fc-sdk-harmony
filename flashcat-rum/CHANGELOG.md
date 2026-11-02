@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Crash reports from the crash module carry their thread dump as
+  `error.threads` and memory at the fault as `crash.memory.*` context
+  attributes.
+
 ## 0.7.5
 
 - An event mapper that calls into the SDK no longer hangs the app. Monitor
