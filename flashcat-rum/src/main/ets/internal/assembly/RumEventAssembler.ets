@@ -8,6 +8,7 @@ const ERROR_BINARY_IMAGES_ATTRIBUTE: string = 'error.binary_images';
 const ERROR_CATEGORY_ATTRIBUTE: string = 'error.category';
 const ERROR_SOURCE_TYPE_ATTRIBUTE: string = 'error.source_type';
 const ERROR_META_CODE_TYPE_ATTRIBUTE: string = 'error.meta.code_type';
+const ERROR_THREADS_ATTRIBUTE: string = 'error.threads';
 
 /**
  * Builds RUM event objects (View / Error / Resource) for phase 1. Fields follow
@@ -130,6 +131,10 @@ export class RumEventAssembler {
     if (Array.isArray(binaryImages) && binaryImages.length > 0) {
       error['binary_images'] = binaryImages;
     }
+    const threads: Object | undefined = attributes[ERROR_THREADS_ATTRIBUTE];
+    if (Array.isArray(threads) && threads.length > 0) {
+      error['threads'] = threads;
+    }
     const codeType: string = RumEventAssembler.asString(attributes[ERROR_META_CODE_TYPE_ATTRIBUTE]);
     if (codeType.length > 0) {
       const meta: Record<string, Object> = {};
@@ -202,7 +207,7 @@ export class RumEventAssembler {
     statusCode: number,
     sizeBytes: number,
     dateMs: number,
-    durationNs: number,
+    durationNs: number | undefined,
     traceId: string | undefined,
     spanId: string | undefined,
     attributes: Record<string, Object>
@@ -238,7 +243,9 @@ export class RumEventAssembler {
     resource['method'] = method;
     resource['status_code'] = statusCode;
     resource['size'] = sizeBytes;
-    resource['duration'] = durationNs;
+    if (durationNs !== undefined) {
+      resource['duration'] = durationNs; // absent when not measurable (optional in the schema)
+    }
     event['resource'] = resource;
 
     RumEventAssembler.applyContext(event, context, attributes);
@@ -390,7 +397,8 @@ export class RumEventAssembler {
   private static isInternalAttribute(key: string): boolean {
     return key === VIEW_URL_ATTRIBUTE || key === BUILD_ID_ATTRIBUTE ||
       key === ERROR_BINARY_IMAGES_ATTRIBUTE || key === ERROR_CATEGORY_ATTRIBUTE ||
-      key === ERROR_SOURCE_TYPE_ATTRIBUTE || key === ERROR_META_CODE_TYPE_ATTRIBUTE;
+      key === ERROR_SOURCE_TYPE_ATTRIBUTE || key === ERROR_META_CODE_TYPE_ATTRIBUTE ||
+      key === ERROR_THREADS_ATTRIBUTE;
   }
 
   private static asString(value: Object | undefined): string {

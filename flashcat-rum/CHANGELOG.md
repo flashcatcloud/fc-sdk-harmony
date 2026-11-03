@@ -1,5 +1,33 @@
 # Changelog
 
+## 0.7.5
+
+- Crash reports from the crash module carry their thread dump as
+  `error.threads` and memory at the fault as `crash.memory.*` context
+  attributes.
+- A resource whose request was in flight while the app was in the
+  background is reported without `resource.duration`. HarmonyOS freezes a
+  backgrounded process, so the request's callbacks only run once the app is
+  back, and the wall-clock time from start to completion could span hours
+  the request never ran. This covers a request that starts while the app is
+  in the background, and one in flight when the app moves there. The event
+  is still sent with its URL, method, status code and size; requests that
+  start and complete in the foreground are unchanged, including requests
+  made while the app is still launching.
+- An event mapper that calls into the SDK no longer hangs the app. Monitor
+  calls made from inside the mapper that report something or change the
+  session (startView, addAction, addError, stopSession, …) are ignored and
+  logged; any other event it causes is dropped. Previously the next call
+  could run the mapper without end.
+- Building an event from the host's attributes happens inside the
+  monitor's guard: an attribute whose getter throws drops the event instead
+  of throwing out of startView, addAction, startResource and the rest;
+  startAction/stopAction are guarded the same way.
+- `addAttribute` refuses a key that is not a string; such a key made every
+  later event fail.
+- Crash reports forward the `freeze.dump_started_at` attribute set by
+  `@flashcatcloud/crash` for app freezes.
+
 ## 0.7.4
 
 - Error-session capture (`setSessionOnError`): held view documents are

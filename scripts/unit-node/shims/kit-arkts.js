@@ -8,5 +8,5 @@ class ProcessManager {
   exit() { processShim.exitRequests += 1; }
   kill() {}
 }
-const processShim = { ProcessManager, exitRequests: 0 };
+const processShim = { ProcessManager, exitRequests: 0, pid: process.pid };
 module.exports = { util, process: processShim };

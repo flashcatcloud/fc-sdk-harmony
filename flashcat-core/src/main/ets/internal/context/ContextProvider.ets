@@ -28,6 +28,7 @@ export class ContextProvider {
   private netConnection: connection.NetConnection | null = null;
   private readonly featureContext: Record<string, Record<string, Object>> = {};
   private appVersion: string = '0.0.0';
+  private buildVersion: string = '';
   private bundleId: string = '';
 
   constructor(context: common.Context, configuration: Configuration, persistIdentity: boolean = true) {
@@ -199,13 +200,15 @@ export class ContextProvider {
       const info: bundleManager.BundleInfo = bundleManager.getBundleInfoForSelfSync(flags);
       this.bundleId = info.name;
       this.appVersion = info.versionName;
+      this.buildVersion = `${info.versionCode}`;
     } catch (_err) {
       // Keep defaults; app info is best-effort.
     }
   }
 
   setUser(user: UserInfo): void {
-    this.user = user;
+    // Untyped callers can pass null; every event reads the user's fields.
+    this.user = user === null || user === undefined ? {} : user;
   }
 
   updateFeatureContext(featureName: string, update: Record<string, Object>): void {
@@ -231,6 +234,7 @@ export class ContextProvider {
       variant: this.configuration.variant,
       service: this.configuration.service ?? this.bundleId,
       version: this.appVersion,
+      buildVersion: this.buildVersion,
       bundleId: this.bundleId,
       source: SOURCE,
       sdkVersion: SDK_VERSION,

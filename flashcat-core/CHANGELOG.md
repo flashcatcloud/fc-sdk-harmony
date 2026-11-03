@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.7.5
+
+- The core tells RUM when the app moves to the background (and when it was
+  launched in the background), so RUM can tell which measurements may span
+  a frozen process.
+- `setUserInfo(null)` is treated as no user; it previously made every
+  event fail to assemble and be dropped.
+
 ## 0.7.4
 
 - Revoking tracking consent (`NOT_GRANTED`) now also deletes pending crash

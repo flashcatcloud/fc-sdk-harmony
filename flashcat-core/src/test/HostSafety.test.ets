@@ -5,7 +5,7 @@ import { ConfigurationBuilder } from '../main/ets/config/Configuration';
 import { TrackingConsent } from '../main/ets/privacy/TrackingConsent';
 import { FlashcatCore } from '../main/ets/internal/FlashcatCore';
 import { EventWriter, Feature, FeatureScope } from '../main/ets/api/feature/Feature';
-import { FlashcatContext } from '../main/ets/api/context/FlashcatContext';
+import { FlashcatContext, UserInfo } from '../main/ets/api/context/FlashcatContext';
 import { Flashcat } from '../main/ets/Flashcat';
 import { UploadScheduler } from '../main/ets/internal/upload/UploadScheduler';
 import { UploadPersistence, Batch } from '../main/ets/internal/persistence/FilePersistenceStrategy';
@@ -170,6 +170,17 @@ export default function hostSafetyTests(): void {
         expect(written).assertFalse();
         // Negative control: an ordinary event is still written.
         expect(write(core, { 'type': 'action', 'context': { 'k': 'v' } })).assertTrue();
+        core.stop();
+      });
+
+    it('aNullUserIsTreatedAsNoUser',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        // Every event reads the user's fields: a null user would fail each one.
+        const core: FlashcatCore = new FlashcatCore(`hs-${instanceSeq++}`, fakeContext(),
+          new ConfigurationBuilder('token', 'prod').build(), TrackingConsent.GRANTED);
+        core.initialize();
+        core.setUserInfo(null as Object as UserInfo);
+        expect(JSON.stringify(core.getContext().user)).assertEqual('{}');
         core.stop();
       });
 

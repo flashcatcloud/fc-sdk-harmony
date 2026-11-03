@@ -126,7 +126,8 @@ export class FlashcatTrace {
 
   /** Closes a traced resource that got a response, whatever its status. */
   static stopTracedResource(key: string, statusCode: number, size: number, mimeType: string = ''): void {
-    if (key.length === 0) {
+    // Untyped callers can pass null or undefined for a request never traced.
+    if (typeof key !== 'string' || key.length === 0) {
       return;
     }
     try {
@@ -143,7 +144,7 @@ export class FlashcatTrace {
    * stays a resource with that status.
    */
   static failTracedResource(key: string, message: string): void {
-    if (key.length === 0) {
+    if (typeof key !== 'string' || key.length === 0) {
       return;
     }
     try {

@@ -48,6 +48,12 @@ export interface SdkCore {
   isActive(): boolean;
 
   /**
+   * Whether the app is in front of the user right now. False in a launch the
+   * system started in the background, and until the foreground is confirmed.
+   */
+  isAppInForeground(): boolean;
+
+  /**
    * Intake host + client token, for a feature that calls an endpoint of its own
    * (the RUM remote-configuration endpoint) rather than the batch pipeline.
    */

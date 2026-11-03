@@ -1,4 +1,5 @@
-import { common, bundleManager, ApplicationStateChangeCallback } from '@kit.AbilityKit';
+import { common, bundleManager, appManager, ApplicationStateChangeCallback } from '@kit.AbilityKit';
+import { process } from '@kit.ArkTS';
 import { fileIo as fs } from '@kit.CoreFileKit';
 import { preferences } from '@kit.ArkData';
 import { Configuration } from '../config/Configuration';
@@ -38,6 +39,11 @@ export class FlashcatCore implements SdkCore {
   private readonly features: Map<string, RegisteredFeature> = new Map<string, RegisteredFeature>();
   private readonly deferredUploadRegistrar: DeferredUploadWorkRegistrar = new DeferredUploadWorkRegistrar();
   private appStateCallback: ApplicationStateChangeCallback | null = null;
+  // False until the app is known to be in front of the user: a launch the
+  // system started in the background (an extension, a wake-up) stays false.
+  private appForeground: boolean = false;
+  // Set by the first state callback, which then outranks the startup probe.
+  private appStateObserved: boolean = false;
   private active: boolean = true;
   private readonly backgroundProcess: boolean;
   // Extension-process upload-only pipelines (no Feature object): built by
@@ -117,6 +123,8 @@ export class FlashcatCore implements SdkCore {
     try {
       this.appStateCallback = {
         onApplicationForeground: () => {
+          this.appStateObserved = true;
+          this.appForeground = true;
           // The only moment a feature can trust that time has passed: an
           // in-process timer may not have run for hours while backgrounded.
           // RUM decides whether this is worth a request (see the console's
@@ -124,6 +132,11 @@ export class FlashcatCore implements SdkCore {
           this.bus.send(RUM_FEATURE_NAME, { 'type': 'app_foreground' } as Record<string, Object>);
         },
         onApplicationBackground: () => {
+          this.appStateObserved = true;
+          this.appForeground = false;
+          // From here the process may be frozen at any moment: whatever RUM is
+          // timing now may not be completed until the app is brought back.
+          this.bus.send(RUM_FEATURE_NAME, { 'type': 'app_background' } as Record<string, Object>);
           this.flushAll();
         }
       };
@@ -131,6 +144,44 @@ export class FlashcatCore implements SdkCore {
     } catch (_e) {
       this.appStateCallback = null;
       // Lifecycle hook unavailable — uploads still drain on the normal cadence.
+    }
+    this.probeForeground();
+  }
+
+  /**
+   * The state callback reports changes only. An SDK initialized after the app
+   * already reached the foreground (e.g. behind a consent dialog) would
+   * otherwise consider itself in the background until the next round trip.
+   */
+  private probeForeground(): void {
+    try {
+      this.context.getApplicationContext().getRunningProcessInformation()
+        .then((infos: Array<appManager.ProcessInformation>) => {
+          if (this.appStateObserved || !this.active) {
+            return; // a callback has spoken since; it is newer than this answer
+          }
+          for (const info of infos) {
+            if (info.pid !== process.pid) {
+              continue;
+            }
+            if (info.state === appManager.ProcessState.STATE_FOREGROUND
+              || info.state === appManager.ProcessState.STATE_ACTIVE) {
+              this.appForeground = true;
+              // Not app_foreground: this is no return from the background, and
+              // nothing that reacts to one (a configuration refresh) should run.
+              this.bus.send(RUM_FEATURE_NAME, { 'type': 'app_foreground_detected' } as Record<string, Object>);
+            } else if (info.state === appManager.ProcessState.STATE_BACKGROUND) {
+              // Launched in the background: it can be frozen like a backgrounded app.
+              this.bus.send(RUM_FEATURE_NAME, { 'type': 'app_background' } as Record<string, Object>);
+            }
+            return;
+          }
+        })
+        .catch((_e: Object) => {
+          // Unknown state: stay "not foreground" until the callback says otherwise.
+        });
+    } catch (_e) {
+      // API unavailable — the state callback alone decides.
     }
   }
 
@@ -212,12 +263,18 @@ export class FlashcatCore implements SdkCore {
     return this.active;
   }
 
+  isAppInForeground(): boolean {
+    return this.appForeground;
+  }
+
   setUserInfo(user: UserInfo): void {
     this.contextProvider.setUser(user);
+    this.bus.send(RUM_FEATURE_NAME, { 'type': 'user_changed' } as Record<string, Object>);
   }
 
   clearUserInfo(): void {
     this.contextProvider.setUser({});
+    this.bus.send(RUM_FEATURE_NAME, { 'type': 'user_changed' } as Record<string, Object>);
   }
 
   setTrackingConsent(consent: TrackingConsent): void {
@@ -242,6 +299,7 @@ export class FlashcatCore implements SdkCore {
         r.scheduler.start();
       });
       this.registerDeferredUploadWork(); // re-arm background delivery
+      this.bus.send(RUM_FEATURE_NAME, { 'type': 'consent_granted' } as Record<string, Object>);
     } else if (consent === TrackingConsent.NOT_GRANTED) {
       // Discard the pre-consent buffer AND the already-collected batches, stop
       // uploading, and cancel the persisted background job. Keeping collected

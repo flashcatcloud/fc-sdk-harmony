@@ -23,6 +23,7 @@ import { RumEventAssembler } from './assembly/RumEventAssembler';
 import { RumNavigationTracker } from './RumNavigationTracker';
 import { RumEventMapperHolder } from './RumEventMapperHolder';
 import { LastViewSnapshot } from './LastViewSnapshot';
+import { AppForegroundHistory } from './AppForegroundHistory';
 
 // Internal core receiver owning the crash sidecar files. MessageBus contract.
 const CRASH_STORAGE_TARGET: string = '__flashcat_crash_storage';
@@ -261,6 +262,8 @@ export class RumFeature implements Feature, FeatureEventReceiver {
     RumAutoInstrumentation.reset(); // make tap/nav trackers inert after stop
     RumEventMapperHolder.reset(); // clear the event mapper
     LastViewSnapshot.reset(); // stop snapshotting through a torn-down core
+    // A later SDK's core reports the app state afresh (its startup probe included).
+    AppForegroundHistory.reset();
     this.previousRunView = null;
     this.monitor = null;
     // Reset the global so post-stop GlobalRumMonitor.get() returns the no-op, not a
@@ -272,6 +275,14 @@ export class RumFeature implements Feature, FeatureEventReceiver {
    * events from the Crash feature (hiAppEvent → CrashEventMapper). */
   onReceive(event: Record<string, Object>): void {
     const type: Object | undefined = event['type'];
+    // Recorded before anything else reacts to the same message.
+    if (type === 'app_background') {
+      AppForegroundHistory.enteredBackground();
+      return;
+    }
+    if (type === 'app_foreground' || type === 'app_foreground_detected') {
+      AppForegroundHistory.enteredForeground();
+    }
     if (type === 'network_request_started' || type === 'network_request_completed'
       || type === 'network_request_failed') {
       // setTrackNetworkRequests(false) must actually disable resource capture —
@@ -631,6 +642,18 @@ export class RumFeature implements Feature, FeatureEventReceiver {
     if (typeof arch === 'string' && arch.length > 0) {
       attributes['error.meta.code_type'] = arch;
     }
+    const threads: Object | undefined = event['threads'];
+    if (Array.isArray(threads) && threads.length > 0) {
+      attributes['error.threads'] = threads;
+    }
+    // Memory at the fault stays a plain attribute, so it lands in the error's
+    // context next to the other crash.* details.
+    const memory: Record<string, Object> = RumFeature.recordValue(event['memory']);
+    for (const key of Object.keys(memory)) {
+      if (typeof memory[key] === 'number') {
+        attributes[`crash.memory.${key}`] = memory[key];
+      }
+    }
     const kind: Object | undefined = event['crash_kind'];
     // APP_FREEZE is the system watchdog's application-not-responding verdict
     // (delivered on next launch, like Android ANRs) — not a self-sampled hang,
@@ -653,6 +676,7 @@ export class RumFeature implements Feature, FeatureEventReceiver {
     if (event['crash.recovered'] === true) {
       attributes['crash.recovered'] = true;
     }
+    RumFeature.copyNonEmptyString(event, attributes, 'freeze.dump_started_at', 'freeze.dump_started_at');
     return attributes;
   }
 

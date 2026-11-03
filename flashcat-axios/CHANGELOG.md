@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.7.5
+
+- `trackAxios` ignores something that is not an axios instance instead of
+  throwing, and registers its response interceptor first, so a registration
+  that fails part-way leaves no request interceptor behind.
+
 ## 0.7.4
 
 - No changes; released with the other packages.

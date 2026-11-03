@@ -138,6 +138,18 @@ export default function traceHostSafetyTests(): void {
         }
       });
 
+    it('closingAResourceWithNoKeyIsANoOp',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        let threw: boolean = false;
+        try {
+          FlashcatTrace.stopTracedResource(null as Object as string, 200, 0);
+          FlashcatTrace.failTracedResource(undefined as Object as string, 'x');
+        } catch (_e) {
+          threw = true;
+        }
+        expect(threw).assertFalse();
+      });
+
     it('enableBeforeInitializeIsANoOp',
       TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
         let threw: boolean = false;

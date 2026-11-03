@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.7.5
+
+- Native crashes (`NativeCrash`) and app freezes (`APP_FREEZE`) now report
+  every thread of the fault's thread dump as `error.threads` (name, state,
+  stack). The faulting thread — the signalled thread for a native crash, the
+  blocked main thread for a freeze — is marked `crashed` and listed first;
+  the list is capped in size, never dropping the faulting thread. ArkTS
+  crashes carry no thread dump and report no threads.
+- Process and device memory at the fault (`params.memory`, API 22+) of
+  native crashes and freezes are reported as `crash.memory.rss_kb`, `crash.memory.sys_free_kb`,
+  `crash.memory.sys_avail_kb` and `crash.memory.sys_total_kb` (KB). ArkTS
+  crashes are reported from the SDK's own in-process capture and carry no
+  memory.
+- App freezes (`APP_FREEZE`) now carry the blocked main thread's stack:
+  the frames of the thread whose tid equals the process id are taken from the
+  fault's thread dump. Previously the error had no stack.
+- The freeze message no longer embeds the watchdog dump's wall-clock time
+  (`THREAD_BLOCK_6S: App main thread is not response!`), so repeated freezes
+  share one message; the time is kept in the `freeze.dump_started_at`
+  attribute.
+
 ## 0.7.4
 
 - No changes; released with the other packages.
