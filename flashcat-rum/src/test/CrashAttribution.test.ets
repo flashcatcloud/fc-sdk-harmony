@@ -196,6 +196,21 @@ export default function crashAttributionTests(): void {
         expect((error['usr'] as Record<string, Object>)['id']).assertEqual('u-2');
         expect(error['version']).assertEqual('2.0.0');
       });
+
+    it('sharesNoNestedValueWithTheSnapshot', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0,
+      (): void => {
+        const snapshot: Record<string, Object> = viewEvent(0, 4, {
+          'usr': { 'id': 'u-1', 'profile': { 'tier': 'gold' } as Record<string, Object> } as Record<string, Object>,
+          'context': { 'cart': { 'items': 3 } as Record<string, Object> } as Record<string, Object>
+        });
+        const out: Record<string, Object> = RumFeature.withCrashedRunContext(replayedError(), snapshot);
+        ((out['usr'] as Record<string, Object>)['profile'] as Record<string, Object>)['tier'] = 'scrubbed';
+        ((out['context'] as Record<string, Object>)['cart'] as Record<string, Object>)['items'] = 0;
+        const usr: Record<string, Object> = snapshot['usr'] as Record<string, Object>;
+        expect((usr['profile'] as Record<string, Object>)['tier']).assertEqual('gold');
+        const context: Record<string, Object> = snapshot['context'] as Record<string, Object>;
+        expect((context['cart'] as Record<string, Object>)['items']).assertEqual(3);
+      });
   });
 }
 

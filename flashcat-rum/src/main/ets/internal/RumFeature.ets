@@ -482,7 +482,8 @@ export class RumFeature implements Feature, FeatureEventReceiver {
       true, 'unhandled', dateMs, RumFeature.crashAttributes(event));
     // That view describes the crash only when it is the view the crash happened in: a crash
     // right after a view change can still find the previous view there, whose attributes
-    // are not this view's. Otherwise the replaying launch's context is the best there is.
+    // are not this view's. Otherwise the replaying launch's context is the best there is —
+    // including for an incident left by an older run than the one that view comes from.
     if (crashedRunView !== null && viewId.length > 0 &&
       RumFeature.asString(RumFeature.recordValue(crashedRunView['session'])['id']) === sessionId &&
       RumFeature.asString(RumFeature.recordValue(crashedRunView['view'])['id']) === viewId) {
@@ -541,8 +542,15 @@ export class RumFeature implements Feature, FeatureEventReceiver {
     if (scope === null) {
       return false;
     }
+    const faultAtMs: number | undefined = RumFeature.optionalPositiveNumber(event['timestamp_ms']);
+    if (faultAtMs !== undefined && faultAtMs < viewStartedAtMs) {
+      // The view started after the fault, so it is not the view the fault happened in, and its
+      // session and run (user, app version, attributes) are not the crashed run's either.
+      FlashcatLog.d('rum.crash: fault predates the last-view snapshot; falling back to current session');
+      return false;
+    }
     const viewName: string = RumFeature.asString(view['name']);
-    const crashedAtMs: number = RumFeature.optionalPositiveNumber(event['timestamp_ms']) ?? Date.now();
+    const crashedAtMs: number = faultAtMs ?? Date.now();
     const attributes: Record<string, Object> = RumFeature.crashAttributes(event);
     const viewUrl: string = RumFeature.asString(view['url']);
     if (viewUrl.length > 0) {
@@ -602,6 +610,23 @@ export class RumFeature implements Feature, FeatureEventReceiver {
    */
   static withCrashedRunContext(error: Record<string, Object>,
     snapshot: Record<string, Object>): Record<string, Object> {
+    // A deep copy of what is taken from the snapshot: it was serialized as-is for the next
+    // launch, and nested values must not be shared with an event the mapper may edit.
+    const taken: Record<string, Object> = {};
+    for (const key of CRASHED_RUN_FIELDS) {
+      const value: Object | undefined = snapshot[key];
+      if (value !== undefined) {
+        taken[key] = value;
+      }
+    }
+    taken['context'] = RumFeature.recordValue(snapshot['context']);
+    let copied: Record<string, Object>;
+    try {
+      copied = JSON.parse(JSON.stringify(taken)) as Record<string, Object>;
+    } catch (e) {
+      FlashcatLog.e(`rum.crash: crashed-run context not copyable: ${RumFeature.errorText(e)}`);
+      return error;
+    }
     const out: Record<string, Object> = {};
     for (const key of Object.keys(error)) {
       if (key !== 'context' && !CRASHED_RUN_FIELDS.includes(key)) {
@@ -609,34 +634,18 @@ export class RumFeature implements Feature, FeatureEventReceiver {
       }
     }
     for (const key of CRASHED_RUN_FIELDS) {
-      const value: Object | undefined = snapshot[key];
+      const value: Object | undefined = copied[key];
       if (value !== undefined) {
-        out[key] = RumFeature.shallowCopy(value);
+        out[key] = value;
       }
     }
-    const context: Record<string, Object> = {};
-    const sessionAttributes: Record<string, Object> = RumFeature.recordValue(snapshot['context']);
-    for (const key of Object.keys(sessionAttributes)) {
-      context[key] = sessionAttributes[key];
-    }
+    const context: Record<string, Object> = RumFeature.recordValue(copied['context']);
     const crashAttributes: Record<string, Object> = RumFeature.recordValue(error['context']);
     for (const key of Object.keys(crashAttributes)) {
       context[key] = crashAttributes[key];
     }
     out['context'] = context;
     return out;
-  }
-
-  private static shallowCopy(value: Object): Object {
-    if (typeof value !== 'object' || value === null || Array.isArray(value)) {
-      return value;
-    }
-    const source: Record<string, Object> = value as Record<string, Object>;
-    const copy: Record<string, Object> = {};
-    for (const key of Object.keys(source)) {
-      copy[key] = source[key];
-    }
-    return copy;
   }
 
   /**
