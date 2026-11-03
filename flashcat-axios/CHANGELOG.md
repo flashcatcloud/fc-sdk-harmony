@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- A request that fails before any response (connection refused, DNS
+  failure, timeout) is reported as a network error. @ohos/axios rejects
+  such a failure with its internal http request object in
+  `error.response`, so it was reported as a completed resource with status
+  0 and no error. Only a response with an HTTP status now counts as one.
+
 ## 0.7.6
 
 - No changes; released together with `@flashcatcloud/rum` 0.7.6.
