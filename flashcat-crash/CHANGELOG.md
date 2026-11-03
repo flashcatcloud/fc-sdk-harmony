@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.7.5
 
 - Native crashes (`NativeCrash`) and app freezes (`APP_FREEZE`) now report
   every thread of the fault's thread dump as `error.threads` (name, state,
@@ -13,9 +13,6 @@
   `crash.memory.sys_avail_kb` and `crash.memory.sys_total_kb` (KB). ArkTS
   crashes are reported from the SDK's own in-process capture and carry no
   memory.
-
-## 0.7.5
-
 - App freezes (`APP_FREEZE`) now carry the blocked main thread's stack:
   the frames of the thread whose tid equals the process id are taken from the
   fault's thread dump. Previously the error had no stack.
