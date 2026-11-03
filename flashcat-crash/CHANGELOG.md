@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.6
+
+- No changes; released together with `@flashcatcloud/rum` 0.7.6.
+
 ## 0.7.5
 
 - Native crashes (`NativeCrash`) and app freezes (`APP_FREEZE`) now report

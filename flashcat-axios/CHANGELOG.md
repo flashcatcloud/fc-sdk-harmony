@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.6
+
+- No changes; released together with `@flashcatcloud/rum` 0.7.6.
+
 ## 0.7.5
 
 - `trackAxios` ignores something that is not an axios instance instead of
