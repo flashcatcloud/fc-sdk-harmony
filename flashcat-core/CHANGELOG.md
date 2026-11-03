@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.6
+
+- No changes; released together with `@flashcatcloud/rum` 0.7.6.
+
 ## 0.7.5
 
 - The core tells RUM when the app moves to the background (and when it was

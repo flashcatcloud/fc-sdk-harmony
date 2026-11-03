@@ -11,7 +11,7 @@ export class RumConfiguration {
   readonly trackNavigation: boolean;        // auto page tracking via UIObserver
   readonly trackNetworkRequests: boolean;   // auto resource tracking
   readonly trackFrustrations: boolean;
-  readonly trackErrors: boolean;            // AUTO error capture (crashes unaffected)
+  readonly trackErrors: boolean;            // AUTO error capture (see RumConfigurationBuilder.setTrackErrors)
   readonly eventMapper: RumEventMapper | null;  // phase 2 R3: PII scrubbing / drop
   /** Whether to read the sampling settings the console publishes. Default false. */
   readonly remoteConfigurationEnabled: boolean;

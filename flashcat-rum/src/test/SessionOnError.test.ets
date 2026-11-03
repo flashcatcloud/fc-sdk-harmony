@@ -38,7 +38,7 @@ function testContext(): FlashcatContext {
     version: '1.0.0',
     bundleId: 'com.example.demo',
     source: 'harmony',
-    sdkVersion: '0.7.5',
+    sdkVersion: '0.7.6',
     device: {
       brand: 'HUAWEI', model: 'Pura', osName: 'HarmonyOS', osVersion: 'NEXT',
       apiVersion: 18, deviceType: 'phone'
@@ -59,6 +59,9 @@ class FakeCore implements SdkCore {
   /** What getFeature hands out: the RUM scope (storage commands included) and the crash feature. */
   rumScope: CapturingScope | null = null;
   crashScope: FakeCrashScope | null = null;
+  /** What getContext reports for this launch: change them to model an app update or a sign-out. */
+  appVersion: string = '1.0.0';
+  user: UserInfo = {};
 
   registerFeature(_feature: Feature): void {}
   getFeature(featureName: string): FeatureScope | null {
@@ -78,7 +81,10 @@ class FakeCore implements SdkCore {
     }
   }
   getContext(): FlashcatContext {
-    return testContext();
+    const context: FlashcatContext = testContext();
+    context.version = this.appVersion;
+    context.user = this.user;
+    return context;
   }
   getTrackingConsent(): TrackingConsent {
     return this.consent;
@@ -112,12 +118,14 @@ class CapturingScope implements FeatureScope {
   rejectAbove: number = Number.MAX_SAFE_INTEGER;
 
   withWriteContext(callback: (context: FlashcatContext, writer: EventWriter) => void): void {
-    callback(testContext(), new CapturingWriter(this));
+    callback(this.core !== null ? this.core.getContext() : testContext(), new CapturingWriter(this));
   }
 
   /** The last-view snapshot file the crash storage would hold. */
   lastView: string = '';
   lastViewDeletes: number = 0;
+  /** The core whose context events are written with (the default test context when unset). */
+  core: FakeCore | null = null;
 
   sendEvent(event: Record<string, Object>): void {
     const type: Object | undefined = event['type'];
@@ -249,6 +257,7 @@ function fireUnhandledRejection(reason: Object): void {
 /** A RUM feature wired to the fake core, with its monitor attached. */
 function featureWith(core: FakeCore, scope: CapturingScope, rate: number, sessionOnError: boolean): DefaultRumMonitor {
   core.rumScope = scope;
+  scope.core = core;
   const configuration: RumConfiguration =
     new RumConfigurationBuilder('app-1').setSessionSampleRate(rate).setSessionOnError(sessionOnError).build();
   const feature: RumFeature = new RumFeature(core, configuration);
@@ -1660,7 +1669,7 @@ export default function sessionOnErrorTests(): void {
         feature.onInitialize();
         feature.attachMonitor(monitor2);
         feature.onReceive({ 'type': 'crash_report', 'message': 'NativeCrash', 'stack': '#00 pc', 'crash_kind': 'crash',
-          'timestamp_ms': Date.now() - 1000 } as Record<string, Object>);
+          'timestamp_ms': Date.now() } as Record<string, Object>);
         for (const e of next.written) {
           expect(sessionOf(e)['id'] === discarded).assertFalse();
         }
@@ -1682,9 +1691,162 @@ export default function sessionOnErrorTests(): void {
         core2.rumScope = next2;
         feature2.onInitialize();
         feature2.onReceive({ 'type': 'crash_report', 'message': 'NativeCrash', 'stack': '#00 pc', 'crash_kind': 'crash',
-          'timestamp_ms': Date.now() - 1000 } as Record<string, Object>);
+          'timestamp_ms': Date.now() } as Record<string, Object>);
         expect(next2.ofType('error').length).assertEqual(1);
         expect(sessionOf(next2.ofType('error')[0])['id']).assertEqual(released);
+      });
+
+    it('aCrashReplayedFromTheLastViewCarriesTheCrashedRunsContext',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        // Run 1: version 1.0.0, signed in, a session attribute; the process dies of a native crash.
+        const core: FakeCore = new FakeCore();
+        const signedIn: UserInfo = { id: 'u-1' };
+        core.user = signedIn;
+        const scope: CapturingScope = new CapturingScope();
+        const monitor: DefaultRumMonitor = featureWith(core, scope, 100, false);
+        monitor.addAttribute('channel', 'store');
+        monitor.startView('home', 'home');
+        const crashed: string = core.featureContext['session.id'] as string;
+        LastViewSnapshot.flush();
+        // Run 2: the app was updated and the user signed out before the relaunch.
+        core.appVersion = '2.0.0';
+        core.user = {};
+        const next: CapturingScope = new CapturingScope();
+        next.lastView = scope.lastView;
+        next.core = core;
+        core.rumScope = next;
+        const feature: RumFeature = new RumFeature(core, new RumConfigurationBuilder('app-1').build());
+        feature.onInitialize();
+        feature.onReceive({ 'type': 'crash_report', 'message': 'NativeCrash', 'stack': '#00 pc',
+          'crash_kind': 'crash', 'timestamp_ms': Date.now(),
+          'memory': { 'rss_kb': 1 } as Record<string, Object> } as Record<string, Object>);
+        const errors: Array<Record<string, Object>> = next.ofType('error');
+        expect(errors.length).assertEqual(1);
+        expect(sessionOf(errors[0])['id']).assertEqual(crashed);
+        expect(errors[0]['version']).assertEqual('1.0.0');
+        expect((errors[0]['usr'] as Record<string, Object>)['id']).assertEqual('u-1');
+        const context: Record<string, Object> = errors[0]['context'] as Record<string, Object>;
+        expect(context['channel']).assertEqual('store');
+        expect(context['crash.memory.rss_kb']).assertEqual(1);
+        // Negative control: with no snapshot the crash lands in the current session, as the current run.
+        const orphan: CapturingScope = new CapturingScope();
+        const monitor2: DefaultRumMonitor = featureWith(core, orphan, 100, false);
+        monitor2.startView('home', 'home');
+        const feature2: RumFeature = new RumFeature(core, new RumConfigurationBuilder('app-1').build());
+        feature2.onInitialize();
+        feature2.attachMonitor(monitor2);
+        feature2.onReceive({ 'type': 'crash_report', 'message': 'NativeCrash', 'stack': '#00 pc',
+          'crash_kind': 'crash', 'timestamp_ms': Date.now() } as Record<string, Object>);
+        const orphans: Array<Record<string, Object>> = orphan.ofType('error');
+        expect(orphans.length).assertEqual(1);
+        expect(orphans[0]['version']).assertEqual('2.0.0');
+        expect((orphans[0]['context'] as Record<string, Object>)['channel'] === undefined).assertTrue();
+      });
+
+    it('aFaultOlderThanTheLastViewIsNotAttributedToItsRun',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        // A fault reported now but dated before the snapshot's view started did not happen in
+        // that view: neither its session nor that run's user, version and attributes are the
+        // crash's. It goes to the current session, as the current run.
+        const core: FakeCore = new FakeCore();
+        const scope: CapturingScope = new CapturingScope();
+        const monitor: DefaultRumMonitor = featureWith(core, scope, 100, false);
+        monitor.addAttribute('channel', 'store');
+        monitor.startView('home', 'home');
+        const snapshotted: string = core.featureContext['session.id'] as string;
+        LastViewSnapshot.flush();
+        core.appVersion = '2.0.0';
+        const next: CapturingScope = new CapturingScope();
+        next.lastView = scope.lastView;
+        next.core = core;
+        core.rumScope = next;
+        const configuration: RumConfiguration = new RumConfigurationBuilder('app-1').build();
+        const feature: RumFeature = new RumFeature(core, configuration);
+        feature.onInitialize(); // loads the snapshot
+        const monitor2: DefaultRumMonitor = new DefaultRumMonitor(core, next, configuration);
+        monitor2.stopKeepAlive();
+        feature.attachMonitor(monitor2);
+        monitor2.startView('home', 'home');
+        const replay = (faultAtMs: number): Record<string, Object> => {
+          feature.onReceive({ 'type': 'crash_report', 'message': 'NativeCrash', 'stack': '#00 pc',
+            'crash_kind': 'crash', 'timestamp_ms': faultAtMs } as Record<string, Object>);
+          const errors: Array<Record<string, Object>> = next.ofType('error');
+          return errors[errors.length - 1];
+        };
+        const older: Record<string, Object> = replay(Date.now() - 60 * 1000);
+        expect(sessionOf(older)['id'] === snapshotted).assertFalse();
+        expect(older['version']).assertEqual('2.0.0');
+        expect((older['context'] as Record<string, Object>)['channel'] === undefined).assertTrue();
+        // Negative control: the same snapshot takes a fault dated inside its view.
+        const inside: Record<string, Object> = replay(Date.now());
+        expect(sessionOf(inside)['id']).assertEqual(snapshotted);
+        expect(inside['version']).assertEqual('1.0.0');
+      });
+
+    it('aJsIncidentReplayedIntoItsSessionCarriesThatRunsContext',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        const core: FakeCore = new FakeCore();
+        const scope: CapturingScope = new CapturingScope();
+        const monitor: DefaultRumMonitor = featureWith(core, scope, 100, false);
+        monitor.addAttribute('channel', 'store');
+        monitor.startView('home', 'home');
+        const crashed: string = core.featureContext['session.id'] as string;
+        const view: string = core.featureContext['view.id'] as string;
+        LastViewSnapshot.flush();
+        core.appVersion = '2.0.0';
+        const replay = (sessionId: string, viewId: string): Record<string, Object> => {
+          const next: CapturingScope = new CapturingScope();
+          next.lastView = scope.lastView;
+          next.core = core;
+          core.rumScope = next;
+          const feature: RumFeature = new RumFeature(core, new RumConfigurationBuilder('app-1').build());
+          feature.onInitialize();
+          feature.onReceive({ 'type': 'crash_report', 'message': 'Error: boom', 'stack': 'at f',
+            'crash_kind': 'crash', 'timestamp_ms': Date.now() - 1000, 'incident_id': 'i-1',
+            'original_session_id': sessionId, 'original_view_id': viewId,
+            'original_view_name': 'home' } as Record<string, Object>);
+          const errors: Array<Record<string, Object>> = next.ofType('error');
+          expect(errors.length).assertEqual(1);
+          return errors[0];
+        };
+        const own: Record<string, Object> = replay(crashed, view);
+        expect(own['version']).assertEqual('1.0.0');
+        expect((own['context'] as Record<string, Object>)['channel']).assertEqual('store');
+        // Negative controls: the previous run's view belongs to another session, or is not the
+        // view the crash happened in (a crash right after a view change) — nothing is borrowed.
+        for (const ids of [['another-session', view], [crashed, 'another-view']]) {
+          const other: Record<string, Object> = replay(ids[0], ids[1]);
+          expect(other['version']).assertEqual('2.0.0');
+          expect((other['context'] as Record<string, Object>)['channel'] === undefined).assertTrue();
+        }
+      });
+
+    it('theMapperJudgesAPersistedCrashOnTheSameEventItWillBeReplayedAs',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        // Asked at crash time for a session that withholds its events, the mapper must see the
+        // session's attributes the replay will carry — or it keeps here what it drops there.
+        RumEventMapperHolder.configure((event: Record<string, Object>): Record<string, Object> | null =>
+          event['type'] === 'error' && (event['context'] as Record<string, Object>)['channel'] === 'store'
+            ? null : event);
+        try {
+          const crashWith = (channel: string): FakeCore => {
+            const core: FakeCore = new FakeCore();
+            core.crashScope = new FakeCrashScope(core);
+            const scope: CapturingScope = new CapturingScope();
+            const monitor: DefaultRumMonitor = onErrorFeature(core, scope);
+            monitor.addAttribute('channel', channel);
+            monitor.startView('home', 'home');
+            fireUnhandledException('Error name:Error\nError message:fatal\nStacktrace:\nat a (b.ets:1:1)');
+            return core;
+          };
+          const dropped: FakeCore = crashWith('store');
+          expect((dropped.crashScope as FakeCrashScope).controls[0]['suppressed']).assertEqual(true);
+          // Negative control: an attribute the mapper does not drop on.
+          const kept: FakeCore = crashWith('web');
+          expect((kept.crashScope as FakeCrashScope).controls[0]['suppressed'] === true).assertFalse();
+        } finally {
+          RumEventMapperHolder.reset();
+        }
       });
 
     it('aTerminatingCrashTheMapperDropsReleasesNothing',

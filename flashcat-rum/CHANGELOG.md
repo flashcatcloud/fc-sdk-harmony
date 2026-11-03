@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.7.6
+
+- A crash reported on the next launch (native crash, app freeze, or a JS
+  crash persisted before the process exited) now carries the crashed run's
+  app version, OS version, user, connectivity and the session's custom
+  attributes, read from that run's last view. Previously it carried the
+  relaunch's values and none of the session's attributes, so a crash
+  followed by an app update was attributed to the new version. The crash's
+  own context keys (`crash.*`) take precedence over a session attribute of
+  the same name. A field the event mapper removed from that view is not
+  filled in from the relaunch. A persisted JS crash takes the view's
+  values only when it happened in that very view, and a native crash or
+  freeze dated before the last view started is not attributed to it.
+- When a session that holds its events back until an error asks the event
+  mapper at crash time whether a persisted crash will be kept, the mapper
+  now sees the same event the next launch replays, session attributes
+  included.
+
 ## 0.7.5
 
 - Crash reports from the crash module carry their thread dump as

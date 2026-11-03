@@ -68,9 +68,14 @@ jobs:
               echo "Tag version (${TAG_VERSION}) does not match the SDK package version (${PKG_VERSION})."
               exit 1
             fi
+            # Build exactly what publish holds: the tag must point at the tip of
+            # publish (the merge of main into it), not at an older commit that is
+            # merely contained in it. A tag on a main commit would build that
+            # commit's tree and workflow, not publish's.
             git fetch origin publish:refs/remotes/origin/publish
-            if ! git merge-base --is-ancestor "${GITHUB_SHA}" origin/publish; then
-              echo "Tag publish must point to a commit already contained in the publish branch."
+            PUBLISH_TIP="$(git rev-parse origin/publish)"
+            if [[ "${GITHUB_SHA}" != "${PUBLISH_TIP}" ]]; then
+              echo "Tag must point at the tip of the publish branch (${PUBLISH_TIP}), not ${GITHUB_SHA}."
               exit 1
             fi
             echo "Publishing HarmonyOS SDK ${PKG_VERSION}"

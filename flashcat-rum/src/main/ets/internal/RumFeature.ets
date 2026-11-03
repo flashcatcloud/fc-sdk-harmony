@@ -31,6 +31,8 @@ const CRASH_STORAGE_TARGET: string = '__flashcat_crash_storage';
 // Matches the maximum session lifetime: past it the session is closed on the
 // backend and its view document must not be revived.
 const LAST_VIEW_MAX_AGE_MS: number = 4 * 60 * 60 * 1000;
+// Event fields that belong to the run a replayed crash happened in, not the launch replaying it.
+const CRASHED_RUN_FIELDS: string[] = ['version', 'os', 'usr', 'connectivity'];
 // OpenHarmony runtime banner substituted for the translated stack when the
 // module's sourcemap cannot be loaded. Never a meaningful error message.
 const SOURCEMAP_BANNER: string = 'Cannot get SourceMap info';
@@ -438,7 +440,8 @@ export class RumFeature implements Feature, FeatureEventReceiver {
     }
     let delivered: boolean = false;
     scope.withWriteContext((context: FlashcatContext, writer: EventWriter) => {
-      const errorEvent: Record<string, Object> = this.assembleReplayedCrash(context, event, sessionId);
+      const errorEvent: Record<string, Object> =
+        this.assembleReplayedCrash(context, event, sessionId, this.previousRunView);
       const mapped: Record<string, Object> | null = RumEventMapperHolder.apply(errorEvent);
       if (mapped === null) {
         delivered = true; // the app's mapper dropped it on purpose — handled
@@ -460,14 +463,16 @@ export class RumFeature implements Feature, FeatureEventReceiver {
   /**
    * The error a replayed incident becomes, stamped with the crashed run's
    * session and view. One assembly for the replay and for the crash feature's
-   * question at crash time, so the app's mapper judges the same event twice.
+   * question at crash time, so the app's mapper judges the same event twice:
+   * `crashedRunView` is the crashed run's last view — read back from file at
+   * the replay, and the very same document still in memory at crash time.
    */
   private assembleReplayedCrash(context: FlashcatContext, event: Record<string, Object>,
-    sessionId: string): Record<string, Object> {
+    sessionId: string, crashedRunView: Record<string, Object> | null): Record<string, Object> {
     const viewId: string = RumFeature.asString(event['original_view_id']);
     const viewName: string = RumFeature.asString(event['original_view_name']);
     const dateMs: number = RumFeature.optionalPositiveNumber(event['timestamp_ms']) ?? Date.now();
-    return RumEventAssembler.error(
+    const errorEvent: Record<string, Object> = RumEventAssembler.error(
       context, this.configuration.applicationId, sessionId,
       viewId.length > 0 ? viewId : undefined,
       viewId.length > 0 ? viewName : undefined,
@@ -475,12 +480,23 @@ export class RumFeature implements Feature, FeatureEventReceiver {
       RumErrorSource.SOURCE as string,
       RumFeature.asString(event['stack']),
       true, 'unhandled', dateMs, RumFeature.crashAttributes(event));
+    // That view describes the crash only when it is the view the crash happened in: a crash
+    // right after a view change can still find the previous view there, whose attributes
+    // are not this view's. Otherwise the replaying launch's context is the best there is —
+    // including for an incident left by an older run than the one that view comes from.
+    if (crashedRunView !== null && viewId.length > 0 &&
+      RumFeature.asString(RumFeature.recordValue(crashedRunView['session'])['id']) === sessionId &&
+      RumFeature.asString(RumFeature.recordValue(crashedRunView['view'])['id']) === viewId) {
+      return RumFeature.withCrashedRunContext(errorEvent, crashedRunView);
+    }
+    return errorEvent;
   }
 
   /** Whether the app's mapper keeps the error `probe` would be replayed as. */
   private keepsReplayedCrash(probe: Record<string, Object>): boolean {
     const errorEvent: Record<string, Object> = this.assembleReplayedCrash(
-      this.core.getContext(), probe, RumFeature.asString(probe['original_session_id']));
+      this.core.getContext(), probe, RumFeature.asString(probe['original_session_id']),
+      LastViewSnapshot.current());
     return RumEventMapperHolder.apply(errorEvent) !== null;
   }
 
@@ -526,8 +542,15 @@ export class RumFeature implements Feature, FeatureEventReceiver {
     if (scope === null) {
       return false;
     }
+    const faultAtMs: number | undefined = RumFeature.optionalPositiveNumber(event['timestamp_ms']);
+    if (faultAtMs !== undefined && faultAtMs < viewStartedAtMs) {
+      // The view started after the fault, so it is not the view the fault happened in, and its
+      // session and run (user, app version, attributes) are not the crashed run's either.
+      FlashcatLog.d('rum.crash: fault predates the last-view snapshot; falling back to current session');
+      return false;
+    }
     const viewName: string = RumFeature.asString(view['name']);
-    const crashedAtMs: number = RumFeature.optionalPositiveNumber(event['timestamp_ms']) ?? Date.now();
+    const crashedAtMs: number = faultAtMs ?? Date.now();
     const attributes: Record<string, Object> = RumFeature.crashAttributes(event);
     const viewUrl: string = RumFeature.asString(view['url']);
     if (viewUrl.length > 0) {
@@ -536,12 +559,12 @@ export class RumFeature implements Feature, FeatureEventReceiver {
     const applicationId: string = this.configuration.applicationId;
     let delivered: boolean = false;
     scope.withWriteContext((context: FlashcatContext, writer: EventWriter) => {
-      const errorEvent: Record<string, Object> = RumEventAssembler.error(
+      const errorEvent: Record<string, Object> = RumFeature.withCrashedRunContext(RumEventAssembler.error(
         context, applicationId, sessionId, viewId, viewName,
         RumFeature.asString(event['message']),
         RumErrorSource.SOURCE as string,
         RumFeature.asString(event['stack']),
-        true, 'unhandled', crashedAtMs, attributes);
+        true, 'unhandled', crashedAtMs, attributes), snapshot);
       const mapped: Record<string, Object> | null = RumEventMapperHolder.apply(errorEvent);
       if (mapped === null) {
         delivered = true; // the app's mapper dropped it on purpose — handled
@@ -573,6 +596,56 @@ export class RumFeature implements Feature, FeatureEventReceiver {
       `rum.crash: replayed crash from last-view snapshot session=${sessionId} ` +
       `view=${viewId} crashedAt=${crashedAtMs} delivered=${delivered}`);
     return delivered;
+  }
+
+  /**
+   * Pure: a copy of `error` (a replayed crash, assembled with the replaying launch's context)
+   * restamped with the run that crashed, as recorded in that run's last view document. The two
+   * launches can differ in app version, OS version, user and connectivity (an app update or a
+   * sign-out in between), and the session's custom attributes exist only on the crashed run's
+   * own documents. That document is authoritative: a field it lacks (an event mapper removed
+   * it) is not filled from the replaying launch. Keys the crash itself carries in `context`
+   * win over the session's attributes. Neither input is modified, so a mapper editing the
+   * result cannot reach the snapshot that later view documents are built from.
+   */
+  static withCrashedRunContext(error: Record<string, Object>,
+    snapshot: Record<string, Object>): Record<string, Object> {
+    // A deep copy of what is taken from the snapshot: it was serialized as-is for the next
+    // launch, and nested values must not be shared with an event the mapper may edit.
+    const taken: Record<string, Object> = {};
+    for (const key of CRASHED_RUN_FIELDS) {
+      const value: Object | undefined = snapshot[key];
+      if (value !== undefined) {
+        taken[key] = value;
+      }
+    }
+    taken['context'] = RumFeature.recordValue(snapshot['context']);
+    let copied: Record<string, Object>;
+    try {
+      copied = JSON.parse(JSON.stringify(taken)) as Record<string, Object>;
+    } catch (e) {
+      FlashcatLog.e(`rum.crash: crashed-run context not copyable: ${RumFeature.errorText(e)}`);
+      return error;
+    }
+    const out: Record<string, Object> = {};
+    for (const key of Object.keys(error)) {
+      if (key !== 'context' && !CRASHED_RUN_FIELDS.includes(key)) {
+        out[key] = error[key];
+      }
+    }
+    for (const key of CRASHED_RUN_FIELDS) {
+      const value: Object | undefined = copied[key];
+      if (value !== undefined) {
+        out[key] = value;
+      }
+    }
+    const context: Record<string, Object> = RumFeature.recordValue(copied['context']);
+    const crashAttributes: Record<string, Object> = RumFeature.recordValue(error['context']);
+    for (const key of Object.keys(crashAttributes)) {
+      context[key] = crashAttributes[key];
+    }
+    out['context'] = context;
+    return out;
   }
 
   /**
