@@ -68,9 +68,14 @@ jobs:
               echo "Tag version (${TAG_VERSION}) does not match the SDK package version (${PKG_VERSION})."
               exit 1
             fi
+            # Build exactly what publish holds: the tag must point at the tip of
+            # publish (the merge of main into it), not at an older commit that is
+            # merely contained in it. A tag on a main commit would build that
+            # commit's tree and workflow, not publish's.
             git fetch origin publish:refs/remotes/origin/publish
-            if ! git merge-base --is-ancestor "${GITHUB_SHA}" origin/publish; then
-              echo "Tag publish must point to a commit already contained in the publish branch."
+            PUBLISH_TIP="$(git rev-parse origin/publish)"
+            if [[ "${GITHUB_SHA}" != "${PUBLISH_TIP}" ]]; then
+              echo "Tag must point at the tip of the publish branch (${PUBLISH_TIP}), not ${GITHUB_SHA}."
               exit 1
             fi
             echo "Publishing HarmonyOS SDK ${PKG_VERSION}"
@@ -295,8 +300,24 @@ jobs:
       - name: Notify DingTalk on success
         uses: zcong1993/actions-ding@master
         with:
+          ignoreError: "true"
           dingToken: ${{ secrets.DING_TALK_TOKEN }}
           secret: ${{ secrets.DING_TALK_SECRET }}
+          body: |
+            {
+              "msgtype": "markdown",
+              "markdown": {
+                "title": "fc-sdk-harmony OHPM 发布通知",
+                "text": "### ✅ fc-sdk-harmony OHPM 流程成功\n\n---\n\n 🔖 分支/标签: ${{ github.ref }}\n\n 📦 类型: ${{ env.PUBLISH_MODE }}\n\n 📚 包名: ${{ env.PACKAGE_LIST }}\n\n 👨‍💻 触发人: ${{ github.actor }}\n\n 🚀 [查看详情](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})"
+              }
+            }
+
+      - name: Notify secondary DingTalk group on success
+        uses: zcong1993/actions-ding@master
+        with:
+          ignoreError: "true"
+          dingToken: ${{ secrets.DING_TALK_TOKEN_2 }}
+          secret: ${{ secrets.DING_TALK_SECRET_2 }}
           body: |
             {
               "msgtype": "markdown",
@@ -327,6 +348,7 @@ jobs:
       - name: Notify DingTalk on failure
         uses: zcong1993/actions-ding@master
         with:
+          ignoreError: "true"
           dingToken: ${{ secrets.DING_TALK_TOKEN }}
           secret: ${{ secrets.DING_TALK_SECRET }}
           body: |
