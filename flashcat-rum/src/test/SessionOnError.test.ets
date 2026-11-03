@@ -38,7 +38,7 @@ function testContext(): FlashcatContext {
     version: '1.0.0',
     bundleId: 'com.example.demo',
     source: 'harmony',
-    sdkVersion: '0.7.5',
+    sdkVersion: '0.7.6',
     device: {
       brand: 'HUAWEI', model: 'Pura', osName: 'HarmonyOS', osVersion: 'NEXT',
       apiVersion: 18, deviceType: 'phone'

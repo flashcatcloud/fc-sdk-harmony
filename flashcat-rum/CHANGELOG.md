@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.7.6
 
 - A crash reported on the next launch (native crash, app freeze, or a JS
   crash persisted before the process exited) now carries the crashed run's
