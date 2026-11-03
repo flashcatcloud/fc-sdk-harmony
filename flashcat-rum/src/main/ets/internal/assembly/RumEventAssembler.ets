@@ -207,7 +207,7 @@ export class RumEventAssembler {
     statusCode: number,
     sizeBytes: number,
     dateMs: number,
-    durationNs: number,
+    durationNs: number | undefined,
     traceId: string | undefined,
     spanId: string | undefined,
     attributes: Record<string, Object>
@@ -243,7 +243,9 @@ export class RumEventAssembler {
     resource['method'] = method;
     resource['status_code'] = statusCode;
     resource['size'] = sizeBytes;
-    resource['duration'] = durationNs;
+    if (durationNs !== undefined) {
+      resource['duration'] = durationNs; // absent when not measurable (optional in the schema)
+    }
     event['resource'] = resource;
 
     RumEventAssembler.applyContext(event, context, attributes);

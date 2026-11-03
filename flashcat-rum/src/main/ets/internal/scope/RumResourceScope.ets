@@ -3,6 +3,7 @@ import { util } from '@kit.ArkTS';
 import { RumRawEvent } from './RumScope';
 import { RumEventAssembler } from '../assembly/RumEventAssembler';
 import { writeMapped } from '../RumEventMapperHolder';
+import { AppForegroundHistory } from '../AppForegroundHistory';
 
 const MS_TO_NS: number = 1e6;
 /** Internal attribute keys carrying the injected trace context (Android convention). */
@@ -27,6 +28,8 @@ export class RumResourceScope {
   private readonly url: string;
   private readonly method: string;
   private readonly startedAtMs: number;
+  private readonly backgroundCountAtStart: number;
+  private readonly startedInBackground: boolean;
   private readonly traceId: string | undefined;
   private readonly spanId: string | undefined;
   private readonly attributes: Record<string, Object>;
@@ -50,6 +53,8 @@ export class RumResourceScope {
     this.url = start.url ?? '';
     this.method = start.method ?? 'GET';
     this.startedAtMs = start.timestampMs;
+    this.backgroundCountAtStart = AppForegroundHistory.backgroundCount();
+    this.startedInBackground = AppForegroundHistory.inBackground();
     // Pull the trace correlation out of the attributes; everything else passes through.
     const src: Record<string, Object> = start.attributes;
     const traceVal: Object | undefined = src[TRACE_ID_ATTRIBUTE];
@@ -66,9 +71,16 @@ export class RumResourceScope {
     this.attributes = attrs;
   }
 
-  /** Request completed — emit the ResourceEvent. */
+  /**
+   * Request completed — emit the ResourceEvent. A request that was in flight
+   * while the app was in the background is reported without a duration: its
+   * process may have been frozen, so the wall-clock delta can span hours the
+   * request never ran.
+   */
   stop(raw: RumRawEvent): void {
-    const durationNs: number = Math.max(0, raw.timestampMs - this.startedAtMs) * MS_TO_NS;
+    const durationNs: number | undefined = this.spannedBackground()
+      ? undefined
+      : Math.max(0, raw.timestampMs - this.startedAtMs) * MS_TO_NS;
     const attrs: Record<string, Object> = this.mergedAttributes(raw);
     this.featureScope.withWriteContext((context: FlashcatContext, writer: EventWriter) => {
       const event: Record<string, Object> = RumEventAssembler.resource(
@@ -91,6 +103,17 @@ export class RumResourceScope {
         this.method, raw.statusCode, this.url);
       writeMapped(writer, event, true);
     });
+  }
+
+  /**
+   * The app was in the background at some point between start and now: it
+   * was there at the start, or has moved there since. A completion that runs
+   * while the process thaws, before the app is reported back, is covered by
+   * the move that preceded it.
+   */
+  private spannedBackground(): boolean {
+    return this.startedInBackground
+      || AppForegroundHistory.backgroundCount() !== this.backgroundCountAtStart;
   }
 
   /** Start attributes overlaid with stop-time attributes (stop wins). */

@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- The core tells RUM when the app moves to the background (and when it was
+  launched in the background), so RUM can tell which measurements may span
+  a frozen process.
+
 ## 0.7.5
 
 - `setUserInfo(null)` is treated as no user; it previously made every
