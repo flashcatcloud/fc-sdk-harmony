@@ -41,6 +41,8 @@ export class LastViewSnapshot {
   /** The latest view not yet on file, and its pending write. */
   private static pending: Record<string, Object> | null = null;
   private static timerId: number = -1;
+  /** The latest view recorded by this process, on file or not. */
+  private static latest: Record<string, Object> | null = null;
 
   /** @internal wired by RumFeature.onInitialize to the core's crash storage. */
   static configure(writer: LastViewWriter, reader: LastViewReader, deleter: LastViewDeleter): void {
@@ -49,6 +51,7 @@ export class LastViewSnapshot {
     LastViewSnapshot.deleter = deleter;
     LastViewSnapshot.recordedSessionId = '';
     LastViewSnapshot.cancelPending();
+    LastViewSnapshot.latest = null;
   }
 
   /** @internal cleared on SDK stop so a torn-down core is never written to. */
@@ -58,6 +61,7 @@ export class LastViewSnapshot {
     LastViewSnapshot.deleter = null;
     LastViewSnapshot.recordedSessionId = '';
     LastViewSnapshot.cancelPending();
+    LastViewSnapshot.latest = null;
   }
 
   /**
@@ -71,6 +75,7 @@ export class LastViewSnapshot {
       return;
     }
     LastViewSnapshot.pending = event;
+    LastViewSnapshot.latest = event;
     if (LastViewSnapshot.timerId === -1) {
       LastViewSnapshot.timerId = setTimeout((): void => {
         LastViewSnapshot.timerId = -1;
@@ -104,6 +109,15 @@ export class LastViewSnapshot {
   /** Drop the queued view without writing it (consent refused). */
   static discardPending(): void {
     LastViewSnapshot.cancelPending();
+    LastViewSnapshot.latest = null;
+  }
+
+  /**
+   * The view the NEXT launch will read back if this process dies now: the latest one
+   * recorded, whether or not its write has happened yet.
+   */
+  static current(): Record<string, Object> | null {
+    return LastViewSnapshot.latest;
   }
 
   private static cancelPending(): void {
@@ -127,6 +141,10 @@ export class LastViewSnapshot {
     const pending: Record<string, Object> | null = LastViewSnapshot.pending;
     if (pending !== null && LastViewSnapshot.sessionIdOf(pending) === sessionId) {
       LastViewSnapshot.cancelPending();
+    }
+    const latest: Record<string, Object> | null = LastViewSnapshot.latest;
+    if (latest !== null && LastViewSnapshot.sessionIdOf(latest) === sessionId) {
+      LastViewSnapshot.latest = null;
     }
     if (LastViewSnapshot.recordedSessionId !== sessionId) {
       return;

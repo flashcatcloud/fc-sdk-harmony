@@ -132,5 +132,99 @@ export default function crashAttributionTests(): void {
         expect(countOf(second, 'error')).assertEqual(5); // 3 + two crashes
         expect((second['_dd'] as Record<string, Object>)['document_version']).assertEqual(6);
       });
+
+    // A replayed crash is assembled by the NEXT launch, which may run another app version or
+    // user (an update or sign-out in between): the crashed run's own document is what counts.
+    it('restampsAReplayedCrashWithTheCrashedRunsIdentity', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0,
+      (): void => {
+        const snapshot: Record<string, Object> = viewEvent(0, 4, {
+          'version': '1.0.0',
+          'os': { 'name': 'HarmonyOS', 'version': '5.0.1' } as Record<string, Object>,
+          'connectivity': { 'status': 'not_connected' } as Record<string, Object>
+        });
+        const error: Record<string, Object> = RumFeature.withCrashedRunContext(replayedError(), snapshot);
+        expect(error['version']).assertEqual('1.0.0');
+        expect((error['os'] as Record<string, Object>)['version']).assertEqual('5.0.1');
+        expect((error['usr'] as Record<string, Object>)['id']).assertEqual('u-1');
+        expect((error['connectivity'] as Record<string, Object>)['status']).assertEqual('not_connected');
+        // What identifies the crash itself is untouched.
+        expect((error['error'] as Record<string, Object>)['is_crash']).assertEqual(true);
+        expect((error['session'] as Record<string, Object>)['id']).assertEqual('session-1');
+      });
+
+    it('mergesTheSessionAttributesUnderTheCrashsOwn', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0,
+      (): void => {
+        const snapshot: Record<string, Object> = viewEvent(0, 4, {
+          'context': { 'channel': 'store', 'crash.memory.rss_kb': 1 } as Record<string, Object>
+        });
+        const error: Record<string, Object> = RumFeature.withCrashedRunContext(replayedError(), snapshot);
+        const context: Record<string, Object> = error['context'] as Record<string, Object>;
+        expect(context['channel']).assertEqual('store');
+        expect(context['crash.memory.rss_kb']).assertEqual(178544);
+      });
+
+    // The crashed run's document is authoritative: a field an event mapper removed from it
+    // (a scrubbed user) must not come back from the replaying launch, another user's maybe.
+    it('doesNotFillWhatTheCrashedRunsDocumentLacks', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0,
+      (): void => {
+        const snapshot: Record<string, Object> = {};
+        const full: Record<string, Object> = viewEvent(0, 4);
+        for (const key of Object.keys(full)) {
+          if (key !== 'usr') {
+            snapshot[key] = full[key];
+          }
+        }
+        const error: Record<string, Object> = RumFeature.withCrashedRunContext(replayedError(), snapshot);
+        expect(error['usr'] === undefined).assertTrue();
+        expect(error['version'] === undefined).assertTrue();
+        expect((error['context'] as Record<string, Object>)['crash.memory.rss_kb']).assertEqual(178544);
+      });
+
+    // The snapshot goes on to be the crash-marked view document and the source of any further
+    // replay: an event mapper editing the error in place must not reach it.
+    it('leavesBothInputsUntouched', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0,
+      (): void => {
+        const snapshot: Record<string, Object> = viewEvent(0, 4, {
+          'context': { 'channel': 'store' } as Record<string, Object>
+        });
+        const error: Record<string, Object> = replayedError();
+        const out: Record<string, Object> = RumFeature.withCrashedRunContext(error, snapshot);
+        (out['usr'] as Record<string, Object>)['id'] = 'scrubbed';
+        (out['context'] as Record<string, Object>)['channel'] = 'scrubbed';
+        expect((snapshot['usr'] as Record<string, Object>)['id']).assertEqual('u-1');
+        expect((snapshot['context'] as Record<string, Object>)['channel']).assertEqual('store');
+        expect((error['usr'] as Record<string, Object>)['id']).assertEqual('u-2');
+        expect(error['version']).assertEqual('2.0.0');
+      });
+
+    it('sharesNoNestedValueWithTheSnapshot', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0,
+      (): void => {
+        const snapshot: Record<string, Object> = viewEvent(0, 4, {
+          'usr': { 'id': 'u-1', 'profile': { 'tier': 'gold' } as Record<string, Object> } as Record<string, Object>,
+          'context': { 'cart': { 'items': 3 } as Record<string, Object> } as Record<string, Object>
+        });
+        const out: Record<string, Object> = RumFeature.withCrashedRunContext(replayedError(), snapshot);
+        ((out['usr'] as Record<string, Object>)['profile'] as Record<string, Object>)['tier'] = 'scrubbed';
+        ((out['context'] as Record<string, Object>)['cart'] as Record<string, Object>)['items'] = 0;
+        const usr: Record<string, Object> = snapshot['usr'] as Record<string, Object>;
+        expect((usr['profile'] as Record<string, Object>)['tier']).assertEqual('gold');
+        const context: Record<string, Object> = snapshot['context'] as Record<string, Object>;
+        expect((context['cart'] as Record<string, Object>)['items']).assertEqual(3);
+      });
   });
+}
+
+/** A crash as the replaying launch assembles it: its own version and user, crash-only context. */
+function replayedError(): Record<string, Object> {
+  return {
+    'type': 'error',
+    'date': 1700000001000,
+    'session': { 'id': 'session-1', 'type': 'user' } as Record<string, Object>,
+    'version': '2.0.0',
+    'os': { 'name': 'HarmonyOS', 'version': '5.1.0' } as Record<string, Object>,
+    'usr': { 'id': 'u-2' } as Record<string, Object>,
+    'connectivity': { 'status': 'connected' } as Record<string, Object>,
+    'error': { 'is_crash': true, 'message': 'NativeCrash' } as Record<string, Object>,
+    'context': { 'crash.memory.rss_kb': 178544 } as Record<string, Object>
+  };
 }
