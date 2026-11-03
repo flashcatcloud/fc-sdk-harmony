@@ -92,10 +92,6 @@ export class RumFeature implements Feature, FeatureEventReceiver {
   }
 
   onInitialize(): void {
-    // RUM may be enabled after the core already found the app in the foreground.
-    if (this.core.isAppInForeground()) {
-      AppForegroundHistory.foundInForeground();
-    }
     this.core.setEventReceiver(RUM_FEATURE_NAME, this);
     FlashcatLog.d('rum: event receiver registered');
 
@@ -283,6 +279,8 @@ export class RumFeature implements Feature, FeatureEventReceiver {
     RumAutoInstrumentation.reset(); // make tap/nav trackers inert after stop
     RumEventMapperHolder.reset(); // clear the event mapper
     LastViewSnapshot.reset(); // stop snapshotting through a torn-down core
+    // A later SDK's core reports the app state afresh (its startup probe included).
+    AppForegroundHistory.reset();
     this.previousRunView = null;
     this.monitor = null;
     // Reset the global so post-stop GlobalRumMonitor.get() returns the no-op, not a
@@ -294,6 +292,14 @@ export class RumFeature implements Feature, FeatureEventReceiver {
    * events from the Crash feature (hiAppEvent → CrashEventMapper). */
   onReceive(event: Record<string, Object>): void {
     const type: Object | undefined = event['type'];
+    // Recorded before anything else reacts to the same message.
+    if (type === 'app_background') {
+      AppForegroundHistory.enteredBackground();
+      return;
+    }
+    if (type === 'app_foreground' || type === 'app_foreground_detected') {
+      AppForegroundHistory.enteredForeground();
+    }
     if (type === 'network_request_started' || type === 'network_request_completed'
       || type === 'network_request_failed') {
       // setTrackNetworkRequests(false) must actually disable resource capture —
@@ -325,7 +331,6 @@ export class RumFeature implements Feature, FeatureEventReceiver {
       this.activeJsCrashPolicy = policy.length > 0 ? policy : null;
       FlashcatLog.d(`rum.error: crash policy owner enabled policy=${policy}`);
     } else if (type === 'app_foreground') {
-      AppForegroundHistory.enteredForeground();
       // Back from the background, where an in-process timer may not have run for
       // hours. Whether this is worth a request is the controller's call (the
       // console has to have asked for it, and the values have to be stale).
@@ -334,10 +339,7 @@ export class RumFeature implements Feature, FeatureEventReceiver {
         m.refreshRemoteConfig();
       }
       this.triggerActiveBeacon();
-    } else if (type === 'app_foreground_detected') {
-      AppForegroundHistory.foundInForeground();
-      this.triggerActiveBeacon();
-    } else if (type === 'consent_granted' || type === 'user_changed') {
+    } else if (type === 'app_foreground_detected' || type === 'consent_granted' || type === 'user_changed') {
       this.triggerActiveBeacon();
     } else if (type === 'keep_alive') {
       // App backgrounded — refresh the active view so its final time_spent is sent

@@ -53,10 +53,10 @@ class CapturingScope implements FeatureScope {
   }
 }
 
-/** A core whose foreground state the test sets, as the app state callback would. */
+/** A core whose own foreground flag the test sets; the history must not depend on it. */
 class FakeCore implements SdkCore {
   readonly name: string = 'test';
-  foreground: boolean = true;
+  foreground: boolean = false;
 
   registerFeature(_feature: Feature): void {}
   getFeature(_featureName: string): FeatureScope | null {
@@ -91,19 +91,35 @@ class FakeCore implements SdkCore {
 interface Harness {
   scope: CapturingScope;
   core: FakeCore;
+  feature: RumFeature;
   app: RumApplicationScope;
 }
 
-/** A view open at t0 in an app that is in the foreground. */
-function harness(t0: number): Harness {
-  AppForegroundHistory.reset();
-  AppForegroundHistory.foundInForeground();
+/**
+ * A view open at t0. App state reaches the history the way it does in the SDK:
+ * as core messages delivered to the RUM feature.
+ */
+function harness(t0: number, fresh: boolean = true): Harness {
+  if (fresh) {
+    AppForegroundHistory.reset();
+  }
   const scope: CapturingScope = new CapturingScope();
   const core: FakeCore = new FakeCore();
+  const feature: RumFeature = new RumFeature(core, new RumConfigurationBuilder('app-1').build());
   const app: RumApplicationScope = new RumApplicationScope(scope, core, 'app-1', 100);
   const view: RumRawEvent = { kind: 'startView', key: 'home', name: 'Home', attributes: {}, timestampMs: t0 };
   app.handleEvent(view);
-  return { scope, core, app };
+  return { scope, core, feature, app };
+}
+
+/** A core message, with the core's own flag updated first as the core does. */
+function send(h: Harness, type: string): void {
+  if (type === 'app_background') {
+    h.core.foreground = false;
+  } else if (type === 'app_foreground' || type === 'app_foreground_detected') {
+    h.core.foreground = true;
+  }
+  h.feature.onReceive({ 'type': type });
 }
 
 function startResource(app: RumApplicationScope, key: string, timestampMs: number): void {
@@ -130,15 +146,9 @@ function failResource(app: RumApplicationScope, key: string, timestampMs: number
   app.handleEvent(e);
 }
 
-function resourceOf(event: Record<string, Object>): Record<string, Object> {
-  return event['resource'] as Record<string, Object>;
-}
-
-/** The app goes to the background and returns: the core's flag, then its bus message. */
-function backgroundAndReturn(core: FakeCore): void {
-  core.foreground = false;
-  core.foreground = true;
-  AppForegroundHistory.enteredForeground();
+function durationOf(scope: CapturingScope, index: number): Object | undefined {
+  const resource: Record<string, Object> = scope.ofType('resource')[index]['resource'] as Record<string, Object>;
+  return resource['duration'];
 }
 
 export default function resourceDurationBackgroundTests(): void {
@@ -146,25 +156,27 @@ export default function resourceDurationBackgroundTests(): void {
     it('aRequestRunInTheForegroundKeepsItsDuration', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
       const t0: number = Date.now() - 1000;
       const h: Harness = harness(t0);
+      send(h, 'app_foreground');
       startResource(h.app, 'r1', t0 + 100);
       stopResource(h.app, 'r1', t0 + 350, 200);
 
-      const resources: Array<Record<string, Object>> = h.scope.ofType('resource');
-      expect(resources.length).assertEqual(1);
-      expect(resourceOf(resources[0])['duration'] as number).assertEqual(250 * 1e6);
+      expect(h.scope.ofType('resource').length).assertEqual(1);
+      expect(durationOf(h.scope, 0) as number).assertEqual(250 * 1e6);
     });
 
     it('aRequestSpanningAStayInTheBackgroundIsSentWithoutDuration',
       TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
         const t0: number = Date.now() - 3 * HOUR;
         const h: Harness = harness(t0);
+        send(h, 'app_foreground');
         startResource(h.app, 'r1', t0 + 100);
-        backgroundAndReturn(h.core);
+        send(h, 'app_background');
+        send(h, 'app_foreground');
         stopResource(h.app, 'r1', t0 + 2 * HOUR, 0); // resumed hours later, failed
 
         const resources: Array<Record<string, Object>> = h.scope.ofType('resource');
         expect(resources.length).assertEqual(1);
-        const resource: Record<string, Object> = resourceOf(resources[0]);
+        const resource: Record<string, Object> = resources[0]['resource'] as Record<string, Object>;
         expect(Object.keys(resource).indexOf('duration')).assertEqual(-1);
         expect(resource['status_code'] as number).assertEqual(0);
         expect(resource['url'] as string).assertEqual('https://api.example.com/items');
@@ -178,27 +190,26 @@ export default function resourceDurationBackgroundTests(): void {
       TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
         const t0: number = Date.now() - 3 * HOUR;
         const h: Harness = harness(t0);
+        send(h, 'app_foreground');
         startResource(h.app, 'r1', t0 + 100);
-        h.core.foreground = false; // the completion callback runs first on thaw
-        stopResource(h.app, 'r1', t0 + 2 * HOUR, 200);
+        send(h, 'app_background');
+        stopResource(h.app, 'r1', t0 + 2 * HOUR, 200); // runs on thaw, before app_foreground
+        send(h, 'app_foreground');
 
-        const resources: Array<Record<string, Object>> = h.scope.ofType('resource');
-        expect(resources.length).assertEqual(1);
-        expect(resourceOf(resources[0])['duration']).assertUndefined();
-        expect(resourceOf(resources[0])['status_code'] as number).assertEqual(200);
+        expect(h.scope.ofType('resource').length).assertEqual(1);
+        expect(durationOf(h.scope, 0)).assertUndefined();
       });
 
-    it('aRequestStoppedWhileStillInTheBackgroundIsSentWithoutDuration',
+    it('aRequestStartedInTheBackgroundIsSentWithoutDuration',
       TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
-        const t0: number = Date.now() - 1000;
+        const t0: number = Date.now() - 3 * HOUR;
         const h: Harness = harness(t0);
+        send(h, 'app_background');
         startResource(h.app, 'r1', t0 + 100);
-        h.core.foreground = false;
-        stopResource(h.app, 'r1', t0 + 600, 200);
+        send(h, 'app_foreground');
+        stopResource(h.app, 'r1', t0 + 2 * HOUR, 200);
 
-        const resources: Array<Record<string, Object>> = h.scope.ofType('resource');
-        expect(resources.length).assertEqual(1);
-        expect(resourceOf(resources[0])['duration']).assertUndefined();
+        expect(durationOf(h.scope, 0)).assertUndefined();
       });
 
     it('aFailedRequestSpanningTheBackgroundIsStillReportedAsANetworkError',
@@ -206,7 +217,8 @@ export default function resourceDurationBackgroundTests(): void {
         const t0: number = Date.now() - 3 * HOUR;
         const h: Harness = harness(t0);
         startResource(h.app, 'r1', t0 + 100);
-        backgroundAndReturn(h.core);
+        send(h, 'app_background');
+        send(h, 'app_foreground');
         failResource(h.app, 'r1', t0 + 2 * HOUR);
 
         const errors: Array<Record<string, Object>> = h.scope.ofType('error');
@@ -221,52 +233,81 @@ export default function resourceDurationBackgroundTests(): void {
     it('aRequestStartedAfterTheReturnKeepsItsDuration', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
       const t0: number = Date.now() - 1000;
       const h: Harness = harness(t0);
-      backgroundAndReturn(h.core);
+      send(h, 'app_background');
+      send(h, 'app_foreground');
       startResource(h.app, 'r1', t0 + 100);
       stopResource(h.app, 'r1', t0 + 180, 200);
 
-      const resources: Array<Record<string, Object>> = h.scope.ofType('resource');
-      expect(resourceOf(resources[0])['duration'] as number).assertEqual(80 * 1e6);
+      expect(durationOf(h.scope, 0) as number).assertEqual(80 * 1e6);
     });
 
     it('aRequestMadeWhileTheAppIsStillLaunchingKeepsItsDuration',
       TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
         const t0: number = Date.now() - 1000;
-        const h: Harness = harness(t0);
-        AppForegroundHistory.reset(); // nothing seen yet: the first window is not up
-        h.core.foreground = false;
+        const h: Harness = harness(t0); // initialized in onCreate: no state reported yet
         startResource(h.app, 'early', t0 + 100);
         startResource(h.app, 'spanning', t0 + 100);
-        stopResource(h.app, 'early', t0 + 200, 200); // before the first foreground
-        // The launch's first entry into the foreground is not a return.
-        h.core.foreground = true;
-        AppForegroundHistory.enteredForeground();
+        stopResource(h.app, 'early', t0 + 200, 200);
+        send(h, 'app_foreground'); // the launch's first window reaches the foreground
         stopResource(h.app, 'spanning', t0 + 400, 200);
 
-        const resources: Array<Record<string, Object>> = h.scope.ofType('resource');
-        expect(resources.length).assertEqual(2);
-        expect(resourceOf(resources[0])['duration'] as number).assertEqual(100 * 1e6);
-        expect(resourceOf(resources[1])['duration'] as number).assertEqual(300 * 1e6);
+        expect(h.scope.ofType('resource').length).assertEqual(2);
+        expect(durationOf(h.scope, 0) as number).assertEqual(100 * 1e6);
+        expect(durationOf(h.scope, 1) as number).assertEqual(300 * 1e6);
       });
 
-    it('theFeatureRecordsTheCoreForegroundSignals', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
-      AppForegroundHistory.reset();
-      const core: FakeCore = new FakeCore();
-      core.foreground = true; // RUM enabled after the core found the app in the foreground
-      const feature: RumFeature = new RumFeature(core,
-        new RumConfigurationBuilder('app-1').setTrackActiveDevices(false).build());
-      feature.onInitialize();
-      expect(AppForegroundHistory.hasBeenInForeground()).assertTrue();
-      expect(AppForegroundHistory.returnCount()).assertEqual(0);
-      feature.onReceive({ 'type': 'app_foreground' });
-      expect(AppForegroundHistory.returnCount()).assertEqual(1);
-      feature.onStop();
+    it('aStartupProbeAnsweringBeforeTheLaunchCallbackIsNoReturn',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        const t0: number = Date.now() - 1000;
+        const h: Harness = harness(t0);
+        send(h, 'app_foreground_detected');
+        startResource(h.app, 'r1', t0 + 100);
+        send(h, 'app_foreground'); // the launch's own state callback, after the probe
+        stopResource(h.app, 'r1', t0 + 300, 200);
 
-      AppForegroundHistory.reset();
-      feature.onReceive({ 'type': 'app_foreground_detected' });
-      expect(AppForegroundHistory.hasBeenInForeground()).assertTrue();
-      expect(AppForegroundHistory.returnCount()).assertEqual(0);
-      AppForegroundHistory.reset();
+        expect(durationOf(h.scope, 0) as number).assertEqual(200 * 1e6);
+      });
+
+    it('aStayInTheBackgroundIsSeenWithoutAnyForegroundReport',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        // The startup probe never answered and the launch callback came before
+        // RUM listened: the only state ever reported is the stay itself.
+        const t0: number = Date.now() - 3 * HOUR;
+        const h: Harness = harness(t0);
+        h.core.foreground = true;
+        startResource(h.app, 'r1', t0 + 100);
+        send(h, 'app_background');
+        send(h, 'app_foreground');
+        stopResource(h.app, 'r1', t0 + 2 * HOUR, 200);
+
+        expect(durationOf(h.scope, 0)).assertUndefined();
+      });
+
+    it('aRestartedSdkInTheForegroundKeepsDurationsBeforeItsProbeAnswers',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        const t0: number = Date.now() - 1000;
+        const first: Harness = harness(t0);
+        send(first, 'app_foreground');
+        send(first, 'app_background'); // stopped while in the background
+        first.feature.onStop();
+
+        // Started again once the app is back; its core has reported nothing yet.
+        const h: Harness = harness(t0, false); // only what the SDK itself forgets
+        startResource(h.app, 'r1', t0 + 100);
+        stopResource(h.app, 'r1', t0 + 150, 200);
+        send(h, 'app_foreground_detected');
+
+        expect(durationOf(h.scope, 0) as number).assertEqual(50 * 1e6);
+      });
+
+    it('stoppingTheSdkForgetsTheReportedState', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+      const h: Harness = harness(Date.now());
+      send(h, 'app_background');
+      expect(AppForegroundHistory.inBackground()).assertTrue();
+      expect(AppForegroundHistory.backgroundCount()).assertEqual(1);
+      h.feature.onStop();
+      expect(AppForegroundHistory.inBackground()).assertFalse();
+      expect(AppForegroundHistory.backgroundCount()).assertEqual(0);
     });
   });
 }

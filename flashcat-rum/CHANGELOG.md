@@ -9,9 +9,11 @@
   background is reported without `resource.duration`. HarmonyOS freezes a
   backgrounded process, so the request's callbacks only run once the app is
   back, and the wall-clock time from start to completion could span hours
-  the request never ran. The event is still sent with its URL, method,
-  status code and size; requests that start and complete in the foreground
-  are unchanged.
+  the request never ran. This covers a request that starts while the app is
+  in the background, and one in flight when the app moves there. The event
+  is still sent with its URL, method, status code and size; requests that
+  start and complete in the foreground are unchanged, including requests
+  made while the app is still launching.
 
 ## 0.7.5
 

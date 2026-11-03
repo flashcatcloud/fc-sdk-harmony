@@ -1,4 +1,4 @@
-import { FeatureScope, FlashcatContext, EventWriter, SdkCore } from '@flashcatcloud/core';
+import { FeatureScope, FlashcatContext, EventWriter } from '@flashcatcloud/core';
 import { util } from '@kit.ArkTS';
 import { RumRawEvent } from './RumScope';
 import { RumEventAssembler } from '../assembly/RumEventAssembler';
@@ -19,7 +19,6 @@ export const SPAN_ID_ATTRIBUTE: string = '_dd.span_id';
  */
 export class RumResourceScope {
   private readonly featureScope: FeatureScope;
-  private readonly core: SdkCore;
   private readonly applicationId: string;
   private readonly sessionId: string;
   private readonly viewId: string;
@@ -29,14 +28,14 @@ export class RumResourceScope {
   private readonly url: string;
   private readonly method: string;
   private readonly startedAtMs: number;
-  private readonly foregroundReturnsAtStart: number;
+  private readonly backgroundCountAtStart: number;
+  private readonly startedInBackground: boolean;
   private readonly traceId: string | undefined;
   private readonly spanId: string | undefined;
   private readonly attributes: Record<string, Object>;
 
   constructor(
     featureScope: FeatureScope,
-    core: SdkCore,
     applicationId: string,
     sessionId: string,
     viewId: string,
@@ -45,7 +44,6 @@ export class RumResourceScope {
     start: RumRawEvent
   ) {
     this.featureScope = featureScope;
-    this.core = core;
     this.applicationId = applicationId;
     this.sessionId = sessionId;
     this.viewId = viewId;
@@ -55,7 +53,8 @@ export class RumResourceScope {
     this.url = start.url ?? '';
     this.method = start.method ?? 'GET';
     this.startedAtMs = start.timestampMs;
-    this.foregroundReturnsAtStart = AppForegroundHistory.returnCount();
+    this.backgroundCountAtStart = AppForegroundHistory.backgroundCount();
+    this.startedInBackground = AppForegroundHistory.inBackground();
     // Pull the trace correlation out of the attributes; everything else passes through.
     const src: Record<string, Object> = start.attributes;
     const traceVal: Object | undefined = src[TRACE_ID_ATTRIBUTE];
@@ -107,14 +106,14 @@ export class RumResourceScope {
   }
 
   /**
-   * The app returned from the background since the start, or is not in the
-   * foreground now (the completion can run before the return is reported).
-   * Not being in the foreground before the app first got there is launching,
-   * not a stay in the background.
+   * The app was in the background at some point between start and now: it
+   * was there at the start, or has moved there since. A completion that runs
+   * while the process thaws, before the app is reported back, is covered by
+   * the move that preceded it.
    */
   private spannedBackground(): boolean {
-    return AppForegroundHistory.returnCount() !== this.foregroundReturnsAtStart
-      || (AppForegroundHistory.hasBeenInForeground() && !this.core.isAppInForeground());
+    return this.startedInBackground
+      || AppForegroundHistory.backgroundCount() !== this.backgroundCountAtStart;
   }
 
   /** Start attributes overlaid with stop-time attributes (stop wins). */
