@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+- A native crash or app freeze reported on the next launch is attributed to
+  the last view on file only when that view was written by the process that
+  faulted. A launch that crashed before RUM started writes no view, so the
+  file still held the run before it, and the crash took that run's session,
+  user, app version and attributes. Such a crash is now reported in the
+  current session. The last-view file records the writing process; a file
+  written by an earlier version is not used.
+
 ## 0.7.6
 
 - A crash reported on the next launch (native crash, app freeze, or a JS
