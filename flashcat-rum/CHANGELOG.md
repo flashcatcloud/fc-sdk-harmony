@@ -11,7 +11,8 @@
   own context keys (`crash.*`) take precedence over a session attribute of
   the same name. A field the event mapper removed from that view is not
   filled in from the relaunch. A persisted JS crash takes the view's
-  values only when it happened in that very view.
+  values only when it happened in that very view, and a native crash or
+  freeze dated before the last view started is not attributed to it.
 - When a session that holds its events back until an error asks the event
   mapper at crash time whether a persisted crash will be kept, the mapper
   now sees the same event the next launch replays, session attributes
