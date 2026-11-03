@@ -101,6 +101,47 @@ export default function traceHostSafetyTests(): void {
         expect(options.header === undefined).assertTrue();
       });
 
+    it('flashcatHttpReportsTheNetworkKitsReasonOnTheResource',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, async (): Promise<void> => {
+        // The BusinessError the kit rejects with is not an Error instance: its message and code
+        // must still reach the failed resource, not a generic reason.
+        const sent: Array<Record<string, Object>> = [];
+        const rum: Record<string, Object> = {
+          sendEvent: (event: Record<string, Object>): void => {
+            sent.push(event);
+          }
+        };
+        const core: SdkCore = {
+          isActive: (): boolean => true,
+          getTrackingConsent: (): TrackingConsent => TrackingConsent.GRANTED,
+          getFeature: (name: string): Object | null => name === 'rum' ? rum : null,
+          updateFeatureContext: (): void => {}
+        } as Object as SdkCore;
+        const kit: Record<string, Object> = http as Object as Record<string, Object>;
+        const realCreate: Object = kit['createHttp'];
+        kit['createHttp'] = (): Object => {
+          return {
+            request: (): Promise<Object> => Promise.reject({ 'code': 2300028, 'message': 'timeout' } as Object),
+            destroy: (): void => {}
+          } as Object;
+        };
+        try {
+          FlashcatTrace.enable(new TraceConfiguration(100), core);
+          try {
+            await FlashcatHttp.request('https://api.example.com/items', { method: http.RequestMethod.GET });
+          } catch (_e) {
+            // the host's own error; asserted elsewhere
+          }
+        } finally {
+          kit['createHttp'] = realCreate;
+          FlashcatTrace.enable(new TraceConfiguration(100), coreWithConsent(TrackingConsent.PENDING));
+        }
+        const failed: Array<Record<string, Object>> = sent.filter(
+          (e: Record<string, Object>): boolean => e['type'] === 'network_request_failed');
+        expect(failed.length).assertEqual(1);
+        expect(failed[0]['message']).assertEqual('timeout (code 2300028)');
+      });
+
     it('aCleanupFailureNeverReplacesTheHostsResponse',
       TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, async (): Promise<void> => {
         const response: Record<string, Object> = { 'responseCode': 200, 'result': 'ok', 'header': {} };

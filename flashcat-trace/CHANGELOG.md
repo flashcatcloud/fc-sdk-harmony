@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- A failed request reports the network kit's own reason and error code on
+  its RUM error (for example `Failed to connect to the server (code
+  2300007)`), for `FlashcatHttp` and the rcp interceptor. The kits reject
+  with BusinessError objects, which are not `Error` instances, so every
+  failure was reported as `network request failed`.
+
 ## 0.7.6
 
 - No changes; released together with `@flashcatcloud/rum` 0.7.6.
