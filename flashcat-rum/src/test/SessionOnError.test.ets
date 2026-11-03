@@ -1669,7 +1669,7 @@ export default function sessionOnErrorTests(): void {
         feature.onInitialize();
         feature.attachMonitor(monitor2);
         feature.onReceive({ 'type': 'crash_report', 'message': 'NativeCrash', 'stack': '#00 pc', 'crash_kind': 'crash',
-          'timestamp_ms': Date.now() - 1000 } as Record<string, Object>);
+          'timestamp_ms': Date.now() } as Record<string, Object>);
         for (const e of next.written) {
           expect(sessionOf(e)['id'] === discarded).assertFalse();
         }
@@ -1691,7 +1691,7 @@ export default function sessionOnErrorTests(): void {
         core2.rumScope = next2;
         feature2.onInitialize();
         feature2.onReceive({ 'type': 'crash_report', 'message': 'NativeCrash', 'stack': '#00 pc', 'crash_kind': 'crash',
-          'timestamp_ms': Date.now() - 1000 } as Record<string, Object>);
+          'timestamp_ms': Date.now() } as Record<string, Object>);
         expect(next2.ofType('error').length).assertEqual(1);
         expect(sessionOf(next2.ofType('error')[0])['id']).assertEqual(released);
       });
@@ -1718,7 +1718,7 @@ export default function sessionOnErrorTests(): void {
         const feature: RumFeature = new RumFeature(core, new RumConfigurationBuilder('app-1').build());
         feature.onInitialize();
         feature.onReceive({ 'type': 'crash_report', 'message': 'NativeCrash', 'stack': '#00 pc',
-          'crash_kind': 'crash', 'timestamp_ms': Date.now() - 1000,
+          'crash_kind': 'crash', 'timestamp_ms': Date.now(),
           'memory': { 'rss_kb': 1 } as Record<string, Object> } as Record<string, Object>);
         const errors: Array<Record<string, Object>> = next.ofType('error');
         expect(errors.length).assertEqual(1);
@@ -1736,11 +1736,51 @@ export default function sessionOnErrorTests(): void {
         feature2.onInitialize();
         feature2.attachMonitor(monitor2);
         feature2.onReceive({ 'type': 'crash_report', 'message': 'NativeCrash', 'stack': '#00 pc',
-          'crash_kind': 'crash', 'timestamp_ms': Date.now() - 1000 } as Record<string, Object>);
+          'crash_kind': 'crash', 'timestamp_ms': Date.now() } as Record<string, Object>);
         const orphans: Array<Record<string, Object>> = orphan.ofType('error');
         expect(orphans.length).assertEqual(1);
         expect(orphans[0]['version']).assertEqual('2.0.0');
         expect((orphans[0]['context'] as Record<string, Object>)['channel'] === undefined).assertTrue();
+      });
+
+    it('aFaultOlderThanTheLastViewIsNotAttributedToItsRun',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        // A fault reported now but dated before the snapshot's view started did not happen in
+        // that view: neither its session nor that run's user, version and attributes are the
+        // crash's. It goes to the current session, as the current run.
+        const core: FakeCore = new FakeCore();
+        const scope: CapturingScope = new CapturingScope();
+        const monitor: DefaultRumMonitor = featureWith(core, scope, 100, false);
+        monitor.addAttribute('channel', 'store');
+        monitor.startView('home', 'home');
+        const snapshotted: string = core.featureContext['session.id'] as string;
+        LastViewSnapshot.flush();
+        core.appVersion = '2.0.0';
+        const next: CapturingScope = new CapturingScope();
+        next.lastView = scope.lastView;
+        next.core = core;
+        core.rumScope = next;
+        const configuration: RumConfiguration = new RumConfigurationBuilder('app-1').build();
+        const feature: RumFeature = new RumFeature(core, configuration);
+        feature.onInitialize(); // loads the snapshot
+        const monitor2: DefaultRumMonitor = new DefaultRumMonitor(core, next, configuration);
+        monitor2.stopKeepAlive();
+        feature.attachMonitor(monitor2);
+        monitor2.startView('home', 'home');
+        const replay = (faultAtMs: number): Record<string, Object> => {
+          feature.onReceive({ 'type': 'crash_report', 'message': 'NativeCrash', 'stack': '#00 pc',
+            'crash_kind': 'crash', 'timestamp_ms': faultAtMs } as Record<string, Object>);
+          const errors: Array<Record<string, Object>> = next.ofType('error');
+          return errors[errors.length - 1];
+        };
+        const older: Record<string, Object> = replay(Date.now() - 60 * 1000);
+        expect(sessionOf(older)['id'] === snapshotted).assertFalse();
+        expect(older['version']).assertEqual('2.0.0');
+        expect((older['context'] as Record<string, Object>)['channel'] === undefined).assertTrue();
+        // Negative control: the same snapshot takes a fault dated inside its view.
+        const inside: Record<string, Object> = replay(Date.now());
+        expect(sessionOf(inside)['id']).assertEqual(snapshotted);
+        expect(inside['version']).assertEqual('1.0.0');
       });
 
     it('aJsIncidentReplayedIntoItsSessionCarriesThatRunsContext',
