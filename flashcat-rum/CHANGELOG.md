@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+- New: an active-device beacon, on by default
+  (`RumConfigurationBuilder.setTrackActiveDevices(false)` turns it off). At
+  most once per local day per device, user and app version, the SDK sends a
+  small request of its own to `/api/v2/rum/active` when the app starts in or
+  returns to the foreground, when tracking consent is granted and when a new
+  user is set, so that a device counts as active that day even when its
+  session is too short to upload events. It is sent only in the foreground
+  with consent granted, regardless of session sampling, and carries the app,
+  OS and device fields and the anonymous and user ids. One that cannot be
+  delivered is kept and sent on a later launch, up to 72 hours after the app
+  was used; revoking consent discards it.
+
 ## 0.7.7
 
 - A native crash or app freeze reported on the next launch is attributed to
