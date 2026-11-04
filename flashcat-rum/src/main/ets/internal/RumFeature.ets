@@ -22,7 +22,7 @@ import { RumAutoInstrumentation } from './RumAutoInstrumentation';
 import { RumEventAssembler } from './assembly/RumEventAssembler';
 import { RumNavigationTracker } from './RumNavigationTracker';
 import { RumEventMapperHolder } from './RumEventMapperHolder';
-import { LastViewSnapshot } from './LastViewSnapshot';
+import { LastView, LastViewSnapshot } from './LastViewSnapshot';
 import { AppForegroundHistory } from './AppForegroundHistory';
 
 // Internal core receiver owning the crash sidecar files. MessageBus contract.
@@ -63,6 +63,8 @@ export class RumFeature implements Feature, FeatureEventReceiver {
   // The last view the PREVIOUS process wrote, loaded once at init. Held for the
   // whole run because a hiAppEvent replay can arrive well after startup.
   private previousRunView: Record<string, Object> | null = null;
+  /** The process that wrote previousRunView, -1 when unknown. */
+  private previousRunPid: number = -1;
 
   constructor(core: SdkCore, configuration: RumConfiguration) {
     this.core = core;
@@ -126,7 +128,9 @@ export class RumFeature implements Feature, FeatureEventReceiver {
     // nothing can have overwritten the file yet — read a moment later (e.g. at
     // crash-replay time) and it would already describe the CURRENT session,
     // silently attributing the crash to the run that survived it.
-    this.previousRunView = LastViewSnapshot.read();
+    const lastView: LastView | null = LastViewSnapshot.read();
+    this.previousRunView = lastView !== null ? lastView.view : null;
+    this.previousRunPid = lastView !== null ? lastView.pid : -1;
     if (this.previousRunView !== null) {
       // Consume it: the file describes the run that just ended, and it must not
       // outlive this load. Otherwise a launch that crashes BEFORE writing a view
@@ -267,6 +271,7 @@ export class RumFeature implements Feature, FeatureEventReceiver {
     // A later SDK's core reports the app state afresh (its startup probe included).
     AppForegroundHistory.reset();
     this.previousRunView = null;
+    this.previousRunPid = -1;
     this.monitor = null;
     // Reset the global so post-stop GlobalRumMonitor.get() returns the no-op, not a
     // monitor wired to a torn-down core.
@@ -368,10 +373,15 @@ export class RumFeature implements Feature, FeatureEventReceiver {
     // No in-process snapshot — this is a fault the SDK could not observe as it
     // happened (native signal, freeze, watcher-only JsError). Fall back to the
     // last ViewEvent persisted before the process died, which still identifies
-    // the session and view the user was actually in.
+    // the session and view the user was actually in — provided that process is
+    // the one that faulted. A launch that died before RUM started wrote no view,
+    // so the file still holds the run before it; its session, user and version
+    // are not the crash's.
     if (originalSessionId.length === 0 && !RumFeature.isReplayTooOld(event)) {
       const snapshot: Record<string, Object> | null = this.previousRunView;
-      if (snapshot !== null && this.writeCrashFromLastView(event, snapshot)) {
+      const faultPid: number | undefined = RumFeature.optionalPositiveNumber(event['process_id']);
+      if (snapshot !== null && faultPid !== undefined && faultPid === this.previousRunPid &&
+        this.writeCrashFromLastView(event, snapshot)) {
         event['delivered'] = true;
         return;
       }

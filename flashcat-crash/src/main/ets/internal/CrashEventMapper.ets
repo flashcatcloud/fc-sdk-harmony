@@ -175,6 +175,12 @@ export class CrashEventMapper {
       'build_id': CrashEventMapper.buildId(params, binaryImages),
       'source_type': SOURCE_TYPE
     };
+    // The process that faulted: the next launch matches it against the process that wrote the
+    // last view it would attribute the fault to.
+    const pid: Object | undefined = params['pid'];
+    if (typeof pid === 'number' && pid > 0) {
+      event['process_id'] = pid;
+    }
     const threads: Array<Record<string, Object>> = CrashEventMapper.threads(params, exception, kind);
     if (threads.length > 0) {
       event['threads'] = threads;

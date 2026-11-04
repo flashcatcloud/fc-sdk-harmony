@@ -67,11 +67,13 @@ function registerInterceptors(instance: AxiosInstance): void {
         // failures. A response means the request completed, so it stays a
         // resource carrying that status — matching how the rcp interceptor and
         // FlashcatHttp report a 404. Only a request that never got a response
-        // becomes a network error.
+        // becomes a network error. @ohos/axios rejects a transport failure with
+        // its internal http request object in `response`, which has no status:
+        // only an HTTP status makes it a response.
         const key: string = takeKey(error.config);
         if (key.length > 0) {
           const response: AxiosResponse | undefined = error.response;
-          if (response !== undefined) {
+          if (response !== undefined && typeof response.status === 'number' && response.status > 0) {
             FlashcatTrace.stopTracedResource(key, response.status, sizeOf(response));
           } else {
             FlashcatTrace.failTracedResource(key, error.message);

@@ -183,7 +183,7 @@ export default function crashEventMapperTests(): void {
         'TypeError: boom\n    at run (Index.ets:1:2)',
         'fp-1',
         JsCrashPolicy.REPORT_THEN_EXIT,
-        '0.7.6',
+        '0.7.7',
         'session-1',
         'view-1',
         'Home');
@@ -209,7 +209,7 @@ export default function crashEventMapperTests(): void {
         'TypeError: boom\n    at run (Index.ets:1:2)',
         'fp-recovered',
         JsCrashPolicy.REPORT_AND_RECOVER,
-        '0.7.6',
+        '0.7.7',
         'session-1',
         'view-1',
         'Home');
@@ -386,6 +386,14 @@ export default function crashEventMapperTests(): void {
       expect(out['sys_free_kb']).assertUndefined();
       expect(out['sys_avail_kb']).assertUndefined();
       expect(Object.keys(out).length).assertEqual(2);
+    });
+
+    it('carriesTheFaultingProcess', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+      // The next launch matches it against the process that wrote the last view.
+      const params: Record<string, Object> = nativeCrashWithThreads();
+      expect(CrashEventMapper.fromAppCrash(params)['process_id']).assertEqual(100);
+      // Negative control: no pid in the system event, none on the report.
+      expect(CrashEventMapper.fromAppCrash({ 'crash_type': 'JsError' })['process_id']).assertUndefined();
     });
 
     it('toleratesMissingFields', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {

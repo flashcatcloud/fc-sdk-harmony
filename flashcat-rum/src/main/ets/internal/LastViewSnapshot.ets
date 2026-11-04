@@ -1,4 +1,5 @@
 import { FlashcatLog } from '@flashcatcloud/core';
+import { process } from '@kit.ArkTS';
 
 /**
  * Durable snapshot of the most recently written ViewEvent.
@@ -19,6 +20,11 @@ import { FlashcatLog } from '@flashcatcloud/core';
  * Writes are best-effort and must never disturb event delivery — a failing
  * snapshot degrades crash attribution, it does not drop data.
  *
+ * The file also records the id of the process that wrote it. A fault reported on the
+ * next launch belongs to that view only when it is that process's fault: a launch that
+ * died before writing a view of its own (a crash before RUM started) leaves the file of
+ * the run before it in place.
+ *
  * Writes are coalesced: a view is re-emitted after every action, resource and
  * error, and rewriting the file each time cost the host a synchronous write per
  * event. The latest view lands at most WRITE_DELAY_MS later, and immediately
@@ -31,6 +37,12 @@ const WRITE_DELAY_MS: number = 1000;
 export type LastViewWriter = (serialized: string) => void;
 export type LastViewReader = () => string;
 export type LastViewDeleter = () => void;
+
+/** A view read back from file, and the process that wrote it (-1 when the file does not say). */
+export interface LastView {
+  view: Record<string, Object>;
+  pid: number;
+}
 
 export class LastViewSnapshot {
   private static writer: LastViewWriter | null = null;
@@ -97,7 +109,7 @@ export class LastViewSnapshot {
       return;
     }
     try {
-      w(JSON.stringify(event));
+      w(JSON.stringify({ 'pid': process.pid, 'view': event } as Record<string, Object>));
       LastViewSnapshot.recordedSessionId = LastViewSnapshot.sessionIdOf(event);
     } catch (e) {
       // Snapshotting is an optimisation for the NEXT launch; never let it
@@ -162,7 +174,7 @@ export class LastViewSnapshot {
   }
 
   /** Read back the snapshot, or null when absent/corrupt. */
-  static read(): Record<string, Object> | null {
+  static read(): LastView | null {
     const r: LastViewReader | null = LastViewSnapshot.reader;
     if (r === null) {
       return null;
@@ -173,10 +185,16 @@ export class LastViewSnapshot {
         return null;
       }
       const parsed: Object = JSON.parse(serialized) as Object;
-      if (typeof parsed !== 'object' || Array.isArray(parsed)) {
+      if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
         return null;
       }
-      return parsed as Record<string, Object>;
+      const record: Record<string, Object> = parsed as Record<string, Object>;
+      const view: Object | undefined = record['view'];
+      if (typeof view !== 'object' || view === null || Array.isArray(view)) {
+        return null; // not written by this format (an older SDK's file): no usable view
+      }
+      const pid: Object | undefined = record['pid'];
+      return { view: view as Record<string, Object>, pid: typeof pid === 'number' ? pid : -1 };
     } catch (e) {
       FlashcatLog.e(`rum.lastview: snapshot unreadable: ${e instanceof Error ? e.message : `${e}`}`);
       return null;
