@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Crash and freeze reports carry the id of the process that faulted
+  (`process_id`), so RUM can tell whether its last view belongs to it.
+
 ## 0.7.6
 
 - No changes; released together with `@flashcatcloud/rum` 0.7.6.
