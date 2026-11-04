@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.7.7
 
 - A native crash or app freeze reported on the next launch is attributed to
   the last view on file only when that view was written by the process that

@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.7.7
 
 - A failed request reports the network kit's own reason and error code on
   its RUM error (for example `Failed to connect to the server (code

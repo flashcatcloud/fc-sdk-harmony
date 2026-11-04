@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.7.7
 
 - Crash and freeze reports carry the id of the process that faulted
   (`process_id`), so RUM can tell whether its last view belongs to it.

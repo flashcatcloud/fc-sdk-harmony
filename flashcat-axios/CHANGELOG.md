@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.7.7
 
 - A request that fails before any response (connection refused, DNS
   failure, timeout) is reported as a network error. @ohos/axios rejects
