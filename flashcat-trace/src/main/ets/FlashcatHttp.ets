@@ -2,7 +2,7 @@ import { http } from '@kit.NetworkKit';
 import { FlashcatLog } from '@flashcatcloud/core';
 import { TraceContext } from './internal/TraceContext';
 import {
-  contentTypeOf, shouldInjectTraceHeaders, headerStringValue, setHeaderValue
+  contentTypeOf, failureMessage, shouldInjectTraceHeaders, headerStringValue, setHeaderValue
 } from './internal/TraceInterceptor';
 import { FlashcatTrace } from './FlashcatTrace';
 import { TracedResource } from './TracedResource';
@@ -66,7 +66,7 @@ export class FlashcatHttp {
     } catch (e) {
       if (resourceKey.length > 0) {
         try {
-          FlashcatTrace.failTracedResource(resourceKey, e instanceof Error ? e.message : 'network request failed');
+          FlashcatTrace.failTracedResource(resourceKey, failureMessage(e as Object));
         } catch (error) {
           FlashcatHttp.logFailure('request failure', error);
         }

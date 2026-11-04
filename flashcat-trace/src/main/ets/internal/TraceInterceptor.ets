@@ -200,7 +200,22 @@ function notifyRequestCompleted(core: SdkCore | null, key: string, response: rcp
 }
 
 function notifyRequestFailed(core: SdkCore | null, key: string, e: Object): void {
-  publishResourceFailed(core, key, e instanceof Error ? e.message : 'network request failed');
+  publishResourceFailed(core, key, failureMessage(e));
+}
+
+/**
+ * Why a request failed, as reported on its RUM error: the error's own message, and its code
+ * when it has one. HarmonyOS network kits reject with BusinessError objects ({ code, message }),
+ * which are not Error instances.
+ */
+export function failureMessage(e: Object | undefined): string {
+  const record: Record<string, Object> =
+    typeof e === 'object' && e !== null ? e as Record<string, Object> : {};
+  const message: Object | undefined = record['message'];
+  const text: string = typeof message === 'string' && message.length > 0 ? message : 'network request failed';
+  const code: Object | undefined = record['code'];
+  const hasCode: boolean = typeof code === 'number' || (typeof code === 'string' && code.length > 0);
+  return hasCode ? `${text} (code ${code})` : text;
 }
 
 // ---- Reusable resource-lifecycle publishers (shared by the rcp interceptor and
