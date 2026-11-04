@@ -1,6 +1,8 @@
 import { describe, expect, it, Level, Size, TestType } from '@ohos/hypium';
 import { AxiosInstance, InternalAxiosRequestConfig, AxiosResponse, AxiosError } from '@ohos/axios';
 import { trackAxios } from '../main/ets/AxiosTracking';
+import { SdkCore, TrackingConsent } from '@flashcatcloud/core';
+import { FlashcatTrace, TraceConfiguration } from '@flashcatcloud/trace';
 
 type RequestHook = (config: InternalAxiosRequestConfig) => InternalAxiosRequestConfig;
 type ResponseHook = (response: AxiosResponse) => AxiosResponse;
@@ -113,6 +115,71 @@ export default function axiosHostSafetyTests(): void {
         } });
         expect((fake.responseHook as ResponseHook)(response as Object as AxiosResponse) ===
           (response as Object as AxiosResponse)).assertTrue();
+      });
+  });
+
+  describe('AxiosTransportFailure', (): void => {
+    /** Drives one request through the interceptors; returns the bus events trackAxios caused. */
+    const failWith = async (error: Record<string, Object>): Promise<Array<Record<string, Object>>> => {
+      const sent: Array<Record<string, Object>> = [];
+      const rum: Record<string, Object> = {
+        sendEvent: (event: Record<string, Object>): void => {
+          sent.push(event);
+        }
+      };
+      const core: SdkCore = {
+        isActive: (): boolean => true,
+        getTrackingConsent: (): TrackingConsent => TrackingConsent.GRANTED,
+        getFeature: (name: string): Object | null => name === 'rum' ? rum : null,
+        updateFeatureContext: (): void => {}
+      } as Object as SdkCore;
+      FlashcatTrace.enable(new TraceConfiguration(100), core);
+      try {
+        const fake: FakeInstance = new FakeInstance();
+        trackAxios(fake.asInstance());
+        const headers: Record<string, Object> = {
+          'has': (): boolean => false,
+          'set': (): void => {}
+        };
+        const config: InternalAxiosRequestConfig =
+          { 'url': 'https://api.example.com/a', 'method': 'get', 'headers': headers } as Object as InternalAxiosRequestConfig;
+        (fake.requestHook as RequestHook)(config);
+        error['config'] = config;
+        try {
+          await (fake.errorHook as ErrorHook)(error as Object as AxiosError);
+        } catch (_e) {
+          // the host's own rejection
+        }
+      } finally {
+        FlashcatTrace.enable(new TraceConfiguration(100), {
+          isActive: (): boolean => true,
+          getTrackingConsent: (): TrackingConsent => TrackingConsent.PENDING,
+          getFeature: (): null => null,
+          updateFeatureContext: (): void => {}
+        } as Object as SdkCore);
+      }
+      return sent.filter((e: Record<string, Object>): boolean => e['type'] !== 'network_request_started');
+    };
+
+    it('aConnectionFailureIsANetworkErrorEvenWithTheAdaptersRequestAsResponse',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, async (): Promise<void> => {
+        // @ohos/axios rejects a transport failure with its internal http request object in
+        // `response` (no status): that is not a response from the server.
+        const failed: Array<Record<string, Object>> = await failWith({
+          'message': '{"code":2300007,"message":"Failed to connect to the server"}',
+          'response': { 'destroy': (): void => {} } as Record<string, Object>
+        });
+        expect(failed.length).assertEqual(1);
+        expect(failed[0]['type']).assertEqual('network_request_failed');
+        expect(String(failed[0]['message']).includes('2300007')).assertTrue();
+        // Negative control: a real HTTP error response stays a resource with its status.
+        const completed: Array<Record<string, Object>> = await failWith({
+          'message': 'Request failed with status code 500',
+          'response': { 'status': 500, 'data': '' } as Record<string, Object>
+        });
+        expect(completed.length).assertEqual(1);
+        expect(completed[0]['type']).assertEqual('network_request_completed');
+        expect(completed[0]['status_code']).assertEqual(500);
       });
   });
 }
