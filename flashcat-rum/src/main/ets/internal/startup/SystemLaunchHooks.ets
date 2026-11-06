@@ -8,15 +8,18 @@ import {
 } from '../vitals/SystemFrameSources';
 
 /**
- * How long ago this process started, in milliseconds: the elapsed clock minus
- * the elapsed time at which the process started. Not `process.uptime()`: that
- * is whole seconds, rounded up, so a process age taken from it is up to a
- * second too old. Null when either is unavailable or the two do not make a
- * process age (negative, not finite).
+ * How long ago this process started, in milliseconds: the clock without deep
+ * sleep minus the process start time, which is read on that clock. Against the
+ * clock with deep sleep a process a tenth of a second old measured as old as
+ * all the device's sleep since boot (18 h on a phone), so every cold start was
+ * taken for a warm one. Not `process.uptime()`: that is whole seconds, rounded
+ * up. Null when either is unavailable or the two do not make a process age
+ * (negative, not finite).
  */
 export function systemProcessAgeMs(): number | null {
   try {
-    const ageMs: number = systemElapsedMs() - process.getStartRealtime();
+    const ageMs: number =
+      systemDateTime.getUptime(systemDateTime.TimeType.ACTIVE, false) - process.getStartRealtime();
     return Number.isFinite(ageMs) && ageMs >= 0 ? ageMs : null;
   } catch (_e) {
     return null;

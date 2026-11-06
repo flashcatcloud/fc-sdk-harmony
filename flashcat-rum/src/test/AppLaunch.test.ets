@@ -816,6 +816,12 @@ export default function appLaunchTests(): void {
       expect(systemProcessAgeMs()).assertEqual(147);
       p['startRealtimeMs'] = 345_007;
       expect(systemProcessAgeMs()).assertNull();
+      // A phone that slept 18.6 h since boot: the process start is on the clock
+      // without deep sleep, so the sleep is not part of the process age.
+      p['startRealtimeMs'] = 344_859;
+      clock['asleepMs'] = 66_859_885;
+      expect(systemProcessAgeMs()).assertEqual(147);
+      clock['asleepMs'] = 0;
       clock['elapsedMs'] = null;
       p['uptimeSeconds'] = 0;
       p['startRealtimeMs'] = 0;
