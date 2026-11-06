@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.7.8
 
 - New: an active-device beacon, on by default
   (`RumConfigurationBuilder.setTrackActiveDevices(false)` turns it off). At
@@ -12,7 +12,8 @@
   with consent granted, regardless of session sampling, and carries the app,
   OS and device fields and the anonymous and user ids. One that cannot be
   delivered is kept and sent on a later launch, up to 72 hours after the app
-  was used; revoking consent discards it.
+  was used; revoking consent discards it. Turning it off also discards
+  what an earlier launch stored.
 
 ## 0.7.7
 
