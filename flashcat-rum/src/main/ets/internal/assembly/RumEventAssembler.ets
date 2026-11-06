@@ -6,6 +6,7 @@ const VIEW_URL_ATTRIBUTE: string = 'view.url';
 const BUILD_ID_ATTRIBUTE: string = 'build_id';
 const ERROR_BINARY_IMAGES_ATTRIBUTE: string = 'error.binary_images';
 const ERROR_CATEGORY_ATTRIBUTE: string = 'error.category';
+const ERROR_TYPE_ATTRIBUTE: string = 'error.type';
 const ERROR_SOURCE_TYPE_ATTRIBUTE: string = 'error.source_type';
 const ERROR_META_CODE_TYPE_ATTRIBUTE: string = 'error.meta.code_type';
 const ERROR_THREADS_ATTRIBUTE: string = 'error.threads';
@@ -114,6 +115,10 @@ export class RumEventAssembler {
     error['id'] = util.generateRandomUUID(true);
     error['message'] = message;
     error['source'] = source;
+    const errorType: string = RumEventAssembler.asString(attributes[ERROR_TYPE_ATTRIBUTE]);
+    if (errorType.length > 0) {
+      error['type'] = errorType;
+    }
     if (stack !== undefined) {
       error['stack'] = stack;
     }
@@ -396,7 +401,7 @@ export class RumEventAssembler {
 
   private static isInternalAttribute(key: string): boolean {
     return key === VIEW_URL_ATTRIBUTE || key === BUILD_ID_ATTRIBUTE ||
-      key === ERROR_BINARY_IMAGES_ATTRIBUTE || key === ERROR_CATEGORY_ATTRIBUTE ||
+      key === ERROR_BINARY_IMAGES_ATTRIBUTE || key === ERROR_CATEGORY_ATTRIBUTE || key === ERROR_TYPE_ATTRIBUTE ||
       key === ERROR_SOURCE_TYPE_ATTRIBUTE || key === ERROR_META_CODE_TYPE_ATTRIBUTE ||
       key === ERROR_THREADS_ATTRIBUTE;
   }

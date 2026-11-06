@@ -180,12 +180,13 @@ export class RumFeature implements Feature, FeatureEventReceiver {
         onUnhandledException: (errMsg: string) => {
           try {
             FlashcatLog.d(`rum.error: onUnhandledException len=${errMsg.length}`);
-            this.reportObservedError(errMsg, 'unhandled', RumFeature.errorMessageFromText(errMsg));
+            this.reportObservedError(errMsg, 'unhandled', RumFeature.errorMessageFromText(errMsg),
+              RumFeature.errorTypeFromText(errMsg));
           } catch (e) {
             FlashcatLog.e(`rum.error: onUnhandledException handling failed: ${RumFeature.errorText(e)}`);
             // Still let the crash policy act (exit / restart): an uncaught exception
             // must not survive just because its text could not be read.
-            this.reportObservedError('', 'unhandled', 'Unknown error');
+            this.reportObservedError('', 'unhandled', 'Unknown error', 'Error');
           }
         },
         onException: (errObject: Error) => {
@@ -199,7 +200,8 @@ export class RumFeature implements Feature, FeatureEventReceiver {
           try {
             const text: string = RumFeature.labeledErrorText(errObject);
             FlashcatLog.d(`rum.error: onException len=${text.length}`);
-            this.reportObservedError(text, 'exception', RumFeature.messageFromError(errObject));
+            this.reportObservedError(text, 'exception', RumFeature.messageFromError(errObject),
+              RumFeature.errorName(errObject));
           } catch (e) {
             FlashcatLog.e(`rum.error: onException handling failed: ${RumFeature.errorText(e)}`);
           }
@@ -717,6 +719,7 @@ export class RumFeature implements Feature, FeatureEventReceiver {
   /** Pure: extract native-symbolication metadata from a crash_report bus event. */
   static crashAttributes(event: Record<string, Object>): Record<string, Object> {
     const attributes: Record<string, Object> = {};
+    RumFeature.copyNonEmptyString(event, attributes, 'error_type', 'error.type');
     const images: Object | undefined = event['binary_images'];
     if (Array.isArray(images) && images.length > 0) {
       attributes['error.binary_images'] = images;
@@ -811,7 +814,7 @@ export class RumFeature implements Feature, FeatureEventReceiver {
       RumFeature.asString(event['message']));
   }
 
-  private reportObservedError(stackText: string, callback: string, message: string): void {
+  private reportObservedError(stackText: string, callback: string, message: string, type: string): void {
     if (this.handlingError) {
       FlashcatLog.d('rum.error: skipped re-entrant unhandled error');
       return;
@@ -866,7 +869,7 @@ export class RumFeature implements Feature, FeatureEventReceiver {
           if (control['report_async'] === true) {
             asyncReportAttempted = true;
             try {
-              this.reportUnhandledToMonitor(stackText, message);
+              this.reportUnhandledToMonitor(stackText, message, type);
             } catch (reportError) {
               // Reporting failure must never bypass policy-driven termination.
               FlashcatLog.e(
@@ -876,7 +879,7 @@ export class RumFeature implements Feature, FeatureEventReceiver {
           if (control['report_crash'] === true) {
             asyncReportAttempted = true;
             try {
-              this.reportLiveCrash(stackText, message);
+              this.reportLiveCrash(stackText, message, type);
             } catch (reportError) {
               FlashcatLog.e(`rum.crash: live crash report failed: ${RumFeature.errorText(reportError)}`);
             }
@@ -892,7 +895,7 @@ export class RumFeature implements Feature, FeatureEventReceiver {
         // The crash module is there but its policy never reached RUM: its
         // policy, not RUM's default, decides about exiting — report only.
         asyncReportAttempted = true;
-        this.reportUnhandledToMonitor(stackText, message);
+        this.reportUnhandledToMonitor(stackText, message, type);
         return;
       }
       // No crash module. Keeping the process alive here would change the host's
@@ -908,7 +911,7 @@ export class RumFeature implements Feature, FeatureEventReceiver {
       }
       this.terminatingAtMs = nowMs;
       try {
-        this.reportLiveCrash(stackText, message);
+        this.reportLiveCrash(stackText, message, type);
       } catch (reportError) {
         // Reporting failure must never bypass the exit.
         FlashcatLog.e(`rum.error: crash report failed: ${RumFeature.errorText(reportError)}`);
@@ -918,7 +921,7 @@ export class RumFeature implements Feature, FeatureEventReceiver {
       FlashcatLog.e(`rum.error: policy path failed: ${RumFeature.errorText(e)}`);
       if (!asyncReportAttempted) {
         try {
-          this.reportUnhandledToMonitor(stackText, message);
+          this.reportUnhandledToMonitor(stackText, message, type);
         } catch (fallbackError) {
           FlashcatLog.e(`rum.error: fallback report failed: ${RumFeature.errorText(fallbackError)}`);
         }
@@ -928,7 +931,7 @@ export class RumFeature implements Feature, FeatureEventReceiver {
     }
   }
 
-  private reportUnhandledToMonitor(stackText: string, message: string): void {
+  private reportUnhandledToMonitor(stackText: string, message: string, type: string): void {
     if (!this.configuration.trackErrors) {
       // trackErrors=false: suppress the non-crash live copy. The crash-flagged
       // paths (markCrash + durable replay, reportLiveCrash) do not come through here.
@@ -940,7 +943,9 @@ export class RumFeature implements Feature, FeatureEventReceiver {
       FlashcatLog.d(`rum.error: report unhandled message="${message}"`);
       // Frames only: the labeled callback text is for fingerprinting; sending
       // it as error.stack made the backend title issues "Error name".
-      m.reportError(message, RumErrorSource.SOURCE, RumFeature.stackFramesOnly(stackText), false, 'unhandled');
+      const attributes: Record<string, Object> = { 'error.type': type };
+      m.reportError(message, RumErrorSource.SOURCE, RumFeature.stackFramesOnly(stackText), false, 'unhandled',
+        attributes);
       // An uncaught exception may be the last thing this process does: what the
       // session held for it leaves now, not after a jitter it may not live out.
       m.releaseScheduledWithheld();
@@ -954,7 +959,7 @@ export class RumFeature implements Feature, FeatureEventReceiver {
    * is_crash error of the live session, counted in the active view. It is a
    * crash, not an automatic error capture, so trackErrors does not gate it.
    */
-  private reportLiveCrash(stackText: string, message: string): void {
+  private reportLiveCrash(stackText: string, message: string, type: string): void {
     const m: DefaultRumMonitor | null = this.monitor;
     if (m === null) {
       FlashcatLog.d('rum.crash: live crash dropped because monitor is null');
@@ -962,7 +967,7 @@ export class RumFeature implements Feature, FeatureEventReceiver {
     }
     FlashcatLog.d(`rum.crash: report live crash message="${message}"`);
     m.reportError(message, RumErrorSource.SOURCE, RumFeature.stackFramesOnly(stackText), true, 'unhandled',
-      RumFeature.crashAttributes({}));
+      RumFeature.crashAttributes({ 'error_type': type }));
     // The policy keeps the process alive, but another observer of the same
     // exception may still end it (e.g. a crash reporter exiting from its own
     // onException): what the session held leaves now, not after a jitter.
@@ -987,7 +992,7 @@ export class RumFeature implements Feature, FeatureEventReceiver {
           text,
           false,
           'unhandled',
-          RumFeature.rejectionAttributes());
+          RumFeature.rejectionAttributes(reason));
       } else {
         FlashcatLog.d('rum.error: rejection dropped because monitor is null');
       }
@@ -1180,11 +1185,16 @@ export class RumFeature implements Feature, FeatureEventReceiver {
     return `${reason}`; // null/undefined/number/boolean — readable primitives
   }
 
-  static rejectionAttributes(): Record<string, Object> {
-    return {
+  /** A rejection with an Error is typed by its name; any other reason has no type, as in the browser SDK. */
+  static rejectionAttributes(reason: Object): Record<string, Object> {
+    const attributes: Record<string, Object> = {
       'error.category': 'Unhandled Promise Rejection',
       'error.source_type': 'promise'
     };
+    if (reason instanceof Error) {
+      attributes['error.type'] = RumFeature.errorName(reason);
+    }
+    return attributes;
   }
 
   private static firstLine(text: string): string {
@@ -1212,10 +1222,38 @@ export class RumFeature implements Feature, FeatureEventReceiver {
   /** "Name: message" from an Error object, independent of its stack text.
    *  Name alone when the message is empty — no dangling "Error: ". */
   static messageFromError(errObject: Error): string {
-    const rawName: string = RumFeature.errorField(errObject, 'name');
-    const name: string = rawName.length > 0 ? rawName : 'Error';
+    const name: string = RumFeature.errorName(errObject);
     const message: string = RumFeature.errorField(errObject, 'message');
     return message.length > 0 ? `${name}: ${message}` : name;
+  }
+
+  /** The exception name (error.type) of whatever the runtime handed the error callback; 'Error' without one. */
+  static errorName(errObject: Error): string {
+    const name: string = RumFeature.errorField(errObject, 'name');
+    return name.length > 0 ? name : 'Error';
+  }
+
+  /**
+   * Derives error.type from unhandled-exception callback text: the labeled
+   * "Error name:" field, else the "Name: message" header when the name reads
+   * as an exception name (…Error / …Exception), else 'Error'. The crash
+   * module's CrashFingerprint.partsFromText names the replayed crash the same way.
+   */
+  static errorTypeFromText(text: string): string {
+    const lines: string[] = text.split('\n');
+    if (lines.length >= 2 && lines[0].startsWith('Error name:') && lines[1].startsWith('Error message:')) {
+      const name: string = lines[0].substring('Error name:'.length).trim();
+      return name.length > 0 ? name : 'Error';
+    }
+    const header: string = RumFeature.errorMessageFromText(text);
+    const separator: number = header.indexOf(':');
+    if (separator > 0) {
+      const candidate: string = header.substring(0, separator).trim();
+      if (candidate.endsWith('Error') || candidate.endsWith('Exception')) {
+        return candidate;
+      }
+    }
+    return 'Error';
   }
 
   /**
