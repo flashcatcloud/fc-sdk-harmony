@@ -157,6 +157,20 @@ export default function crashReportTests(): void {
         expect(RumFeature.errorMessageFromText(bannerWithFrames)).assertEqual('Uncaught exception');
       });
 
+    it('dropsTheNotYetInitializedSourceMapBanner',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        // A fault during launch, before the runtime has loaded the sourcemap.
+        const launchStack: string = 'SourceMap is not initialized yet \n' +
+        '    at onCreate (entry|entry|1.0.0|src/main/ets/entryability/EntryAbility.ts:19:19)\n' +
+        'HybridStack:\n#00 pc 00000000004b1990 /system/lib64/platformsdk/libark_jsruntime.so';
+        const text: string = 'Error name:Error\nError message:launch failed\nStacktrace:\n' + launchStack;
+        expect(RumFeature.stackFramesOnly(text).indexOf('    at onCreate')).assertEqual(0);
+        expect(RumFeature.errorMessageFromText(launchStack)).assertEqual('Uncaught exception');
+        // Negative control: the text after the banner still yields its header.
+        expect(RumFeature.errorMessageFromText('SourceMap is not initialized yet \nTypeError: x\nat f (a.ets:1:1)'))
+          .assertEqual('TypeError: x');
+      });
+
     it('emptyMessagesProduceNameAloneNotDanglingColon',
       TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
         // Production symptom: events titled "Error name:Error" with no stack —

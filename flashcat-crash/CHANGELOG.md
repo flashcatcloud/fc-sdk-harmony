@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- An ArkTS crash during launch no longer reports the runtime's
+  `SourceMap is not initialized yet` line as the first line of its stack, and
+  the line is never taken for the crash's message. A stack replayed from the
+  system's crash event now drops the same runtime lines as one captured live
+  (also `Cannot get SourceMap info`).
+
 ## 0.7.7
 
 - Crash and freeze reports carry the id of the process that faulted

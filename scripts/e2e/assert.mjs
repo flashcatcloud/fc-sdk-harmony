@@ -46,7 +46,7 @@ if (phase === 'events') {
   const titles = errors.map((e) => (e.error && e.error.message) || '');
   check('no [object Object] titles', titles.every((t) => !t.includes('[object')), JSON.stringify(titles));
   check('no raw "Error name:" titles', titles.every((t) => !t.startsWith('Error name:')), JSON.stringify(titles));
-  check('no sourcemap-banner titles', titles.every((t) => !t.startsWith('Cannot get SourceMap info')), JSON.stringify(titles));
+  check('no sourcemap-banner titles', titles.every((t) => !t.startsWith('Cannot get SourceMap info') && !t.startsWith('SourceMap is not initialized yet')), JSON.stringify(titles));
   check('BusinessError rejection unwrapped', titles.some((t) => t.includes('e2e biz error (code 1234567)')), JSON.stringify(titles));
   check('every error has error.id', errors.every((e) => e.error && typeof e.error.id === 'string' && e.error.id.length > 0));
 } else if (phase === 'crash') {

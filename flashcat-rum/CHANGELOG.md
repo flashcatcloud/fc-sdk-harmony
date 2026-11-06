@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- An uncaught exception's stack and message skip the runtime's
+  `SourceMap is not initialized yet` line, as they already skipped
+  `Cannot get SourceMap info`.
+
 ## 0.7.7
 
 - A native crash or app freeze reported on the next launch is attributed to

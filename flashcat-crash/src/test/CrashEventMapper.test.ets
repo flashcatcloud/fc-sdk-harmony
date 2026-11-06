@@ -396,6 +396,24 @@ export default function crashEventMapperTests(): void {
       expect(CrashEventMapper.fromAppCrash({ 'crash_type': 'JsError' })['process_id']).assertUndefined();
     });
 
+    it('dropsTheSourceMapBannerOfALaunchCrash', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+      // An ArkTS crash during launch as the next launch receives it in APP_CRASH.
+      const exception: Record<string, Object> = {
+        'name': 'Error', 'message': 'launch failed', 'stack': 'SourceMap is not initialized yet \n' +
+        '    at onCreate (entry|entry|1.0.0|src/main/ets/entryability/EntryAbility.ts:19:19)\n' +
+        'HybridStack:\n#00 pc 00000000004b1990 /system/lib64/platformsdk/libark_jsruntime.so'
+      };
+      const ev: Record<string, Object> = CrashEventMapper.fromAppCrash({ 'crash_type': 'JsError', 'exception': exception });
+      expect((ev['stack'] as string).indexOf('    at onCreate')).assertEqual(0);
+      expect((ev['stack'] as string).indexOf('SourceMap')).assertEqual(-1);
+      expect((ev['stack'] as string).indexOf('#00 pc 00000000004b1990')).assertLarger(0);
+      expect(ev['message']).assertEqual('Error: launch failed');
+      // Negative control: a stack without a banner reaches RUM unchanged.
+      const plain: Record<string, Object> = { 'name': 'Error', 'message': 'x', 'stack': '    at f (a.ets:1:1)' };
+      expect(CrashEventMapper.fromAppCrash({ 'crash_type': 'JsError', 'exception': plain })['stack'])
+        .assertEqual('    at f (a.ets:1:1)');
+    });
+
     it('toleratesMissingFields', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
       const empty: Record<string, Object> = {};
       const ev: Record<string, Object> = CrashEventMapper.fromAppCrash(empty);

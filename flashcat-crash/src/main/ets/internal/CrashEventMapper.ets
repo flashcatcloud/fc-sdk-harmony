@@ -1,5 +1,5 @@
 import { RumErrorSource } from './RumErrorSourceLite';
-import { CrashIncidentRecord } from './CrashIncident';
+import { CrashFingerprint, CrashIncidentRecord } from './CrashIncident';
 import { JsCrashPolicy } from '../CrashConfiguration';
 
 /**
@@ -139,11 +139,13 @@ export class CrashEventMapper {
     const reason: string = CrashEventMapper.asString(exception['message']);
     const crashType: string = CrashEventMapper.asString(params['crash_type']);
 
-    // Stack: prefer an inline string (ArkTS/JS `Error.stack`); native (cppcrash)
+    // Stack: prefer an inline string (ArkTS/JS `Error.stack`), minus the
+    // runtime's sourcemap banners (a fault during launch starts its stack with
+    // "SourceMap is not initialized yet"); native (cppcrash)
     // faults carry no inline stack — the frames live in `exception.frames` as an
     // array of objects, which we serialize into the text form fc-rum's
     // stack.ParseHarmony understands.
-    let stack: string = CrashEventMapper.asString(exception['stack']);
+    let stack: string = CrashFingerprint.framesOnly(CrashEventMapper.asString(exception['stack']));
     if (stack.length === 0) {
       stack = CrashEventMapper.framesToStack(exception['frames']);
     }

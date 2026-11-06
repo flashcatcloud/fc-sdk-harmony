@@ -33,9 +33,10 @@ const CRASH_STORAGE_TARGET: string = '__flashcat_crash_storage';
 const LAST_VIEW_MAX_AGE_MS: number = 4 * 60 * 60 * 1000;
 // Event fields that belong to the run a replayed crash happened in, not the launch replaying it.
 const CRASHED_RUN_FIELDS: string[] = ['version', 'os', 'usr', 'connectivity'];
-// OpenHarmony runtime banner substituted for the translated stack when the
-// module's sourcemap cannot be loaded. Never a meaningful error message.
-const SOURCEMAP_BANNER: string = 'Cannot get SourceMap info';
+// OpenHarmony runtime banners written before the stack when the module's
+// sourcemap cannot be loaded, or is not loaded yet (a fault during launch).
+// Neither is a frame nor a meaningful error message.
+const SOURCEMAP_BANNERS: string[] = ['Cannot get SourceMap info', 'SourceMap is not initialized yet'];
 // Cap for a JSON-serialized rejection reason used as message/stack text.
 const MAX_REJECTION_REASON_CHARS: number = 500;
 
@@ -1198,7 +1199,7 @@ export class RumFeature implements Feature, FeatureEventReceiver {
     for (const line of text.split('\n')) {
       const trimmed: string = line.trim();
       if (trimmed.startsWith('Error name:') || trimmed.startsWith('Error message:')
-        || trimmed === 'Stacktrace:' || trimmed.startsWith(SOURCEMAP_BANNER)) {
+        || trimmed === 'Stacktrace:' || RumFeature.isSourceMapBanner(trimmed)) {
         continue;
       }
       kept.push(line);
@@ -1207,6 +1208,10 @@ export class RumFeature implements Feature, FeatureEventReceiver {
       kept.shift();
     }
     return kept.join('\n');
+  }
+
+  private static isSourceMapBanner(line: string): boolean {
+    return SOURCEMAP_BANNERS.some((banner: string): boolean => line.startsWith(banner));
   }
 
   /** "Name: message" from an Error object, independent of its stack text.
@@ -1238,7 +1243,7 @@ export class RumFeature implements Feature, FeatureEventReceiver {
     }
     for (let i: number = 0; i < lines.length; i++) {
       const line: string = lines[i].trim();
-      if (line.length === 0 || line.startsWith(SOURCEMAP_BANNER)) {
+      if (line.length === 0 || RumFeature.isSourceMapBanner(line)) {
         continue;
       }
       if (line.startsWith('at ') || line.startsWith('#')) {
