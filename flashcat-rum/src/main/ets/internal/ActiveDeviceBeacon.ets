@@ -172,6 +172,9 @@ export class ActiveDeviceBeacon {
       this.again = false;
       const revocations: number = this.revocations;
       if (!(await this.deliverStored(revocations))) {
+        if (this.revocations !== revocations) {
+          continue; // revoked meanwhile: a grant since then asks for a new run
+        }
         return; // the intake is unreachable: the live beacon would fail the same way
       }
       // Read after the stored beacon went out: that may have taken past midnight.
@@ -182,11 +185,14 @@ export class ActiveDeviceBeacon {
         continue;
       }
       const beacon: Beacon = { payload: ActiveDeviceBeacon.payloadFor(context), usedAtMs: usedAtMs, key: key };
-      const outcome: Outcome = await this.deliver(beacon, false);
+      const outcome: Outcome = await this.deliver(beacon, false, revocations);
       // Consent can be revoked while the request is on the wire: nothing that
       // names the device or the user is written after that.
-      if (!this.consentGranted() || this.revocations !== revocations) {
+      if (!this.consentGranted()) {
         return;
+      }
+      if (this.revocations !== revocations) {
+        continue; // granted again meanwhile: that grant asked for a new run
       }
       if (outcome === Outcome.SENT) {
         this.core.writeSetting(SENT_KEY, key);
@@ -203,14 +209,14 @@ export class ActiveDeviceBeacon {
       return true;
     }
     const stored: Beacon | null = ActiveDeviceBeacon.parse(raw);
-    const outcome: Outcome = stored === null ? Outcome.REJECTED : await this.deliver(stored, true);
+    const outcome: Outcome = stored === null ? Outcome.REJECTED : await this.deliver(stored, true, revocations);
+    if (!this.consentGranted() || this.revocations !== revocations) {
+      return false; // revoked while the request was on the wire: storage was cleared then
+    }
     if (outcome === Outcome.FAILED || outcome === Outcome.ABORTED) {
       return false;
     }
     this.core.writeSetting(PENDING_KEY, null); // sent, refused or too old
-    if (!this.consentGranted() || this.revocations !== revocations) {
-      return false; // revoked while the request was on the wire
-    }
     if (outcome === Outcome.SENT && stored !== null
       && stored.key === ActiveDeviceBeacon.keyFor(this.core.getContext(), this.now())) {
       this.core.writeSetting(SENT_KEY, stored.key);
@@ -218,10 +224,10 @@ export class ActiveDeviceBeacon {
     return true;
   }
 
-  private async deliver(beacon: Beacon, late: boolean): Promise<Outcome> {
+  private async deliver(beacon: Beacon, late: boolean, revocations: number): Promise<Outcome> {
     for (let attempt: number = 0; ; attempt++) {
-      if (!this.consentGranted()) {
-        return Outcome.ABORTED;
+      if (!this.consentGranted() || this.revocations !== revocations) {
+        return Outcome.ABORTED; // a beacon from before a revocation is not retried
       }
       // Foreground only, retries included: one that comes due after the app
       // moved to the background keeps the beacon for the next return instead.

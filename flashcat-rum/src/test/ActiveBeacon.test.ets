@@ -379,7 +379,27 @@ export default function activeBeaconTests(): void {
       beacon.forget(); // the feature's reaction to the revocation
       release(); // consent is GRANTED again by the time the answers arrive
       await settle();
+      expect(sender.urls.length).assertEqual(1); // the old beacon is not retried either
       expect(core.settings.size).assertEqual(0);
+
+      // The grant that undid the revocation triggers: one fresh beacon follows.
+      const core3: FakeCore = new FakeCore();
+      const sender3: FakeSender = new FakeSender();
+      sender3.codes.push(503);
+      let release3: () => void = (): void => {};
+      sender3.gate = new Promise<void>((resolve: () => void) => {
+        release3 = resolve;
+      });
+      const beacon3: ActiveDeviceBeacon = beaconOf(core3, sender3, new Clock());
+      beacon3.trigger();
+      await sleep(5);
+      beacon3.forget();
+      beacon3.trigger(); // consent_granted
+      release3();
+      await settle();
+      expect(sender3.urls.length).assertEqual(2);
+      expect(core3.settings.has(PENDING_KEY)).assertFalse();
+      expect(core3.settings.size).assertEqual(1); // today's sent marker
       // Negative control: without the revocation the failed beacon is kept.
       const core2: FakeCore = new FakeCore();
       const sender2: FakeSender = new FakeSender();
