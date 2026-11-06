@@ -18,6 +18,8 @@ export class RumConfiguration {
   readonly beforeSampling: BeforeSamplingCallback | null;
   /** Keep the sessions `sessionSampleRate` misses when they report an error. Default false. */
   readonly sessionOnError: boolean;
+  /** Send the once-a-day active-device beacon. Default true. */
+  readonly trackActiveDevices: boolean;
 
   constructor(
     applicationId: string,
@@ -30,7 +32,8 @@ export class RumConfiguration {
     trackErrors: boolean = true,
     remoteConfigurationEnabled: boolean = false,
     beforeSampling: BeforeSamplingCallback | null = null,
-    sessionOnError: boolean = false
+    sessionOnError: boolean = false,
+    trackActiveDevices: boolean = true
   ) {
     this.applicationId = applicationId;
     this.sessionSampleRate = sessionSampleRate;
@@ -43,6 +46,7 @@ export class RumConfiguration {
     this.remoteConfigurationEnabled = remoteConfigurationEnabled;
     this.beforeSampling = beforeSampling;
     this.sessionOnError = sessionOnError;
+    this.trackActiveDevices = trackActiveDevices;
   }
 }
 
@@ -61,6 +65,7 @@ export class RumConfigurationBuilder {
   private remoteConfigurationEnabled: boolean = false;
   private beforeSampling: BeforeSamplingCallback | null = null;
   private sessionOnError: boolean = false;
+  private trackActiveDevices: boolean = true;
 
   constructor(applicationId: string) {
     this.applicationId = applicationId;
@@ -188,6 +193,24 @@ export class RumConfigurationBuilder {
     return this;
   }
 
+  /**
+   * Report that the app is in use: at most one beacon per local day per device,
+   * user and app version. Default true.
+   *
+   * A small request of its own, sent straight away rather than with the event
+   * batches, so that a session too short to upload its events still counts the
+   * device as active that day. Sent when the app starts or returns to the
+   * foreground, when tracking consent is granted and when a new user is set —
+   * only while the app is in the foreground and consent is granted. It carries
+   * the app, OS and device fields and the anonymous and user ids, nothing else,
+   * and is sent regardless of session sampling. One that cannot be delivered is
+   * kept and sent on a later launch, up to 72 hours after the app was used.
+   */
+  setTrackActiveDevices(enabled: boolean): RumConfigurationBuilder {
+    this.trackActiveDevices = enabled;
+    return this;
+  }
+
   build(): RumConfiguration {
     return new RumConfiguration(
       this.applicationId,
@@ -200,7 +223,8 @@ export class RumConfigurationBuilder {
       this.trackErrors,
       this.remoteConfigurationEnabled,
       this.beforeSampling,
-      this.sessionOnError
+      this.sessionOnError,
+      this.trackActiveDevices
     );
   }
 }
