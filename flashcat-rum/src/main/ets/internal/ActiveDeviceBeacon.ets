@@ -217,6 +217,11 @@ export class ActiveDeviceBeacon {
       if (!this.consentGranted()) {
         return Outcome.ABORTED;
       }
+      // Foreground only, retries included: one that comes due after the app
+      // moved to the background keeps the beacon for the next return instead.
+      if (!this.core.isAppInForeground()) {
+        return Outcome.FAILED;
+      }
       const ageMs: number = late ? Math.max(0, this.now() - beacon.usedAtMs) : 0;
       if (ageMs > MAX_AGE_MS) {
         FlashcatLog.d('rum.active: stored beacon is older than 72h, dropped');

@@ -478,6 +478,33 @@ export default function activeBeaconTests(): void {
       expect(core.settings.size).assertEqual(0);
     });
 
+    it('aRetryDueInTheBackgroundWaitsForTheForeground', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, async (): Promise<void> => {
+      const core: FakeCore = new FakeCore();
+      const sender: FakeSender = new FakeSender();
+      sender.codes.push(503);
+      const beacon: ActiveDeviceBeacon = new ActiveDeviceBeacon(core, sender, [30, 30], (): number => NOON);
+      beacon.trigger();
+      await sleep(5);
+      core.foreground = false; // the first attempt failed, then the app went to the background
+      await sleep(100);
+      expect(sender.urls.length).assertEqual(1);
+      expect(core.settings.has(PENDING_KEY)).assertTrue();
+      core.foreground = true; // back in the foreground
+      beacon.trigger();
+      await sleep(5);
+      expect(sender.urls.length).assertEqual(2);
+      expect(core.settings.has(PENDING_KEY)).assertFalse();
+      // Negative control: in the foreground the retry goes out on its own.
+      const core2: FakeCore = new FakeCore();
+      const sender2: FakeSender = new FakeSender();
+      sender2.codes.push(503);
+      const beacon2: ActiveDeviceBeacon = new ActiveDeviceBeacon(core2, sender2, [30, 30], (): number => NOON);
+      beacon2.trigger();
+      await sleep(100);
+      expect(sender2.urls.length).assertEqual(2);
+      expect(core2.settings.has(PENDING_KEY)).assertFalse();
+    });
+
     it('stopDuringBackoffStoresForTheNextLaunch', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, async (): Promise<void> => {
       const core: FakeCore = new FakeCore();
       const sender: FakeSender = new FakeSender();
