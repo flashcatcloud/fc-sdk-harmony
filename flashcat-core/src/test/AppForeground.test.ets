@@ -80,6 +80,18 @@ export default function appForegroundTests(): void {
       // Not a return from the background: RUM must not refresh its remote
       // configuration for it, so the app_foreground message is not sent.
       expect(received.indexOf('app_foreground')).assertEqual(-1);
+      expect(received.indexOf('app_background')).assertEqual(-1);
+      core.stop();
+    });
+
+    it('aLaunchingProcessIsNeitherForegroundNorBackground', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, async (): Promise<void> => {
+      // Initialized in onCreate: the probe sees the process still being created.
+      const received: string[] = [];
+      const app: FakeApp = new FakeApp(appManager.ProcessState.STATE_CREATE);
+      const core: FlashcatCore = build(app, received);
+      await settle();
+      expect(received.indexOf('app_foreground_detected')).assertEqual(-1);
+      expect(received.indexOf('app_background')).assertEqual(-1);
       core.stop();
     });
 
@@ -90,11 +102,14 @@ export default function appForegroundTests(): void {
       await settle();
       expect(core.isAppInForeground()).assertFalse();
       expect(received.indexOf('app_foreground_detected')).assertEqual(-1);
+      // Announced like a move to the background: the process can be frozen.
+      expect(received.filter((t: string) => t === 'app_background').length).assertEqual(1);
 
       (app.callback as ApplicationStateChangeCallback).onApplicationForeground();
       expect(core.isAppInForeground()).assertTrue();
       (app.callback as ApplicationStateChangeCallback).onApplicationBackground();
       expect(core.isAppInForeground()).assertFalse();
+      expect(received.filter((t: string) => t === 'app_background').length).assertEqual(2);
       core.stop();
     });
 

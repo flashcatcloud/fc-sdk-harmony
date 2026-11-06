@@ -1,7 +1,18 @@
 # Changelog
 
+## 0.7.7
+
+- No changes; released together with `@flashcatcloud/rum`, `crash`, `trace` and `axios` 0.7.7.
+
+## 0.7.6
+
+- No changes; released together with `@flashcatcloud/rum` 0.7.6.
+
 ## 0.7.5
 
+- The core tells RUM when the app moves to the background (and when it was
+  launched in the background), so RUM can tell which measurements may span
+  a frozen process.
 - `setUserInfo(null)` is treated as no user; it previously made every
   event fail to assemble and be dropped.
 

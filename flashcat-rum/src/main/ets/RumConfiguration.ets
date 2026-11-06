@@ -12,15 +12,13 @@ export class RumConfiguration {
   readonly trackNavigation: boolean;        // auto page tracking via UIObserver
   readonly trackNetworkRequests: boolean;   // auto resource tracking
   readonly trackFrustrations: boolean;
-  readonly trackErrors: boolean;            // AUTO error capture (crashes unaffected)
+  readonly trackErrors: boolean;            // AUTO error capture (see RumConfigurationBuilder.setTrackErrors)
   readonly eventMapper: RumEventMapper | null;  // phase 2 R3: PII scrubbing / drop
   /** Whether to read the sampling settings the console publishes. Default false. */
   readonly remoteConfigurationEnabled: boolean;
   readonly beforeSampling: BeforeSamplingCallback | null;
   /** Keep the sessions `sessionSampleRate` misses when they report an error. Default false. */
   readonly sessionOnError: boolean;
-  /** Send the once-a-day active-device beacon. Default true. */
-  readonly trackActiveDevices: boolean;
   /** How often memory and CPU are sampled for the open view; `NEVER` also stops frame measurement. */
   readonly vitalsUpdateFrequency: VitalsUpdateFrequency;
 
@@ -36,7 +34,6 @@ export class RumConfiguration {
     remoteConfigurationEnabled: boolean = false,
     beforeSampling: BeforeSamplingCallback | null = null,
     sessionOnError: boolean = false,
-    trackActiveDevices: boolean = true,
     vitalsUpdateFrequency: VitalsUpdateFrequency = DEFAULT_VITALS_UPDATE_FREQUENCY
   ) {
     this.applicationId = applicationId;
@@ -50,7 +47,6 @@ export class RumConfiguration {
     this.remoteConfigurationEnabled = remoteConfigurationEnabled;
     this.beforeSampling = beforeSampling;
     this.sessionOnError = sessionOnError;
-    this.trackActiveDevices = trackActiveDevices;
     this.vitalsUpdateFrequency = vitalsUpdateFrequency;
   }
 }
@@ -70,7 +66,6 @@ export class RumConfigurationBuilder {
   private remoteConfigurationEnabled: boolean = false;
   private beforeSampling: BeforeSamplingCallback | null = null;
   private sessionOnError: boolean = false;
-  private trackActiveDevices: boolean = true;
   private vitalsUpdateFrequency: VitalsUpdateFrequency = DEFAULT_VITALS_UPDATE_FREQUENCY;
 
   constructor(applicationId: string) {
@@ -200,24 +195,6 @@ export class RumConfigurationBuilder {
   }
 
   /**
-   * Report that the app is in use: at most one beacon per local day per device,
-   * user and app version. Default true.
-   *
-   * A small request of its own, sent straight away rather than with the event
-   * batches, so that a session too short to upload its events still counts the
-   * device as active that day. Sent when the app starts or returns to the
-   * foreground, when tracking consent is granted and when a new user is set —
-   * only while the app is in the foreground and consent is granted. It carries
-   * the app, OS and device fields and the anonymous and user ids, nothing else,
-   * and is sent regardless of session sampling. One that cannot be delivered is
-   * kept and sent on a later launch, up to 72 hours after the app was used.
-   */
-  setTrackActiveDevices(enabled: boolean): RumConfigurationBuilder {
-    this.trackActiveDevices = enabled;
-    return this;
-  }
-
-  /**
    * How often the memory and CPU of the app are sampled while it is in the
    * foreground, for the view that is open: `view.memory_average` /
    * `view.memory_max` (bytes) and `view.cpu_ticks_count` /
@@ -248,7 +225,6 @@ export class RumConfigurationBuilder {
       this.remoteConfigurationEnabled,
       this.beforeSampling,
       this.sessionOnError,
-      this.trackActiveDevices,
       this.vitalsUpdateFrequency
     );
   }

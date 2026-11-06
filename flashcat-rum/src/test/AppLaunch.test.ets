@@ -1032,7 +1032,7 @@ export default function appLaunchTests(): void {
 
     it('rumFeedsTheAppLifecycleToTheLaunchTracker', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
       const core: FakeCore = new FakeCore();
-      const configuration: RumConfiguration = new RumConfigurationBuilder('app-1').setTrackActiveDevices(false).build();
+      const configuration: RumConfiguration = new RumConfigurationBuilder('app-1').build();
       const feature: RumFeature = new RumFeature(core, configuration);
       feature.onInitialize();
       const monitor: DefaultRumMonitor = raw(core, configuration, new CapturingScope());
@@ -1057,7 +1057,7 @@ export default function appLaunchTests(): void {
 
     it('rumTellsTheTrackerAboutAnAppFoundInTheForeground', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
       const core: FakeCore = new FakeCore();
-      const configuration: RumConfiguration = new RumConfigurationBuilder('app-1').setTrackActiveDevices(false).build();
+      const configuration: RumConfiguration = new RumConfigurationBuilder('app-1').build();
       const feature: RumFeature = new RumFeature(core, configuration);
       feature.onInitialize();
       const b: Bench = new Bench();
@@ -1076,7 +1076,7 @@ export default function appLaunchTests(): void {
       const run = (foreground: boolean): string => {
         const core: FakeCore = new FakeCore();
         core.foreground = foreground;
-        const configuration: RumConfiguration = new RumConfigurationBuilder('app-1').setTrackActiveDevices(false).build();
+        const configuration: RumConfiguration = new RumConfigurationBuilder('app-1').build();
         const feature: RumFeature = new RumFeature(core, configuration);
         feature.onInitialize();
         const b: Bench = new Bench();

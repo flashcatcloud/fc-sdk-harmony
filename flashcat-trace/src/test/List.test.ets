@@ -3,7 +3,7 @@ import { FlashcatTrace } from '../main/ets/FlashcatTrace';
 import { TracedResource } from '../main/ets/TracedResource';
 import { TraceConfiguration } from '../main/ets/TraceConfiguration';
 import { TraceContext } from '../main/ets/internal/TraceContext';
-import { shouldInjectTraceHeaders, hostOfUrl } from '../main/ets/internal/TraceInterceptor';
+import { failureMessage, shouldInjectTraceHeaders, hostOfUrl } from '../main/ets/internal/TraceInterceptor';
 
 export default function testsuite(): void {
   describe('flashcat-trace', (): void => {
@@ -86,6 +86,17 @@ export default function testsuite(): void {
     // Callers pair every start with a stop/fail. That pairing must hold even
     // when nothing is being tracked, otherwise integrations need a second code
     // path for "SDK not ready" and will get it wrong.
+    it('aFailedRequestReportsTheNetworkKitsReasonAndCode', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+      // @kit.NetworkKit and rcp reject with BusinessError objects, which are not Error instances.
+      const businessError: Record<string, Object> = { 'code': 2300007, 'message': 'Failed to connect to the server' };
+      expect(failureMessage(businessError)).assertEqual('Failed to connect to the server (code 2300007)');
+      expect(failureMessage(new Error('socket closed'))).assertEqual('socket closed');
+      // Negative controls: nothing to report keeps the generic reason.
+      expect(failureMessage({ 'code': 0 } as Record<string, Object>)).assertEqual('network request failed (code 0)');
+      expect(failureMessage(undefined)).assertEqual('network request failed');
+      expect(failureMessage('boom' as Object)).assertEqual('network request failed');
+    });
+
     it('startTracedResourceAlwaysReturnsAUsableKey', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
       const first: TracedResource = FlashcatTrace.startTracedResource('https://api.example.com/a', 'GET');
       const second: TracedResource = FlashcatTrace.startTracedResource('https://api.example.com/b', 'GET');

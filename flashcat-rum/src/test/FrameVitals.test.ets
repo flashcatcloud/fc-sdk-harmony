@@ -637,7 +637,7 @@ export default function frameVitalsTests(): void {
 
     it('framesFollowTheAppInAndOutOfTheForegroundAndStopWithRum', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, async (): Promise<void> => {
       const core: FakeCore = new FakeCore();
-      const configuration: RumConfiguration = new RumConfigurationBuilder('app-1').setTrackActiveDevices(false).build();
+      const configuration: RumConfiguration = new RumConfigurationBuilder('app-1').build();
       const feature: RumFeature = new RumFeature(core, configuration);
       feature.onInitialize();
       const scope: CapturingScope = new CapturingScope();

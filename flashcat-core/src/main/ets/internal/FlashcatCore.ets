@@ -138,7 +138,9 @@ export class FlashcatCore implements SdkCore {
           this.appStateObserved = true;
           this.appForeground = false;
           // Before the flush: what stops sampling in the background has to stop
-          // before the flush writes the view documents that close this stretch.
+          // before the flush writes the view documents that close this stretch. From
+          // here the process may be frozen at any moment: whatever RUM is timing now
+          // may not be completed until the app is brought back.
           this.bus.send(RUM_FEATURE_NAME, { 'type': 'app_background' } as Record<string, Object>);
           this.flushAll();
         }
@@ -195,14 +197,20 @@ export class FlashcatCore implements SdkCore {
             return; // a callback has spoken since; it is newer than this answer
           }
           for (const info of infos) {
-            if (info.pid === process.pid && (info.state === appManager.ProcessState.STATE_FOREGROUND
-              || info.state === appManager.ProcessState.STATE_ACTIVE)) {
+            if (info.pid !== process.pid) {
+              continue;
+            }
+            if (info.state === appManager.ProcessState.STATE_FOREGROUND
+              || info.state === appManager.ProcessState.STATE_ACTIVE) {
               this.appForeground = true;
               // Not app_foreground: this is no return from the background, and
               // nothing that reacts to one (a configuration refresh) should run.
               this.bus.send(RUM_FEATURE_NAME, { 'type': 'app_foreground_detected' } as Record<string, Object>);
-              return;
+            } else if (info.state === appManager.ProcessState.STATE_BACKGROUND) {
+              // Launched in the background: it can be frozen like a backgrounded app.
+              this.bus.send(RUM_FEATURE_NAME, { 'type': 'app_background' } as Record<string, Object>);
             }
+            return;
           }
         })
         .catch((_e: Object) => {

@@ -673,7 +673,7 @@ export default function viewVitalsTests(): void {
 
     it('rumFollowsTheAppInAndOutOfTheForeground', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
       const core: FakeCore = new FakeCore();
-      const configuration: RumConfiguration = new RumConfigurationBuilder('app-1').setTrackActiveDevices(false).build();
+      const configuration: RumConfiguration = new RumConfigurationBuilder('app-1').build();
       const feature: RumFeature = new RumFeature(core, configuration);
       feature.onInitialize();
       const scope: CapturingScope = new CapturingScope();
@@ -698,7 +698,7 @@ export default function viewVitalsTests(): void {
     it('rumEnabledInTheForegroundSamplesAtOnce', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
       const core: FakeCore = new FakeCore();
       core.foreground = true;
-      const configuration: RumConfiguration = new RumConfigurationBuilder('app-1').setTrackActiveDevices(false).build();
+      const configuration: RumConfiguration = new RumConfigurationBuilder('app-1').build();
       const feature: RumFeature = new RumFeature(core, configuration);
       feature.onInitialize();
       const monitor: DefaultRumMonitor = new DefaultRumMonitor(core, new CapturingScope(), configuration);
