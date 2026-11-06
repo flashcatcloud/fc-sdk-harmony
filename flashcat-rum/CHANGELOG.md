@@ -1,13 +1,47 @@
 # Changelog
 
-## Unreleased
+## 0.7.7
+
+- A native crash or app freeze reported on the next launch is attributed to
+  the last view on file only when that view was written by the process that
+  faulted. A launch that crashed before RUM started writes no view, so the
+  file still held the run before it, and the crash took that run's session,
+  user, app version and attributes. Such a crash is now reported in the
+  current session. The last-view file records the writing process; a file
+  written by an earlier version is not used.
+
+## 0.7.6
+
+- A crash reported on the next launch (native crash, app freeze, or a JS
+  crash persisted before the process exited) now carries the crashed run's
+  app version, OS version, user, connectivity and the session's custom
+  attributes, read from that run's last view. Previously it carried the
+  relaunch's values and none of the session's attributes, so a crash
+  followed by an app update was attributed to the new version. The crash's
+  own context keys (`crash.*`) take precedence over a session attribute of
+  the same name. A field the event mapper removed from that view is not
+  filled in from the relaunch. A persisted JS crash takes the view's
+  values only when it happened in that very view, and a native crash or
+  freeze dated before the last view started is not attributed to it.
+- When a session that holds its events back until an error asks the event
+  mapper at crash time whether a persisted crash will be kept, the mapper
+  now sees the same event the next launch replays, session attributes
+  included.
+
+## 0.7.5
 
 - Crash reports from the crash module carry their thread dump as
   `error.threads` and memory at the fault as `crash.memory.*` context
   attributes.
-
-## 0.7.5
-
+- A resource whose request was in flight while the app was in the
+  background is reported without `resource.duration`. HarmonyOS freezes a
+  backgrounded process, so the request's callbacks only run once the app is
+  back, and the wall-clock time from start to completion could span hours
+  the request never ran. This covers a request that starts while the app is
+  in the background, and one in flight when the app moves there. The event
+  is still sent with its URL, method, status code and size; requests that
+  start and complete in the foreground are unchanged, including requests
+  made while the app is still launching.
 - An event mapper that calls into the SDK no longer hangs the app. Monitor
   calls made from inside the mapper that report something or change the
   session (startView, addAction, addError, stopSession, …) are ignored and

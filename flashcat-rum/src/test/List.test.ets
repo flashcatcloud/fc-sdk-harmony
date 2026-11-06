@@ -8,7 +8,7 @@ import resourceKindTests from './ResourceKind.test';
 import crashAttributionTests from './CrashAttribution.test';
 import remoteConfigTests from './RemoteConfig.test';
 import sessionOnErrorTests from './SessionOnError.test';
-import activeBeaconTests from './ActiveBeacon.test';
+import resourceDurationBackgroundTests from './ResourceDurationBackground.test';
 
 export default function testsuite(): void {
   crashReportTests();
@@ -18,7 +18,7 @@ export default function testsuite(): void {
   crashAttributionTests();
   remoteConfigTests();
   sessionOnErrorTests();
-  activeBeaconTests();
+  resourceDurationBackgroundTests();
   describe('flashcat-rum', (): void => {
     it('defaultMonitorIsNoOp', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
       const monitor = GlobalRumMonitor.get();
