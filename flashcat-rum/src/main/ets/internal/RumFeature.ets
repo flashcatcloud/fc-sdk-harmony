@@ -24,6 +24,7 @@ import { RumNavigationTracker } from './RumNavigationTracker';
 import { RumEventMapperHolder } from './RumEventMapperHolder';
 import { LastView, LastViewSnapshot } from './LastViewSnapshot';
 import { AppForegroundHistory } from './AppForegroundHistory';
+import { ActiveDeviceBeacon, HttpActiveBeaconSender } from './ActiveDeviceBeacon';
 
 // Internal core receiver owning the crash sidecar files. MessageBus contract.
 const CRASH_STORAGE_TARGET: string = '__flashcat_crash_storage';
@@ -65,6 +66,7 @@ export class RumFeature implements Feature, FeatureEventReceiver {
   private previousRunView: Record<string, Object> | null = null;
   /** The process that wrote previousRunView, -1 when unknown. */
   private previousRunPid: number = -1;
+  private activeBeacon: ActiveDeviceBeacon | null = null;
 
   constructor(core: SdkCore, configuration: RumConfiguration) {
     this.core = core;
@@ -217,6 +219,17 @@ export class RumFeature implements Feature, FeatureEventReceiver {
     if (this.configuration.trackErrors) {
       this.registerRejectionObserver();
     }
+
+    // Launch trigger: the anonymous id is already there (created synchronously
+    // with the core). A launch that is not in the foreground yet sends on the
+    // app_foreground that follows.
+    if (this.configuration.trackActiveDevices) {
+      this.activeBeacon = new ActiveDeviceBeacon(this.core,
+        new HttpActiveBeaconSender(`flashcat-sdk-harmony/${this.core.getContext().sdkVersion}`));
+      this.activeBeacon.trigger();
+    } else {
+      ActiveDeviceBeacon.discardStored(this.core); // it carries the device and user ids
+    }
   }
 
   private registerRejectionObserver(): void {
@@ -259,6 +272,10 @@ export class RumFeature implements Feature, FeatureEventReceiver {
       this.rejectionObserver = null;
     }
     this.activeJsCrashPolicy = null;
+    if (this.activeBeacon !== null) {
+      this.activeBeacon.stop();
+      this.activeBeacon = null;
+    }
     if (this.monitor !== null) {
       this.monitor.stopKeepAlive(); // stop the keep-alive timer so it doesn't leak
       this.monitor.stopRemoteConfig(); // and the configuration refresh with it
@@ -328,6 +345,9 @@ export class RumFeature implements Feature, FeatureEventReceiver {
       if (m !== null) {
         m.refreshRemoteConfig();
       }
+      this.triggerActiveBeacon();
+    } else if (type === 'app_foreground_detected' || type === 'consent_granted' || type === 'user_changed') {
+      this.triggerActiveBeacon();
     } else if (type === 'keep_alive') {
       // App backgrounded — refresh the active view so its final time_spent is sent
       // before the batch is flushed (published by the core on background, and by
@@ -349,6 +369,15 @@ export class RumFeature implements Feature, FeatureEventReceiver {
       }
       // A view queued for the snapshot is the refused user's data too.
       LastViewSnapshot.discardPending();
+      if (this.activeBeacon !== null) {
+        this.activeBeacon.forget();
+      }
+    }
+  }
+
+  private triggerActiveBeacon(): void {
+    if (this.activeBeacon !== null) {
+      this.activeBeacon.trigger();
     }
   }
 
