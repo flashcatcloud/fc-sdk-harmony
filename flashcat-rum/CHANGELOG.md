@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- A freeze's own system text is reported in the error's context as
+  `freeze.reason`.
+
 ## 0.7.7
 
 - A native crash or app freeze reported on the next launch is attributed to

@@ -46,6 +46,19 @@ export default function crashReportTests(): void {
       expect(attrs['freeze.dump_started_at']).assertEqual('2026-10-27 23:51:37.517');
     });
 
+    it('carriesTheSystemFreezeTextAsAttribute', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+      const event: Record<string, Object> = {
+        'type': 'crash_report',
+        'crash_kind': 'freeze',
+        'freeze.reason': 'User input does not respond!FREEZE_HALF_HIVIEW_LOG write success'
+      };
+      expect(RumFeature.crashAttributes(event)['freeze.reason'])
+        .assertEqual('User input does not respond!FREEZE_HALF_HIVIEW_LOG write success');
+      // Negative control: a crash carries none.
+      expect(RumFeature.crashAttributes({ 'crash_kind': 'crash' } as Record<string, Object>)['freeze.reason'])
+        .assertUndefined();
+    });
+
     it('carriesThreadsAndMemoryAtFault', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
       const threads: Array<Record<string, Object>> = [
         { 'name': 'example.app', 'crashed': true, 'stack': '#0 pc 0000000000001e10 /data/libentry.so' }

@@ -17,6 +17,7 @@ import { JsCrashPolicy } from '../CrashConfiguration';
  *   message: string, stack: string, source: 'source',
  *   is_crash: true, crash_kind: 'crash' | 'freeze',
  *   'freeze.dump_started_at'?: string, // freeze only: watchdog dump wall-clock time
+ *   'freeze.reason'?: string, // freeze only: the system's own text for the freeze
  *   binary_images: Array<Record<string, Object>>, // native symbol metadata
  *   arch: string,            // normalized: arm64 / arm / x64 / x86, or ''
  *   build_id: string,        // first app native image build id, or ''
@@ -57,17 +58,21 @@ export class CrashEventMapper {
    * under `params.threads` (`{ tid, thread_name, frames }`, frames in the same
    * shape as a native APP_CRASH's `exception.frames`), and the blocked main
    * thread is the one whose tid equals `params.pid`. Its frames become the
-   * error stack. The exception message embeds the dump's wall-clock time
-   * ("...not response!Main handler dump start time: <time>"); it is split off
-   * into `freeze.dump_started_at` so every occurrence of one freeze shares a
-   * single message.
+   * error stack.
+   *
+   * The system's text for one kind of freeze varies ("User input does not
+   * respond!" or "App main thread is not response!" for APP_INPUT_BLOCK, with
+   * log status such as "FREEZE_HALF_HIVIEW_LOG write success" or the dump's
+   * wall-clock time appended), so the message is a fixed description of the
+   * kind and every occurrence of one freeze shares it. The system's text is
+   * kept in `freeze.reason`, the dump time in `freeze.dump_started_at`.
    */
   static fromAppFreeze(params: Record<string, Object>): Record<string, Object> {
     const exception: Record<string, Object> = CrashEventMapper.asRecord(params['exception']);
     const message: string = CrashEventMapper.asString(exception['message']);
     const marker: number = message.indexOf(FREEZE_DUMP_TIME_MARKER);
     const freezeException: Record<string, Object> = CrashEventMapper.copy(exception);
-    freezeException['message'] = marker >= 0 ? message.substring(0, marker).trim() : message;
+    freezeException['message'] = CrashEventMapper.freezeDescription(CrashEventMapper.asString(exception['name']));
     const mainFrames: Array<Object> = CrashEventMapper.mainThreadFrames(params);
     if (mainFrames.length > 0) {
       freezeException['frames'] = mainFrames;
@@ -75,6 +80,10 @@ export class CrashEventMapper {
     const freezeParams: Record<string, Object> = CrashEventMapper.copy(params);
     freezeParams['exception'] = freezeException;
     const event: Record<string, Object> = CrashEventMapper.build(freezeParams, 'freeze');
+    const reason: string = (marker >= 0 ? message.substring(0, marker) : message).trim();
+    if (reason.length > 0) {
+      event['freeze.reason'] = CrashEventMapper.truncate(reason, MAX_MESSAGE_CHARS);
+    }
     if (marker >= 0) {
       const dumpStartedAt: string = message.substring(marker + FREEZE_DUMP_TIME_MARKER.length).trim();
       if (dumpStartedAt.length > 0) {
@@ -82,6 +91,20 @@ export class CrashEventMapper {
       }
     }
     return event;
+  }
+
+  /** The message of a freeze of this kind (`exception.name`). */
+  private static freezeDescription(name: string): string {
+    switch (name) {
+      case 'THREAD_BLOCK_6S':
+        return 'App main thread is not responding';
+      case 'APP_INPUT_BLOCK':
+        return 'User input is not responding';
+      case 'LIFECYCLE_TIMEOUT':
+        return 'Ability lifecycle timed out';
+      default:
+        return 'App is not responding';
+    }
   }
 
   /** Frames of the thread whose tid is the process id (the main thread), or []. */
