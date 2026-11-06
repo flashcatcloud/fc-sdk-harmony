@@ -363,6 +363,55 @@ export default function activeBeaconTests(): void {
       expect(core.settings.size).assertEqual(0);
     });
 
+    it('aRevocationUndoneDuringASendStillWritesNothing', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, async (): Promise<void> => {
+      // Revoked and granted again before the answer: what was in flight
+      // belongs to before the revocation and is not written.
+      const core: FakeCore = new FakeCore();
+      const sender: FakeSender = new FakeSender();
+      sender.codes.push(503, 503, 503);
+      let release: () => void = (): void => {};
+      sender.gate = new Promise<void>((resolve: () => void) => {
+        release = resolve;
+      });
+      const beacon: ActiveDeviceBeacon = beaconOf(core, sender, new Clock());
+      beacon.trigger();
+      await sleep(5);
+      beacon.forget(); // the feature's reaction to the revocation
+      release(); // consent is GRANTED again by the time the answers arrive
+      await settle();
+      expect(core.settings.size).assertEqual(0);
+      // Negative control: without the revocation the failed beacon is kept.
+      const core2: FakeCore = new FakeCore();
+      const sender2: FakeSender = new FakeSender();
+      sender2.codes.push(503, 503, 503);
+      beaconOf(core2, sender2, new Clock()).trigger();
+      await settle();
+      expect(core2.settings.has(PENDING_KEY)).assertTrue();
+    });
+
+    it('aStoredBeaconSentAcrossMidnightLeavesTodayCounted', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, async (): Promise<void> => {
+      const core: FakeCore = new FakeCore();
+      const sender: FakeSender = new FakeSender();
+      sender.codes.push(503, 503, 503);
+      const clock: Clock = new Clock();
+      beaconOf(core, sender, clock).trigger(); // fails: stored
+      await settle();
+      let release: () => void = (): void => {};
+      sender.gate = new Promise<void>((resolve: () => void) => {
+        release = resolve;
+      });
+      clock.ms = NOON + 12 * HOUR_MS - 1000; // the next launch, a second before midnight
+      beaconOf(core, sender, clock).trigger();
+      await sleep(5);
+      clock.ms += 2000; // the stored beacon's answer arrives after midnight
+      release();
+      await settle();
+      expect(sender.urls.length).assertEqual(5); // three failed, the stored one, today's
+      beaconOf(core, sender, clock).trigger(); // later the same (new) day
+      await settle();
+      expect(sender.urls.length).assertEqual(5);
+    });
+
     it('cutsEveryStringFieldTo255Utf8Bytes', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, async (): Promise<void> => {
       const core: FakeCore = new FakeCore();
       core.service = 's'.repeat(300);

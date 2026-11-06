@@ -96,6 +96,9 @@ export class ActiveDeviceBeacon {
   private running: boolean = false;
   private again: boolean = false;
   private stopped: boolean = false;
+  /** Bumped by every revocation: a response that arrives after one writes
+   * nothing, even when consent was granted again meanwhile. */
+  private revocations: number = 0;
   private retryTimer: number = -1;
   private wake: (() => void) | null = null;
 
@@ -134,6 +137,7 @@ export class ActiveDeviceBeacon {
 
   /** Consent revoked: what is stored names the device and the user. */
   forget(): void {
+    this.revocations++;
     ActiveDeviceBeacon.discardStored(this.core);
   }
 
@@ -166,10 +170,12 @@ export class ActiveDeviceBeacon {
   private async run(): Promise<void> {
     do {
       this.again = false;
-      const usedAtMs: number = this.now();
-      if (!(await this.deliverStored())) {
+      const revocations: number = this.revocations;
+      if (!(await this.deliverStored(revocations))) {
         return; // the intake is unreachable: the live beacon would fail the same way
       }
+      // Read after the stored beacon went out: that may have taken past midnight.
+      const usedAtMs: number = this.now();
       const context: FlashcatContext = this.core.getContext();
       const key: string = ActiveDeviceBeacon.keyFor(context, usedAtMs);
       if (key.length === 0 || this.core.readSetting(SENT_KEY) === key) {
@@ -179,7 +185,7 @@ export class ActiveDeviceBeacon {
       const outcome: Outcome = await this.deliver(beacon, false);
       // Consent can be revoked while the request is on the wire: nothing that
       // names the device or the user is written after that.
-      if (!this.consentGranted()) {
+      if (!this.consentGranted() || this.revocations !== revocations) {
         return;
       }
       if (outcome === Outcome.SENT) {
@@ -191,7 +197,7 @@ export class ActiveDeviceBeacon {
   }
 
   /** Sends the stored beacon, if any. False when it is still undeliverable. */
-  private async deliverStored(): Promise<boolean> {
+  private async deliverStored(revocations: number): Promise<boolean> {
     const raw: string | null = this.core.readSetting(PENDING_KEY);
     if (raw === null) {
       return true;
@@ -202,7 +208,7 @@ export class ActiveDeviceBeacon {
       return false;
     }
     this.core.writeSetting(PENDING_KEY, null); // sent, refused or too old
-    if (!this.consentGranted()) {
+    if (!this.consentGranted() || this.revocations !== revocations) {
       return false; // revoked while the request was on the wire
     }
     if (outcome === Outcome.SENT && stored !== null
