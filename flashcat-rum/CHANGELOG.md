@@ -14,6 +14,9 @@
   sets the error's type instead of appearing in its context.
 - A freeze's own system text is reported in the error's context as
   `freeze.reason`.
+- An uncaught exception's stack and message skip the runtime's
+  `SourceMap is not initialized yet` line, as they already skipped
+  `Cannot get SourceMap info`.
 
 ## 0.7.8
 

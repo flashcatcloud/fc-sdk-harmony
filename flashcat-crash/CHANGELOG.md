@@ -18,6 +18,11 @@
   success`), which split one freeze into several issues; it is now reported in
   `freeze.reason`. Existing freeze issues are succeeded by new ones once after
   the upgrade, as the message changes.
+- An ArkTS crash during launch no longer reports the runtime's
+  `SourceMap is not initialized yet` line as the first line of its stack, and
+  the line is never taken for the crash's message. A stack replayed from the
+  system's crash event now drops the same runtime lines as one captured live
+  (also `Cannot get SourceMap info`).
 
 ## 0.7.8
 

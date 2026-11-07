@@ -78,6 +78,24 @@ export default function crashIncidentTests(): void {
       expect(parts.stack.indexOf('at anonymous') >= 0).assertTrue();
     });
 
+    it('ignoresTheNotYetInitializedSourceMapBanner', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+      // A fault during launch, before the runtime has loaded the sourcemap.
+      const launchStack: string = 'SourceMap is not initialized yet \n' +
+        '    at onCreate (entry|entry|1.0.0|src/main/ets/entryability/EntryAbility.ts:19:19)\n' +
+        'HybridStack:\n#00 pc 00000000004b1990 /system/lib64/platformsdk/libark_jsruntime.so';
+      const labeled: CrashExceptionParts = CrashFingerprint.partsFromText(
+        'Error name:Error\nError message:launch failed\nStacktrace:\n' + launchStack);
+      expect(labeled.stack.indexOf('    at onCreate')).assertEqual(0);
+      expect(labeled.message).assertEqual('launch failed');
+      // Unlabeled: the banner is neither the stack's first line nor taken for the message.
+      const unlabeled: CrashExceptionParts = CrashFingerprint.partsFromText(launchStack);
+      expect(unlabeled.stack.indexOf('    at onCreate')).assertEqual(0);
+      expect(unlabeled.message).assertEqual('');
+      // Negative control: a stack without a banner is left as it is.
+      expect(CrashFingerprint.framesOnly('    at onCreate (a.ets:1:1)\nHybridStack:'))
+        .assertEqual('    at onCreate (a.ets:1:1)\nHybridStack:');
+    });
+
     it('changesWhenMessageChanges', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
       const first: string = CrashFingerprint.fromParts(
         'Error', 'first', 'Error: first\n    at run (/data/app/Index.ets:10:2)');
