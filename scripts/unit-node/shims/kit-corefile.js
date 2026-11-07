@@ -32,30 +32,37 @@ const calls = { accessSync: 0, listFileSync: 0, statSync: 0 };
 
 // Kernel pseudo files (/proc/...): content on read, but a size of 0 — and the
 // device's readTextSync reads only as many bytes as the size says. Tests put
-// path -> content here.
+// path -> content here. A read continues where the previous one stopped and
+// returns at most pseudoReadLimit bytes (0 = no limit), as a short read may.
 const pseudoFiles = new Map();
 const pseudoFds = new Map();
+const pseudoRead = { limit: 0 };
 let nextPseudoFd = -100;
 
 const fileIo = {
   OpenMode,
   calls,
   pseudoFiles,
+  pseudoRead,
   accessSync: (p) => { calls.accessSync += 1; return nodeFs.existsSync(p); },
   mkdirSync: (p, recursive) => nodeFs.mkdirSync(p, { recursive: recursive === true }),
   openSync: (p, mode) => {
     if (pseudoFiles.has(p)) {
       const fd = nextPseudoFd--;
-      pseudoFds.set(fd, pseudoFiles.get(p));
+      pseudoFds.set(fd, { bytes: Buffer.from(pseudoFiles.get(p), 'utf8'), pos: 0 });
       return { fd };
     }
     return { fd: nodeFs.openSync(p, flagsFor(mode)) };
   },
   readSync: (fd, buf) => {
     if (pseudoFds.has(fd)) {
-      const bytes = Buffer.from(pseudoFds.get(fd), 'utf8');
-      const n = Math.min(bytes.length, buf.byteLength);
-      bytes.copy(Buffer.from(buf), 0, 0, n);
+      const open = pseudoFds.get(fd);
+      let n = Math.min(open.bytes.length - open.pos, buf.byteLength);
+      if (pseudoRead.limit > 0) {
+        n = Math.min(n, pseudoRead.limit);
+      }
+      open.bytes.copy(Buffer.from(buf), 0, open.pos, open.pos + n);
+      open.pos += n;
       return n;
     }
     return nodeFs.readSync(fd, new Uint8Array(buf));

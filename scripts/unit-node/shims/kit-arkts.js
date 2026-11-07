@@ -22,6 +22,7 @@ const taskpool = {
 };
 // The bytes of an ArrayBuffer as text, as @kit.ArkTS buffer does.
 const buffer = {
-  from: (arrayBuffer, byteOffset, length) => Buffer.from(arrayBuffer, byteOffset, length)
+  from: (arrayBuffer, byteOffset, length) => Buffer.from(arrayBuffer, byteOffset, length),
+  concat: (list, totalLength) => Buffer.concat(list, totalLength)
 };
 module.exports = { util, process: processShim, taskpool, buffer };

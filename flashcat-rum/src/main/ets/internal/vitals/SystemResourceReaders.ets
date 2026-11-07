@@ -6,13 +6,13 @@ import { ResourceReaders } from './ResourceSampler';
 const BYTES_PER_KB: number = 1000;
 const STAT_PATH: string = '/proc/self/stat';
 const STATUS_PATH: string = '/proc/self/status';
-// VmRSS sits in the first thirty lines of a status file of about 1.5 KB.
-const STATUS_READ_BYTES: number = 4096;
+// stat is a few hundred bytes and status about 1.5 KB: one chunk and an empty
+// read at the end, as a rule.
+const PROC_CHUNK_BYTES: number = 4096;
+const PROC_MAX_BYTES: number = 65536;
 // Field 14 of /proc/<pid>/stat; fields 3.. follow the ")" that closes field 2.
 const UTIME_FIELD: number = 14;
 const FIRST_FIELD_AFTER_COMM: number = 3;
-// A stat line is a few hundred bytes; utime comes well before the end of it.
-const STAT_READ_BYTES: number = 1024;
 
 /**
  * VmRSS in kB out of a /proc/<pid>/status text, or null when it has none.
@@ -48,25 +48,36 @@ function kilobytesToBytes(kb: number | null): number | null {
   return kb !== null && Number.isFinite(kb) && kb >= 0 ? kb * BYTES_PER_KB : null;
 }
 
-/** Read with a buffer of its own, not readTextSync: a /proc file's size is 0,
- * and readTextSync reads only as many bytes as the size says — none. */
-function readProcFile(path: string, maxBytes: number): string {
+/** The whole of a /proc file, up to PROC_MAX_BYTES. Read in chunks until the
+ * end, not with readTextSync: a /proc file's size is 0, and readTextSync reads
+ * only as many bytes as the size says — none. A read may also return less than
+ * the file holds (a long Groups line puts VmRSS past the first chunk). */
+function readProcFile(path: string): string {
   const file: fileIo.File = fileIo.openSync(path, fileIo.OpenMode.READ_ONLY);
   try {
-    const bytes: ArrayBuffer = new ArrayBuffer(maxBytes);
-    const read: number = fileIo.readSync(file.fd, bytes);
-    return buffer.from(bytes, 0, read).toString('utf-8');
+    const chunks: buffer.Buffer[] = [];
+    let total: number = 0;
+    while (total < PROC_MAX_BYTES) {
+      const bytes: ArrayBuffer = new ArrayBuffer(PROC_CHUNK_BYTES);
+      const read: number = fileIo.readSync(file.fd, bytes);
+      if (read <= 0) {
+        break;
+      }
+      chunks.push(buffer.from(bytes, 0, read));
+      total += read;
+    }
+    return buffer.concat(chunks).toString('utf-8');
   } finally {
     fileIo.closeSync(file);
   }
 }
 
 function readCpuTicks(): number | null {
-  return parseUtimeTicks(readProcFile(STAT_PATH, STAT_READ_BYTES));
+  return parseUtimeTicks(readProcFile(STAT_PATH));
 }
 
 function readMemoryBytes(): Promise<number | null> {
-  return Promise.resolve(kilobytesToBytes(parseVmRssKb(readProcFile(STATUS_PATH, STATUS_READ_BYTES))));
+  return Promise.resolve(kilobytesToBytes(parseVmRssKb(readProcFile(STATUS_PATH))));
 }
 
 /** The readers of this process. Each one's failures reach the sampler as a

@@ -331,6 +331,26 @@ export default function viewVitalsTests(): void {
       }
     });
 
+    it('memoryIsFoundPastTheFirstChunkAndAcrossShortReads', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, async (): Promise<void> => {
+      // A status file whose VmRSS comes after a Groups line longer than a chunk,
+      // read by a kernel that returns 100 bytes at a time.
+      const pseudo: Map<string, string> = (fileIo as Object as Record<string, Object>)['pseudoFiles'] as Map<string, string>;
+      const limit: Record<string, number> = (fileIo as Object as Record<string, Object>)['pseudoRead'] as Record<string, number>;
+      const groups: string[] = [];
+      for (let g: number = 0; g < 1200; g++) {
+        groups.push(`${20000 + g}`);
+      }
+      pseudo.set('/proc/self/status', `Name:\tentry\nGroups:\t${groups.join(' ')}\n` + STATUS_TEXT);
+      limit['limit'] = 100;
+      try {
+        const read: (() => Promise<number | null>) | null = systemResourceReaders().memoryBytes;
+        expect(read === null ? null : await read()).assertEqual(1_000_000);
+      } finally {
+        limit['limit'] = 0;
+        pseudo.delete('/proc/self/status');
+      }
+    });
+
     it('nothingIsSampledInTheBackground', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, async (): Promise<void> => {
       const readers: FakeReaders = new FakeReaders();
       const timer: FakeTimer = new FakeTimer();
