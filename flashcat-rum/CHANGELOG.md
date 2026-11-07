@@ -2,9 +2,36 @@
 
 ## Unreleased
 
+- Unhandled errors, crashes and freezes carry `error.type`. An uncaught exception is typed by its
+  exception name (`Error`, `TypeError`, `SyntaxError`, …), and so is an
+  unhandled promise rejection whose reason is an `Error`; a rejection with any
+  other value has no type, as in the browser SDK. Crashes and freezes take the
+  type the crash module reports (the signal of a native crash, the fault name
+  of a freeze). Without a type the backend took every error to be an `Error`,
+  so errors of any other type, native crashes and freezes are grouped into new
+  issues once after the upgrade. Errors reported with `addError` and failed
+  requests stay untyped; an `error.type` attribute passed to `addError` now
+  sets the error's type instead of appearing in its context.
+- A freeze's own system text is reported in the error's context as
+  `freeze.reason`.
 - An uncaught exception's stack and message skip the runtime's
   `SourceMap is not initialized yet` line, as they already skipped
   `Cannot get SourceMap info`.
+
+## 0.7.8
+
+- New: an active-device beacon, on by default
+  (`RumConfigurationBuilder.setTrackActiveDevices(false)` turns it off). At
+  most once per local day per device, user and app version, the SDK sends a
+  small request of its own to `/api/v2/rum/active` when the app starts in or
+  returns to the foreground, when tracking consent is granted and when a new
+  user is set, so that a device counts as active that day even when its
+  session is too short to upload events. It is sent only in the foreground
+  with consent granted, regardless of session sampling, and carries the app,
+  OS and device fields and the anonymous and user ids. One that cannot be
+  delivered is kept and sent on a later launch, up to 72 hours after the app
+  was used; revoking consent discards it. Turning it off also discards
+  what an earlier launch stored.
 
 ## 0.7.7
 

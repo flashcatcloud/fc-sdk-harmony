@@ -1,9 +1,11 @@
-import { FeatureScope, FlashcatContext, EventWriter, SdkCore } from '@flashcatcloud/core';
+import { FeatureScope, FlashcatContext, EventWriter, SdkCore, FlashcatLog } from '@flashcatcloud/core';
 import { RumScope, RumRawEvent } from './RumScope';
 import { RumResourceScope } from './RumResourceScope';
 import { RumEventAssembler } from '../assembly/RumEventAssembler';
 import { writeMapped } from '../RumEventMapperHolder';
 import { DrawnConfiguration } from '../remoteconfig/RemoteConfigStore';
+import { ViewVitals } from '../vitals/ViewVitals';
+import { VitalsCollector } from '../vitals/VitalsCollector';
 
 const MS_TO_NS: number = 1e6;
 const MAX_PENDING_RESOURCES: number = 100;
@@ -44,6 +46,14 @@ export class RumViewScope implements RumScope {
   // extended write would credit post-navigation idle time as dwell time.
   private closedAtMs: number = 0;
   private readonly pendingResources: Map<string, RumResourceScope> = new Map<string, RumResourceScope>();
+  // Memory, CPU and frames sampled while this view is open. Registered with the
+  // collectors until the view closes; every document written carries what it holds then.
+  private readonly vitals: ViewVitals = new ViewVitals();
+  private readonly collector: VitalsCollector | null;
+  // view.loading_time (ns from the view's start), absent until measured. A
+  // value the host set wins over the SDK's own measurement of a router page.
+  private loadingTimeNs: number | null = null;
+  private loadingTimeManual: boolean = false;
 
   constructor(
     featureScope: FeatureScope,
@@ -56,7 +66,8 @@ export class RumViewScope implements RumScope {
     startedAtMs: number,
     attributes: Record<string, Object>,
     draw: DrawnConfiguration | null = null,
-    sampledForError: boolean = false
+    sampledForError: boolean = false,
+    collector: VitalsCollector | null = null
   ) {
     this.featureScope = featureScope;
     this.core = core;
@@ -69,6 +80,7 @@ export class RumViewScope implements RumScope {
     this.attributes = attributes;
     this.draw = draw;
     this.sampledForError = sampledForError;
+    this.collector = collector;
     // Publish the active view so Logs/Trace/Crash can correlate. The URL is the
     // RESOLVED one (caller-supplied view.url, e.g. the nav tracker's route path),
     // not the opaque key — a crash incident snapshots this and must match the
@@ -79,10 +91,15 @@ export class RumViewScope implements RumScope {
     update['view.url'] = this.resolvedViewUrl();
     this.core.updateFeatureContext('rum', update);
     this.writeViewEvent(startedAtMs);
+    // Last: a view whose opening failed above is never assigned anywhere, so
+    // nothing would unregister it, and it would keep the samplers running.
+    if (collector !== null) {
+      collector.register(this.vitals);
+    }
   }
 
   /** Caller-supplied view.url (real route path) wins over the opaque key. */
-  private resolvedViewUrl(): string {
+  resolvedViewUrl(): string {
     const fromAttributes: Object | undefined = this.attributes['view.url'];
     if (typeof fromAttributes === 'string' && fromAttributes.length > 0) {
       return fromAttributes;
@@ -115,12 +132,18 @@ export class RumViewScope implements RumScope {
         if (event.key === this.key) {
           this.active = false;
           this.closedAtMs = event.timestampMs;
+          this.stopSampling();
           // In-flight resources are NOT dropped: the session keeps this scope in
           // its draining set until they settle (Android parity). Clearing them
           // here systematically lost exactly the slow and failing requests.
           this.writeViewEvent(event.timestampMs);
           this.clearViewContext();
           return null;
+        }
+        return this;
+      case 'addViewLoadingTime':
+        if (this.takeLoadingTime(event)) {
+          this.writeViewEvent(event.timestampMs);
         }
         return this;
       case 'markCrash':
@@ -205,8 +228,37 @@ export class RumViewScope implements RumScope {
     }
     this.active = false;
     this.closedAtMs = nowMs;
+    this.stopSampling();
     this.writeViewEvent(nowMs);
     this.clearViewContext();
+  }
+
+  /**
+   * Android's `addViewLoadingTime(overwrite)`: the time from the view's start
+   * to now (the session hands it to the open view only); once a manual value
+   * is set, only an overwriting call replaces it. The SDK's measurement of a
+   * router page applies to that page only, and only while nothing has been set.
+   */
+  private takeLoadingTime(event: RumRawEvent): boolean {
+    if (event.loadingTimeAuto === true) {
+      if (event.key !== this.key || this.loadingTimeNs !== null) {
+        return false;
+      }
+    } else if (this.loadingTimeManual && event.overwrite !== true) {
+      FlashcatLog.usage(`addViewLoadingTime ignored: view "${this.viewName}" already has one; pass overwrite to replace it`);
+      return false;
+    }
+    this.loadingTimeNs = Math.max(0, event.timestampMs - this.startedAtMs) * MS_TO_NS;
+    this.loadingTimeManual = event.loadingTimeAuto !== true;
+    return true;
+  }
+
+  /** The view is closed: later samples belong to the next view. What it holds
+   * stays, so late writes (draining resources) still carry it. */
+  private stopSampling(): void {
+    if (this.collector !== null) {
+      this.collector.unregister(this.vitals);
+    }
   }
 
   /**
@@ -256,6 +308,7 @@ export class RumViewScope implements RumScope {
     return this.viewName;
   }
 
+
   private writeViewEvent(nowMs: number): void {
     this.documentVersion += 1;
     // Once closed, time freezes at the close timestamp: late count updates
@@ -273,11 +326,15 @@ export class RumViewScope implements RumScope {
     const resources: number = this.resourceCount;
     const crashes: number = this.crashCount;
     const isActive: boolean = this.active;
+    const vitalFields: Record<string, Object> = this.vitals.toFields(timeSpentNs);
+    if (this.loadingTimeNs !== null) {
+      vitalFields['loading_time'] = this.loadingTimeNs;
+    }
     this.featureScope.withWriteContext((context: FlashcatContext, writer: EventWriter) => {
       const event: Record<string, Object> = RumEventAssembler.view(
         context, this.applicationId, this.sessionId, this.viewId, this.viewName,
         this.startedAtMs, timeSpentNs, actions, errors, resources, crashes, version, isActive,
-        this.viewAttributes(), this.draw, this.sampledForError);
+        this.viewAttributes(), this.draw, this.sampledForError, vitalFields);
       writeMapped(writer, event, false);
     });
   }

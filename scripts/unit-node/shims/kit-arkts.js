@@ -8,5 +8,21 @@ class ProcessManager {
   exit() { processShim.exitRequests += 1; }
   kill() {}
 }
-const processShim = { ProcessManager, exitRequests: 0, pid: process.pid };
-module.exports = { util, process: processShim };
+// uptimeSeconds / startRealtimeMs: what the process clock answers; tests set them.
+const processShim = {
+  ProcessManager, exitRequests: 0, pid: process.pid,
+  uptimeSeconds: 0, startRealtimeMs: 0,
+  uptime() { return processShim.uptimeSeconds; },
+  getStartRealtime() { return processShim.startRealtimeMs; }
+};
+// Runs the task in-thread; counts executions so tests can tell the path.
+const taskpool = {
+  executed: 0,
+  execute(fn, ...args) { taskpool.executed += 1; return Promise.resolve().then(() => fn(...args)); }
+};
+// The bytes of an ArrayBuffer as text, as @kit.ArkTS buffer does.
+const buffer = {
+  from: (arrayBuffer, byteOffset, length) => Buffer.from(arrayBuffer, byteOffset, length),
+  concat: (list, totalLength) => Buffer.concat(list, totalLength)
+};
+module.exports = { util, process: processShim, taskpool, buffer };

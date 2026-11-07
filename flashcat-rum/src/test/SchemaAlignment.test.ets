@@ -116,6 +116,21 @@ export default function schemaAlignmentTests(): void {
       expect(context['crash.memory.rss_kb']).assertEqual(201674);
     });
 
+    it('liftsErrorTypeOutOfContext', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+      const attributes: Record<string, Object> = { 'error.type': 'SIGSEGV', 'channel': 'store' };
+      const event = RumEventAssembler.error(
+        testContext(), 'app-1', 'session-1', undefined, undefined,
+        'SIGSEGV(SEGV_MAPERR)', 'source', '#0 pc 1 libentry.so', true, 'unhandled', 1000, attributes);
+      expect(record(event['error'])['type']).assertEqual('SIGSEGV');
+      expect(record(event['context'])['error.type']).assertUndefined();
+      expect(record(event['context'])['channel']).assertEqual('store');
+      // Negative control: no type given, none reported.
+      const untyped = RumEventAssembler.error(
+        testContext(), 'app-1', 'session-1', undefined, undefined,
+        'boom', 'source', 'stack', false, 'handled', 1000, {});
+      expect(record(untyped['error'])['type']).assertUndefined();
+    });
+
     it('emitsAnonymousIdAlongsideUserId', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
       const context: FlashcatContext = testContext();
       context.user = { id: 'alice' };

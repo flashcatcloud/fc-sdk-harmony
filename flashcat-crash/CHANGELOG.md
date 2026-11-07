@@ -2,11 +2,31 @@
 
 ## Unreleased
 
+- Crash and freeze reports carry their error type (`error_type`): the signal
+  of a native crash (`SIGSEGV`), the exception name of an ArkTS crash
+  (`TypeError`, `SyntaxError`, …), the fault name of a freeze
+  (`THREAD_BLOCK_6S`, `APP_INPUT_BLOCK`, …).
+- A native crash's message names its signal and signal code
+  (`SIGSEGV(SEGV_MAPERR)`), followed by the system's reason when it gives one,
+  instead of `NativeCrash`. The fault address is not part of it.
+- An app freeze's message is a fixed description of its kind
+  (`APP_INPUT_BLOCK: User input is not responding`,
+  `THREAD_BLOCK_6S: App main thread is not responding`,
+  `LIFECYCLE_TIMEOUT: Ability lifecycle timed out`, otherwise
+  `App is not responding`). The system's text for one kind varies and can carry
+  log status (`User input does not respond!FREEZE_HALF_HIVIEW_LOG write
+  success`), which split one freeze into several issues; it is now reported in
+  `freeze.reason`. Existing freeze issues are succeeded by new ones once after
+  the upgrade, as the message changes.
 - An ArkTS crash during launch no longer reports the runtime's
   `SourceMap is not initialized yet` line as the first line of its stack, and
   the line is never taken for the crash's message. A stack replayed from the
   system's crash event now drops the same runtime lines as one captured live
   (also `Cannot get SourceMap info`).
+
+## 0.7.8
+
+- No changes; released together with `@flashcatcloud/rum` 0.7.8.
 
 ## 0.7.7
 

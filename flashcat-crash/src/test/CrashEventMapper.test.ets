@@ -126,7 +126,9 @@ export default function crashEventMapperTests(): void {
       const ev: Record<string, Object> = CrashEventMapper.fromAppFreeze(params);
       expect(ev['crash_kind']).assertEqual('freeze');
       expect(ev['is_crash']).assertEqual(true);
-      expect((ev['message'] as string).indexOf('freeze')).assertLarger(-1);
+      // No kind named: the generic description; the system's text is kept aside.
+      expect(ev['message']).assertEqual('App is not responding');
+      expect(ev['freeze.reason']).assertEqual('App freeze: THREAD_BLOCK_6S');
     });
 
     it('mapsFreezeMainThreadFramesToStack', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
@@ -148,11 +150,35 @@ export default function crashEventMapperTests(): void {
     it('stripsDumpTimeFromFreezeMessage', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
       const first: Record<string, Object> = CrashEventMapper.fromAppFreeze(appFreezeParams('2026-10-27 23:51:37.517'));
       const second: Record<string, Object> = CrashEventMapper.fromAppFreeze(appFreezeParams('2026-10-27 23:58:02.004'));
-      expect(first['message']).assertEqual('THREAD_BLOCK_6S: App main thread is not response!');
+      expect(first['message']).assertEqual('THREAD_BLOCK_6S: App main thread is not responding');
       expect(second['message']).assertEqual(first['message']);
+      expect(first['freeze.reason']).assertEqual('App main thread is not response!');
       expect(second['stack']).assertEqual(first['stack']);
       expect(first['freeze.dump_started_at']).assertEqual('2026-10-27 23:51:37.517');
       expect(second['freeze.dump_started_at']).assertEqual('2026-10-27 23:58:02.004');
+    });
+
+    it('givesEveryFreezeOfOneKindOneMessage', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+      // Two APP_INPUT_BLOCK freezes as the system reports them: different text, log status appended.
+      const freeze = (name: string, message: string): Record<string, Object> => {
+        const exception: Record<string, Object> = { 'name': name, 'message': message };
+        return CrashEventMapper.fromAppFreeze({ 'exception': exception });
+      };
+      const first: Record<string, Object> =
+        freeze('APP_INPUT_BLOCK', 'User input does not respond!FREEZE_HALF_HIVIEW_LOG write success');
+      const second: Record<string, Object> =
+        freeze('APP_INPUT_BLOCK', 'App main thread is not response!Main handler dump start time: 2026-01-02 03:04:05.678');
+      expect(first['message']).assertEqual('APP_INPUT_BLOCK: User input is not responding');
+      expect(second['message']).assertEqual(first['message']);
+      // The system's own text stays available, without the dump time.
+      expect(first['freeze.reason']).assertEqual('User input does not respond!FREEZE_HALF_HIVIEW_LOG write success');
+      expect(second['freeze.reason']).assertEqual('App main thread is not response!');
+      expect(second['freeze.dump_started_at']).assertEqual('2026-01-02 03:04:05.678');
+      expect(freeze('LIFECYCLE_TIMEOUT', 'ability:EntryAbility foreground timeout')['message'])
+        .assertEqual('LIFECYCLE_TIMEOUT: Ability lifecycle timed out');
+      // Negative control: another kind with the same text keeps its own message.
+      expect(freeze('THREAD_BLOCK_6S', 'App main thread is not response!')['message'])
+        .assertEqual('THREAD_BLOCK_6S: App main thread is not responding');
     });
 
     it('keepsInlineFreezeStackWithoutThreadDump', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
@@ -171,7 +197,7 @@ export default function crashEventMapperTests(): void {
       params['pid'] = APP_FREEZE_PID + 1;
       const ev: Record<string, Object> = CrashEventMapper.fromAppFreeze(params);
       expect(ev['stack']).assertEqual('');
-      expect(ev['message']).assertEqual('THREAD_BLOCK_6S: App main thread is not response!');
+      expect(ev['message']).assertEqual('THREAD_BLOCK_6S: App main thread is not responding');
     });
 
     it('mapsPendingIncidentAsCrash', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
@@ -183,7 +209,7 @@ export default function crashEventMapperTests(): void {
         'TypeError: boom\n    at run (Index.ets:1:2)',
         'fp-1',
         JsCrashPolicy.REPORT_THEN_EXIT,
-        '0.7.7',
+        '0.7.8',
         'session-1',
         'view-1',
         'Home');
@@ -209,7 +235,7 @@ export default function crashEventMapperTests(): void {
         'TypeError: boom\n    at run (Index.ets:1:2)',
         'fp-recovered',
         JsCrashPolicy.REPORT_AND_RECOVER,
-        '0.7.7',
+        '0.7.8',
         'session-1',
         'view-1',
         'Home');
@@ -396,6 +422,80 @@ export default function crashEventMapperTests(): void {
       expect(CrashEventMapper.fromAppCrash({ 'crash_type': 'JsError' })['process_id']).assertUndefined();
     });
 
+    it('namesANativeCrashBySignalAndCode', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+      // A native SIGSEGV as delivered: no name, an empty message, the signal under exception.signal.
+      const ev: Record<string, Object> = CrashEventMapper.fromAppCrash(nativeCrashWithSignal(11, 1, '0x0', ''));
+      expect(ev['message']).assertEqual('SIGSEGV(SEGV_MAPERR)');
+      expect(ev['error_type']).assertEqual('SIGSEGV');
+      // The fault address is not part of the message: one fault, one message.
+      const other: Record<string, Object> =
+        CrashEventMapper.fromAppCrash(nativeCrashWithSignal(11, 1, '0x7f0000beef', ''));
+      expect(other['message']).assertEqual(ev['message']);
+      // Negative control: without a signal the crash type is all there is.
+      const bare: Record<string, Object> = CrashEventMapper.fromAppCrash(nativeCrashWithSignal(undefined, 1, '0x0', ''));
+      expect(bare['message']).assertEqual('NativeCrash');
+      expect(bare['error_type']).assertEqual('NativeCrash');
+    });
+
+    it('namesSignalCodesPerSignal', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+      const message = (signo: number, code: number | undefined): string =>
+        CrashEventMapper.fromAppCrash(nativeCrashWithSignal(signo, code, '0x0', ''))['message'] as string;
+      expect(message(11, 2)).assertEqual('SIGSEGV(SEGV_ACCERR)');
+      expect(message(7, 1)).assertEqual('SIGBUS(BUS_ADRALN)');
+      expect(message(8, 1)).assertEqual('SIGFPE(FPE_INTDIV)');
+      expect(message(4, 1)).assertEqual('SIGILL(ILL_ILLOPC)');
+      expect(message(5, 1)).assertEqual('SIGTRAP(TRAP_BRKPT)');
+      expect(message(6, -6)).assertEqual('SIGABRT(SI_TKILL)');
+      expect(message(6, 0)).assertEqual('SIGABRT(SI_USER)');
+      // A code without a name stays a number; the same number under another signal has its own name.
+      expect(message(6, 1)).assertEqual('SIGABRT(1)');
+      expect(message(11, 42)).assertEqual('SIGSEGV(42)');
+      expect(message(35, 1)).assertEqual('SIG35(1)');
+      expect(message(11, undefined)).assertEqual('SIGSEGV');
+    });
+
+    it('keepsTheSystemReasonAfterTheSignal', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+      const ev: Record<string, Object> =
+        CrashEventMapper.fromAppCrash(nativeCrashWithSignal(6, -6, '0x0', 'abort in libdemo'));
+      expect(ev['message']).assertEqual('SIGABRT(SI_TKILL): abort in libdemo');
+      expect(ev['error_type']).assertEqual('SIGABRT');
+    });
+
+    it('typesAnArkTsCrashByItsExceptionName', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+      const exception: Record<string, Object> = {
+        'name': 'SyntaxError', 'message': 'Unexpected token', 'stack': 'at f (entry/src/main/ets/a.ets:1:1)'
+      };
+      const ev: Record<string, Object> = CrashEventMapper.fromAppCrash({ 'crash_type': 'JsError', 'exception': exception });
+      expect(ev['error_type']).assertEqual('SyntaxError');
+      expect(ev['message']).assertEqual('SyntaxError: Unexpected token');
+      // Negative control: an unnamed ArkTS crash is an Error, not its crash type.
+      const unnamed: Record<string, Object> = { 'message': 'boom', 'stack': 'at f (entry/src/main/ets/a.ets:1:1)' };
+      expect(CrashEventMapper.fromAppCrash({ 'crash_type': 'JsError', 'exception': unnamed })['error_type'])
+        .assertEqual('Error');
+    });
+
+    it('typesAReplayedIncidentByItsExceptionName', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+      const incident: CrashIncidentRecord = new CrashIncidentRecord('incident-1', 123456, 'RangeError',
+        'index 3 out of bounds', 'at pick (Index.ets:12:5)', 'fp', JsCrashPolicy.REPORT_THEN_EXIT, '0.7.7',
+        'session-1', 'view-1', 'Home');
+      expect(CrashEventMapper.fromPendingIncident(incident)['error_type']).assertEqual('RangeError');
+      // Negative control: an incident without a name is an Error.
+      const unnamed: CrashIncidentRecord = new CrashIncidentRecord('incident-2', 123456, '',
+        'index 3 out of bounds', 'at pick (Index.ets:12:5)', 'fp', JsCrashPolicy.REPORT_THEN_EXIT, '0.7.7',
+        'session-1', 'view-1', 'Home');
+      expect(CrashEventMapper.fromPendingIncident(unnamed)['error_type']).assertEqual('Error');
+    });
+
+    it('typesAFreezeByItsFaultName', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+      expect(CrashEventMapper.fromAppFreeze(appFreezeParams('2026-10-27 23:51:37.517'))['error_type'])
+        .assertEqual('THREAD_BLOCK_6S');
+      const input: Record<string, Object> = { 'name': 'APP_INPUT_BLOCK', 'message': 'User input does not respond!' };
+      expect(CrashEventMapper.fromAppFreeze({ 'exception': input })['error_type']).assertEqual('APP_INPUT_BLOCK');
+      // Negative control: a freeze without a name is still typed by its system event.
+      const unnamed: Record<string, Object> = { 'message': 'App main thread is not response!' };
+      expect(CrashEventMapper.fromAppFreeze({ 'exception': unnamed })['error_type']).assertEqual('APP_FREEZE');
+    });
+
     it('dropsTheSourceMapBannerOfALaunchCrash', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
       // An ArkTS crash during launch as the next launch receives it in APP_CRASH.
       const exception: Record<string, Object> = {
@@ -448,4 +548,23 @@ function nativeCrashWithThreads(): Record<string, Object> {
     { 'thread_name': 'example.app', 'tid': 100, 'state': 'R', 'frames': appFrames }
   ];
   return { 'crash_type': 'NativeCrash', 'pid': 100, 'cpu_abi': 'arm64-v8a', 'exception': exception, 'threads': threads };
+}
+
+/** A NativeCrash payload in the shape a device delivers it: the signal under `exception.signal`. */
+function nativeCrashWithSignal(signo: number | undefined, code: number | undefined, address: string,
+  message: string): Record<string, Object> {
+  const frames: Array<Object> = [
+    { 'pc': '0000000000001e10', 'file': '/data/storage/el1/bundle/libs/arm64/libentry.so', 'buildId': 'aabbcc' }
+  ];
+  const exception: Record<string, Object> = {
+    'message': message, 'thread_name': 'example.app', 'tid': 100, 'frames': frames
+  };
+  if (signo !== undefined) {
+    const signal: Record<string, Object> = { 'signo': signo, 'address': address };
+    if (code !== undefined) {
+      signal['code'] = code;
+    }
+    exception['signal'] = signal;
+  }
+  return { 'crash_type': 'NativeCrash', 'pid': 100, 'cpu_abi': 'arm64-v8a', 'exception': exception };
 }

@@ -8,6 +8,8 @@ import { RumRawEvent } from '../scope/RumScope';
 import { RemoteConfigStore, RemoteConfigValues } from '../remoteconfig/RemoteConfigStore';
 import { RemoteConfigController } from '../remoteconfig/RemoteConfigController';
 import { RumEventMapperHolder } from '../RumEventMapperHolder';
+import { VitalsCollector } from '../vitals/VitalsCollector';
+import { AppLaunchTracker, StartupType } from '../startup/AppLaunchTracker';
 
 const MS_TO_NS: number = 1e6;
 // Periodically re-emit the active view so its time_spent (and the session
@@ -48,21 +50,26 @@ export class DefaultRumMonitor implements RumMonitor {
   // Null unless the app opted into remote configuration.
   private readonly remoteConfig: RemoteConfigStore | null;
   private readonly controller: RemoteConfigController | null;
+  // Null when launch timing is not wired (tests, or enable failed to build it).
+  private readonly launch: AppLaunchTracker | null;
 
   constructor(
     core: SdkCore,
     featureScope: FeatureScope,
     configuration: RumConfiguration,
     remoteConfig: RemoteConfigStore | null = null,
-    controller: RemoteConfigController | null = null
+    controller: RemoteConfigController | null = null,
+    collector: VitalsCollector | null = null,
+    launch: AppLaunchTracker | null = null
   ) {
+    this.launch = launch;
     this.remoteConfig = remoteConfig;
     this.controller = controller;
     this.applicationScope = new RumApplicationScope(
       featureScope, core, configuration.applicationId, configuration.sessionSampleRate,
       remoteConfig, configuration.beforeSampling,
       controller === null ? null : (): void => controller.onSessionStarted(),
-      configuration.sessionOnError);
+      configuration.sessionOnError, collector);
     this.startKeepAlive();
   }
 
@@ -129,6 +136,62 @@ export class DefaultRumMonitor implements RumMonitor {
       const e: RumRawEvent = this.raw('startView', attributes);
       e.key = key;
       e.name = name;
+      return e;
+    });
+    if (this.launch !== null && !RumEventMapperHolder.isApplying()) {
+      try {
+        this.launch.onViewStarted();
+      } catch (error) {
+        DefaultRumMonitor.logFailure('startView', error);
+      }
+    }
+  }
+
+  addViewLoadingTime(overwrite: boolean): void {
+    this.dispatch('addViewLoadingTime', () => {
+      const e: RumRawEvent = this.raw('addViewLoadingTime');
+      e.overwrite = overwrite === true;
+      return e;
+    });
+  }
+
+  /** Internal: the router page `key` drew its first frame at `atMs`. */
+  addAutoViewLoadingTime(key: string, atMs: number): void {
+    this.dispatch('addViewLoadingTime', () => {
+      const e: RumRawEvent = this.raw('addViewLoadingTime');
+      e.key = key;
+      e.loadingTimeAuto = true;
+      e.timestampMs = atMs;
+      return e;
+    });
+  }
+
+  reportAppFullyDisplayed(): void {
+    if (DefaultRumMonitor.calledFromMapper('reportAppFullyDisplayed')) {
+      return;
+    }
+    if (this.launch === null) {
+      FlashcatLog.usage('reportAppFullyDisplayed ignored: app launches are not measured');
+      return;
+    }
+    try {
+      this.launch.onFullyDisplayed();
+    } catch (error) {
+      DefaultRumMonitor.logFailure('reportAppFullyDisplayed', error);
+    }
+  }
+
+  /** Internal: a launch vital measured by the app launch tracker. */
+  reportAppLaunch(metric: string, type: StartupType, startMs: number, durationNs: number, atMs: number,
+    fullyDisplayed: boolean = false): void {
+    this.dispatch('appLaunch', () => {
+      const e: RumRawEvent = this.raw('appLaunch');
+      e.timestampMs = atMs;
+      e.launchMetric = metric;
+      e.startupType = type as string;
+      e.launchStartMs = startMs;
+      e.launchDurationNs = durationNs;
+      e.launchFullyDisplayed = fullyDisplayed;
       return e;
     });
   }
