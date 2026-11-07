@@ -38,7 +38,7 @@ function testContext(): FlashcatContext {
     version: '1.0.0',
     bundleId: 'com.example.demo',
     source: 'harmony',
-    sdkVersion: '0.7.7',
+    sdkVersion: '0.7.8',
     device: {
       brand: 'HUAWEI', model: 'Pura', osName: 'HarmonyOS', osVersion: 'NEXT',
       apiVersion: 18, deviceType: 'phone'
@@ -91,6 +91,9 @@ class FakeCore implements SdkCore {
   }
   isActive(): boolean {
     return true;
+  }
+  isAppInForeground(): boolean {
+    return false;
   }
   setUserInfo(_user: UserInfo): void {}
   clearUserInfo(): void {}
@@ -247,6 +250,11 @@ class FakeCrashScope implements FeatureScope {
 function fireUnhandledException(text: string): void {
   const observers: Record<string, Object> = (errorManager as Object as Record<string, Object>)['lastObservers'] as Record<string, Object>;
   (observers['error'] as errorManager.ErrorObserver).onUnhandledException(text);
+}
+
+function fireException(error: Error): void {
+  const observers: Record<string, Object> = (errorManager as Object as Record<string, Object>)['lastObservers'] as Record<string, Object>;
+  (observers['error'] as errorManager.ErrorObserver).onException?.(error);
 }
 
 function fireUnhandledRejection(reason: Object): void {
@@ -1943,6 +1951,66 @@ export default function sessionOnErrorTests(): void {
         expect(core2.crashScope.controls[0]['suppressed'] === true).assertFalse();
       });
 
+    it('typesAnUncaughtErrorByItsExceptionName',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        // The one error the scenario writes, with the crash feature answering in `policy` ('' = no crash feature).
+        const reported = (policy: string, fire: () => void): Record<string, Object> => {
+          const core: FakeCore = new FakeCore();
+          if (policy.length > 0) {
+            core.crashScope = new FakeCrashScope(core);
+            core.crashScope.policy = policy;
+          }
+          const scope: CapturingScope = new CapturingScope();
+          const monitor: DefaultRumMonitor = featureWith(core, scope, 100, false);
+          monitor.startView('home', 'home');
+          fire();
+          const errors: Array<Record<string, Object>> = scope.ofType('error');
+          expect(errors.length).assertEqual(1);
+          return errors[0];
+        };
+        const typeOf = (policy: string, fire: () => void): Object | undefined =>
+          (reported(policy, fire)['error'] as Record<string, Object>)['type'];
+        const typeError = (): void =>
+          fireUnhandledException('Error name:TypeError\nError message:x is undefined\nStacktrace:\nat a (b.ets:1:1)');
+        // Every live path: RUM's own crash report, the crash feature's live crash, the plain error.
+        expect(typeOf('', typeError)).assertEqual('TypeError');
+        expect(typeOf('report_and_continue', typeError)).assertEqual('TypeError');
+        expect(typeOf('observe_only', typeError)).assertEqual('TypeError');
+        expect(typeOf('observe_only', (): void => fireException(new RangeError('out of range'))))
+          .assertEqual('RangeError');
+        expect(typeOf('', (): void => fireUnhandledRejection(new SyntaxError('bad json')))).assertEqual('SyntaxError');
+        // The type is the error's, not a custom attribute.
+        const event: Record<string, Object> = reported('', typeError);
+        expect((event['context'] as Record<string, Object>)['error.type']).assertUndefined();
+        // Negative control: a rejection with a reason that is not an Error has no type, as in the browser SDK.
+        expect(typeOf('', (): void => fireUnhandledRejection('plain refusal'))).assertUndefined();
+      });
+
+    it('typesAReportedCrashWithTheTypeTheCrashFeatureGaveIt',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        const typeOf = (crash: Record<string, Object>): Object | undefined => {
+          const core: FakeCore = new FakeCore();
+          const scope: CapturingScope = new CapturingScope();
+          core.rumScope = scope;
+          const configuration: RumConfiguration = new RumConfigurationBuilder('app-1').setSessionSampleRate(100).build();
+          const feature: RumFeature = new RumFeature(core, configuration);
+          feature.onInitialize();
+          const monitor: DefaultRumMonitor = new DefaultRumMonitor(core, scope, configuration);
+          monitor.stopKeepAlive();
+          feature.attachMonitor(monitor);
+          monitor.startView('home', 'home');
+          feature.onReceive(crash);
+          const errors: Array<Record<string, Object>> = scope.ofType('error');
+          expect(errors.length).assertEqual(1);
+          return (errors[0]['error'] as Record<string, Object>)['type'];
+        };
+        expect(typeOf({ 'type': 'crash_report', 'message': 'SIGSEGV(SEGV_MAPERR)', 'error_type': 'SIGSEGV',
+          'stack': '#00 pc', 'crash_kind': 'crash' } as Record<string, Object>)).assertEqual('SIGSEGV');
+        // Negative control: a report without a type (an older crash module) leaves the type unset.
+        expect(typeOf({ 'type': 'crash_report', 'message': 'NativeCrash', 'stack': '#00 pc',
+          'crash_kind': 'crash' } as Record<string, Object>)).assertUndefined();
+      });
+
     it('anUncaughtExceptionWithoutTheCrashFeatureReleasesAtOnce',
       TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
         const core: FakeCore = new FakeCore();
@@ -2523,5 +2591,114 @@ export default function sessionOnErrorTests(): void {
         feature.onReceive({ 'type': 'keep_alive' } as Record<string, Object>);
         expect(scope.lastView.length > 0).assertTrue();
       });
+  });
+  describe('rum-main-thread-jank', (): void => {
+    const jank = (extra: Record<string, Object> = {}): Record<string, Object> => {
+      const event: Record<string, Object> = {
+        'type': 'crash_report', 'message': 'Main thread jank', 'stack': '#0 pc 00000000000160ec libuv.so (uv_run+180)',
+        'source': 'source', 'is_crash': false, 'crash_kind': 'jank', 'source_type': 'harmony',
+        'binary_images': [], 'arch': '', 'build_id': '', 'jank.duration_ms': 1001, 'jank.sampled_at': 1793317690154
+      };
+      for (const k of Object.keys(extra)) {
+        event[k] = extra[k];
+      }
+      return event;
+    };
+
+    it('aJankIsAHandledErrorOfTheCurrentView', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+      const core: FakeCore = new FakeCore();
+      const scope: CapturingScope = new CapturingScope();
+      const configuration: RumConfiguration = new RumConfigurationBuilder('app-1').setSessionSampleRate(100).build();
+      core.rumScope = scope;
+      const feature: RumFeature = new RumFeature(core, configuration);
+      feature.onInitialize();
+      const monitor: DefaultRumMonitor = new DefaultRumMonitor(core, scope, configuration);
+      monitor.stopKeepAlive();
+      feature.attachMonitor(monitor);
+      monitor.startView('home', 'home');
+      const sessionId: string = core.featureContext['session.id'] as string;
+      const viewId: string = core.featureContext['view.id'] as string;
+
+      feature.onReceive(jank());
+
+      const errors: Array<Record<string, Object>> = scope.ofType('error');
+      expect(errors.length).assertEqual(1);
+      const error: Record<string, Object> = errors[0]['error'] as Record<string, Object>;
+      expect(error['is_crash']).assertEqual(false);
+      expect(error['handling']).assertEqual('handled');
+      expect(error['category']).assertEqual('Jank');
+      expect(error['type']).assertEqual('MAIN_THREAD_JANK');
+      expect(error['source']).assertEqual('source');
+      expect(error['source_type']).assertEqual('harmony');
+      expect(error['message']).assertEqual('Main thread jank');
+      expect(error['stack']).assertEqual('#0 pc 00000000000160ec libuv.so (uv_run+180)');
+      expect(sessionOf(errors[0])['id']).assertEqual(sessionId);
+      expect((errors[0]['view'] as Record<string, Object>)['id']).assertEqual(viewId);
+      const context: Record<string, Object> = errors[0]['context'] as Record<string, Object>;
+      expect(context['jank.duration_ms']).assertEqual(1001);
+      expect(context['jank.sampled_at']).assertEqual(1793317690154);
+      expect(context['error.type'] === undefined).assertTrue();
+      // Counted as an error of the view, never as a crash.
+      const views: Array<Record<string, Object>> = scope.ofType('view');
+      const last: Record<string, Object> = views[views.length - 1]['view'] as Record<string, Object>;
+      expect((last['error'] as Record<string, Object>)['count']).assertEqual(1);
+      expect((last['crash'] as Record<string, Object>)['count']).assertEqual(0);
+      // Negative control: a native crash on the same path has no error.type.
+      feature.onReceive({ 'type': 'crash_report', 'message': 'NativeCrash', 'stack': '#00 pc', 'crash_kind': 'crash',
+        'timestamp_ms': Date.now() - 1000 } as Record<string, Object>);
+      const crash: Record<string, Object> = scope.ofType('error')[1]['error'] as Record<string, Object>;
+      expect(crash['type'] === undefined).assertTrue();
+      expect(crash['is_crash']).assertEqual(true);
+    });
+
+    it('aJankIsNeverWrittenIntoAnotherSession', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+      // A previous launch left a last-view snapshot; a replay would land there.
+      const core: FakeCore = new FakeCore();
+      const scope: CapturingScope = new CapturingScope();
+      const monitor: DefaultRumMonitor = featureWith(core, scope, 100, false);
+      monitor.startView('home', 'home');
+      const previous: string = core.featureContext['session.id'] as string;
+      monitor.stopSession();
+      LastViewSnapshot.flush();
+      expect(scope.lastView.length > 0).assertTrue();
+
+      const next: CapturingScope = new CapturingScope();
+      next.lastView = scope.lastView;
+      core.rumScope = next;
+      const configuration: RumConfiguration = new RumConfigurationBuilder('app-1').setSessionSampleRate(100).build();
+      const feature: RumFeature = new RumFeature(core, configuration);
+      feature.onInitialize();
+      const monitor2: DefaultRumMonitor = new DefaultRumMonitor(core, next, configuration);
+      monitor2.stopKeepAlive();
+      feature.attachMonitor(monitor2);
+      monitor2.startView('feed', 'feed');
+      const current: string = core.featureContext['session.id'] as string;
+      expect(current === previous).assertFalse();
+
+      const event: Record<string, Object> = jank({ 'original_session_id': previous, 'timestamp_ms': Date.now() - 1000 });
+      feature.onReceive(event);
+
+      const errors: Array<Record<string, Object>> = next.ofType('error');
+      expect(errors.length).assertEqual(1);
+      expect(sessionOf(errors[0])['id']).assertEqual(current);
+      expect(((errors[0]['view'] as Record<string, Object>)['name'])).assertEqual('feed');
+      expect((errors[0]['error'] as Record<string, Object>)['is_crash']).assertEqual(false);
+      // Negative control: a crash carrying the same ids is replayed into the old session.
+      feature.onReceive({ 'type': 'crash_report', 'message': 'NativeCrash', 'stack': '#00 pc', 'crash_kind': 'crash',
+        'original_session_id': previous, 'timestamp_ms': Date.now() - 1000 } as Record<string, Object>);
+      const replayed: Array<Record<string, Object>> = next.ofType('error');
+      expect(sessionOf(replayed[replayed.length - 1])['id']).assertEqual(previous);
+    });
+
+    it('aJankWithoutAMonitorIsDropped', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+      const core: FakeCore = new FakeCore();
+      const scope: CapturingScope = new CapturingScope();
+      core.rumScope = scope;
+      const feature: RumFeature = new RumFeature(core,
+        new RumConfigurationBuilder('app-1').setSessionSampleRate(100).build());
+      feature.onInitialize();
+      feature.onReceive(jank());
+      expect(scope.ofType('error').length).assertEqual(0);
+    });
   });
 }

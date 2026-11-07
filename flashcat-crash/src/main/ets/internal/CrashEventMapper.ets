@@ -15,8 +15,11 @@ import { JsCrashPolicy } from '../CrashConfiguration';
  * {
  *   type: 'crash_report', target: 'rum',
  *   message: string, stack: string, source: 'source',
- *   is_crash: true, crash_kind: 'crash' | 'freeze',
+ *   error_type: string,       // exception name, signal name or freeze name
+ *   is_crash: boolean,       // false only for a jank: the process lives on
+ *   crash_kind: 'crash' | 'freeze' | 'jank',
  *   'freeze.dump_started_at'?: string, // freeze only: watchdog dump wall-clock time
+ *   'jank.duration_ms'?: number, 'jank.sampled_at'?: number, // jank only
  *   'freeze.reason'?: string, // freeze only: the system's own text for the freeze
  *   binary_images: Array<Record<string, Object>>, // native symbol metadata
  *   arch: string,            // normalized: arm64 / arm / x64 / x86, or ''
@@ -47,6 +50,20 @@ const MEMORY_FIELDS: string[][] = [
 ];
 // Separates an APP_FREEZE message from the watchdog dump's wall-clock time.
 const FREEZE_DUMP_TIME_MARKER: string = 'Main handler dump start time:';
+// A jank's message is a constant: where it happened is in the stack, and how long
+// it lasted in `jank.duration_ms`, so every occurrence shares one message.
+const JANK_MESSAGE: string = 'Main thread jank';
+// One sampled frame: "#NN pc <hexaddr> <rest>", and an ArkTS frame "#NN at <fn> (<file>:<line>:<col>)".
+const SAMPLED_NATIVE_FRAME: RegExp = /^#\d+\s+pc\s+([0-9a-fA-F]+)\s+(.+)$/;
+// Matched in two steps, each linear: a single pattern with an optional "<fn> (" ahead
+// of the location backtracks quadratically over a long line that is no frame.
+const SAMPLED_ARKTS_FRAME: RegExp = /^#\d+\s+at\s+(.*)$/;
+const ARKTS_LOCATION: RegExp = /^([^()\s]+):(\d+):(\d+)$/;
+// A native frame's trailing "(<build id>)".
+const SAMPLED_BUILD_ID: RegExp = /\(([0-9a-fA-F]{16,})\)$/;
+const SYMBOL_OFFSET: RegExp = /^(.*)\+(\d+)$/;
+// One node of the sampled call tree in a jank's external log: indentation, sample count, frame.
+const SAMPLE_TREE_LINE: RegExp = /^( *)(\d+)\s+(#\d+\s+.*)$/;
 
 export class CrashEventMapper {
   static fromAppCrash(params: Record<string, Object>): Record<string, Object> {
@@ -91,6 +108,170 @@ export class CrashEventMapper {
       }
     }
     return event;
+  }
+
+  /**
+   * MAIN_THREAD_JANK: the main thread ran one task long enough for the system to
+   * sample it, and the process lives on. The samples come two ways: the text of
+   * the external log (`params.external_log`, read by the caller), a call tree
+   * rooted at the thread entry where each line is "<samples> #NN pc ..." indented
+   * by depth; and `params.heaviest_stack`, the single stack sampled most often.
+   * The tree is preferred: its heaviest path follows the branch most samples went
+   * through, while the most frequent single stack can be the idle event loop when
+   * the blocking task's samples, though the majority, are spread over several leaves. Returns null when
+   * neither yields a frame — a trace-only jank carries no stack at all.
+   */
+  static fromMainThreadJank(params: Record<string, Object>, externalLog: string): Record<string, Object> | null {
+    let frames: Array<Record<string, Object>> = CrashEventMapper.heaviestTreePath(externalLog);
+    if (frames.length === 0) {
+      frames = CrashEventMapper.sampledFrames(CrashEventMapper.asString(params['heaviest_stack']));
+    }
+    const stack: string = CrashEventMapper.framesToStack(frames);
+    if (stack.length === 0) {
+      return null;
+    }
+    const binaryImages: Array<Record<string, Object>> = CrashEventMapper.imagesFromFrames(frames, '');
+    const event: Record<string, Object> = {
+      'type': 'crash_report',
+      'target': 'rum',
+      'message': JANK_MESSAGE,
+      'stack': CrashEventMapper.truncate(stack, MAX_STACK_CHARS),
+      'source': RumErrorSource.SOURCE as string,
+      'is_crash': false,
+      'crash_kind': 'jank',
+      'binary_images': JSON.stringify(binaryImages).length <= MAX_BINARY_IMAGES_CHARS ? binaryImages : [],
+      'arch': '',
+      'build_id': CrashEventMapper.buildId(params, binaryImages),
+      'source_type': SOURCE_TYPE
+    };
+    const begin: Object | undefined = params['begin_time'];
+    const end: Object | undefined = params['end_time'];
+    if (typeof begin === 'number' && typeof end === 'number' && Number.isFinite(begin) && Number.isFinite(end)
+      && end >= begin) {
+      event['jank.duration_ms'] = end - begin;
+    }
+    const time: Object | undefined = params['time'];
+    if (typeof time === 'number' && Number.isFinite(time) && time > 0) {
+      event['jank.sampled_at'] = time;
+    }
+    return event;
+  }
+
+  /** The heaviest root-to-leaf path of a sampled call tree, leaf first; [] for no tree. */
+  private static heaviestTreePath(text: string): Array<Record<string, Object>> {
+    const roots: Array<SampleNode> = [];
+    const open: Array<SampleNode> = [];
+    const lines: string[] = text.split('\n');
+    for (let i = 0; i < lines.length; i++) {
+      const m: RegExpMatchArray | null = lines[i].trimEnd().match(SAMPLE_TREE_LINE);
+      if (m === null) {
+        continue;
+      }
+      const node: SampleNode = new SampleNode(m[1].length, Number(m[2]), m[3]);
+      while (open.length > 0 && open[open.length - 1].depth >= node.depth) {
+        open.pop();
+      }
+      (open.length > 0 ? open[open.length - 1].children : roots).push(node);
+      open.push(node);
+    }
+    const path: string[] = [];
+    let level: Array<SampleNode> = roots;
+    while (level.length > 0) {
+      let heaviest: SampleNode = level[0];
+      for (let i = 1; i < level.length; i++) {
+        if (level[i].count > heaviest.count) {
+          heaviest = level[i];
+        }
+      }
+      path.push(heaviest.frame);
+      level = heaviest.children;
+    }
+    path.reverse();
+    return CrashEventMapper.sampledFrames(path.join('\n'));
+  }
+
+  /**
+   * Frames of a sampled stack, one "#NN ..." line each, leaf first. `heaviest_stack`
+   * separates its lines with a literal backslash-n, not a newline; both are accepted.
+   */
+  private static sampledFrames(text: string): Array<Record<string, Object>> {
+    const frames: Array<Record<string, Object>> = [];
+    const lines: string[] = text.split('\\n').join('\n').split('\n');
+    for (let i = 0; i < lines.length; i++) {
+      const frame: Record<string, Object> | null = CrashEventMapper.sampledFrame(lines[i].trim());
+      if (frame !== null) {
+        frames.push(frame);
+      }
+    }
+    return frames;
+  }
+
+  /**
+   * One sampled frame in the shape of an `exception.frames` entry. A native line is
+   * "#NN pc <addr> <file>(<symbol>+<offset>)(<build id>)", where the symbol and the
+   * build id may each be absent, and the file is "[Unknown]" for a frame the
+   * sampler could not resolve.
+   */
+  private static sampledFrame(line: string): Record<string, Object> | null {
+    const arkts: RegExpMatchArray | null = line.match(SAMPLED_ARKTS_FRAME);
+    if (arkts !== null) {
+      return CrashEventMapper.sampledArkTsFrame(arkts[1]);
+    }
+    const native: RegExpMatchArray | null = line.match(SAMPLED_NATIVE_FRAME);
+    if (native === null) {
+      return null;
+    }
+    let rest: string = native[2];
+    let buildId: string = '';
+    const id: RegExpMatchArray | null = rest.match(SAMPLED_BUILD_ID);
+    if (id !== null) {
+      buildId = id[1];
+      rest = rest.substring(0, rest.length - id[0].length);
+    }
+    let file: string = rest;
+    let symbol: string = '';
+    const open: number = rest.indexOf('(');
+    if (open > 0 && rest.endsWith(')')) {
+      file = rest.substring(0, open);
+      symbol = rest.substring(open + 1, rest.length - 1);
+    }
+    const frame: Record<string, Object> = { 'pc': native[1], 'file': file, 'buildId': buildId };
+    const offset: RegExpMatchArray | null = symbol.match(SYMBOL_OFFSET);
+    if (offset !== null) {
+      frame['symbol'] = offset[1];
+      frame['offset'] = offset[2];
+    } else {
+      frame['symbol'] = symbol;
+    }
+    return frame;
+  }
+
+  /**
+   * An ArkTS frame after its "#NN at ": "<fn> (<file>:<line>:<col>)" or "<file>:<line>:<col>".
+   * The location holds no parenthesis, so a symbol ends at the last "(", which a blank precedes.
+   */
+  private static sampledArkTsFrame(text: string): Record<string, Object> | null {
+    let location: string = text.endsWith(')') ? text.substring(0, text.length - 1) : text;
+    let symbol: string = '';
+    const open: number = location.lastIndexOf('(');
+    if (open >= 0) {
+      const head: string = location.substring(0, open);
+      symbol = head.trim();
+      if (symbol.length === 0 || head.length === head.trimEnd().length) {
+        return null; // no "<fn> " ahead of the "("
+      }
+      location = location.substring(open + 1);
+    }
+    const parts: RegExpMatchArray | null = location.match(ARKTS_LOCATION);
+    if (parts === null) {
+      return null;
+    }
+    const line: number = Number(parts[2]);
+    const column: number = Number(parts[3]);
+    if (!Number.isFinite(line) || !Number.isFinite(column)) {
+      return null; // digits beyond a double are no position
+    }
+    return { 'symbol': symbol, 'file': parts[1], 'line': line, 'column': column };
   }
 
   /** The message of a freeze of this kind (`exception.name`). */
@@ -171,15 +352,36 @@ export class CrashEventMapper {
       stack = CrashEventMapper.framesToStack(exception['frames']);
     }
 
+    // A native crash names its signal (`exception.signal`): the signal is its
+    // type, and "SIGSEGV(SEGV_MAPERR)" its message, followed by the system's
+    // reason when it gives one. Neither carries an address, so every
+    // occurrence of one fault shares the message.
+    const signal: Record<string, Object> = CrashEventMapper.asRecord(exception['signal']);
+    const signo: Object | undefined = signal['signo'];
+    const signalName: string = typeof signo === 'number' ? CrashEventMapper.signalName(signo) : '';
     // Message: "Name: reason" when present (JS); a name with no reason (e.g. a
     // banner-only stack parsed to CrashExceptionParts('Error', '')) stays just
-    // the name — never a dangling "Error: ". Native faults have neither, so fall
-    // back to the crash type ("NativeCrash"/...) before the generic placeholder.
+    // the name — never a dangling "Error: ". A fault with neither falls back to
+    // the crash type ("NativeCrash"/...) before the generic placeholder.
     let message: string = name.length > 0
       ? (reason.length > 0 ? `${name}: ${reason}` : name)
       : reason;
+    if (signalName.length > 0) {
+      const code: string = CrashEventMapper.signalCode(signo as number, signal['code']);
+      const signalText: string = code.length > 0 ? `${signalName}(${code})` : signalName;
+      message = message.length > 0 ? `${signalText}: ${message}` : signalText;
+    }
     if (message.length === 0) {
       message = crashType.length > 0 ? crashType : 'Unknown crash';
+    }
+    // error.type: the signal of a native crash, the exception name of an ArkTS
+    // crash, the fault name of a freeze (THREAD_BLOCK_6S, APP_INPUT_BLOCK, …).
+    // Without one: the system event (APP_FREEZE) or crash type, and 'Error' for
+    // an ArkTS crash, as an unnamed exception is typed everywhere else.
+    let errorType: string = signalName.length > 0 ? signalName : name;
+    if (errorType.length === 0) {
+      errorType = kind === 'freeze' ? 'APP_FREEZE'
+        : (crashType.length > 0 && crashType !== 'JsError' ? crashType : 'Error');
     }
 
     const arch: string = CrashEventMapper.arch(params);
@@ -189,6 +391,7 @@ export class CrashEventMapper {
       'type': 'crash_report',
       'target': 'rum',
       'message': CrashEventMapper.truncate(message, MAX_MESSAGE_CHARS),
+      'error_type': errorType,
       'stack': CrashEventMapper.truncate(stack, MAX_STACK_CHARS),
       'source': RumErrorSource.SOURCE as string,
       'is_crash': true,
@@ -489,6 +692,62 @@ export class CrashEventMapper {
     }
   }
 
+  /** Name of a fault signal (Linux numbering, shared by every HarmonyOS ABI). */
+  private static signalName(signo: number): string {
+    switch (signo) {
+      case 4: return 'SIGILL';
+      case 5: return 'SIGTRAP';
+      case 6: return 'SIGABRT';
+      case 7: return 'SIGBUS';
+      case 8: return 'SIGFPE';
+      case 9: return 'SIGKILL';
+      case 11: return 'SIGSEGV';
+      case 13: return 'SIGPIPE';
+      case 16: return 'SIGSTKFLT';
+      case 31: return 'SIGSYS';
+      default: return `SIG${signo}`;
+    }
+  }
+
+  /** Name of a signal's `si_code` ("SEGV_MAPERR"), the number when it has none, '' without a code. */
+  private static signalCode(signo: number, value: Object | undefined): string {
+    if (typeof value !== 'number') {
+      return '';
+    }
+    const code: number = value;
+    switch (code) {
+      case 0: return 'SI_USER';
+      case 0x80: return 'SI_KERNEL';
+      case -1: return 'SI_QUEUE';
+      case -2: return 'SI_TIMER';
+      case -6: return 'SI_TKILL';
+      default: break;
+    }
+    const names: string[] = CrashEventMapper.signalCodeNames(signo);
+    return code >= 1 && code <= names.length ? names[code - 1] : `${code}`;
+  }
+
+  /** The signal-specific `si_code` names, in order from 1. */
+  private static signalCodeNames(signo: number): string[] {
+    switch (signo) {
+      case 4:
+        return ['ILL_ILLOPC', 'ILL_ILLOPN', 'ILL_ILLADR', 'ILL_ILLTRP', 'ILL_PRVOPC', 'ILL_PRVREG', 'ILL_COPROC',
+          'ILL_BADSTK'];
+      case 5:
+        return ['TRAP_BRKPT', 'TRAP_TRACE', 'TRAP_BRANCH', 'TRAP_HWBKPT'];
+      case 7:
+        return ['BUS_ADRALN', 'BUS_ADRERR', 'BUS_OBJERR', 'BUS_MCEERR_AR', 'BUS_MCEERR_AO'];
+      case 8:
+        return ['FPE_INTDIV', 'FPE_INTOVF', 'FPE_FLTDIV', 'FPE_FLTOVF', 'FPE_FLTUND', 'FPE_FLTRES', 'FPE_FLTINV',
+          'FPE_FLTSUB'];
+      case 11:
+        return ['SEGV_MAPERR', 'SEGV_ACCERR', 'SEGV_BNDERR', 'SEGV_PKUERR', 'SEGV_ACCADI', 'SEGV_ADIDERR',
+          'SEGV_ADIPERR', 'SEGV_MTEAERR', 'SEGV_MTESERR'];
+      default:
+        return [];
+    }
+  }
+
   private static isSystemLibrary(file: string): boolean {
     return file.startsWith('/system/') || file.startsWith('/apex/') ||
       file.startsWith('/vendor/') || file.startsWith('/product/');
@@ -515,5 +774,19 @@ export class CrashEventMapper {
       return `${value}`;
     }
     return '';
+  }
+}
+
+/** One node of a jank's sampled call tree: its indentation, sample count and frame line. */
+class SampleNode {
+  readonly depth: number;
+  readonly count: number;
+  readonly frame: string;
+  readonly children: Array<SampleNode> = [];
+
+  constructor(depth: number, count: number, frame: string) {
+    this.depth = depth;
+    this.count = count;
+    this.frame = frame;
   }
 }

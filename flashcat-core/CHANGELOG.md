@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.8
+
+- No changes; released together with `@flashcatcloud/rum` 0.7.8.
+
 ## 0.7.7
 
 - No changes; released together with `@flashcatcloud/rum`, `crash`, `trace` and `axios` 0.7.7.
