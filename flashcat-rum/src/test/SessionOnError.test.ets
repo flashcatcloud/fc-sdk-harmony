@@ -603,6 +603,26 @@ export default function sessionOnErrorTests(): void {
         expect(scope.ofType('error').length).assertEqual(1);
       });
 
+    it('anHttpErrorStatusIsNotAnErrorAndReleasesNothing',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        // A 500 is the server answering: a completed request, not an error of
+        // the app, so the session stays withheld. A request that got no answer
+        // at all is an error and releases it (aFailedRequestIsAnErrorThatReleases).
+        const scope: CapturingScope = new CapturingScope();
+        const app: RumApplicationScope = onErrorApp(scope);
+        const now: number = Date.now();
+        startView(app, now);
+        for (const status of [500, 503, 404]) {
+          const key: string = `r${status}`;
+          app.handleEvent(raw('startResource', now, key));
+          const done: RumRawEvent = raw('stopResource', now + 5, key);
+          done.statusCode = status;
+          app.handleEvent(done);
+        }
+        app.releaseScheduledWithheld();
+        expect(scope.written.length).assertEqual(0);
+      });
+
     it('aCrashReleasesAtOnceWithTheCountingDocument',
       TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
         const scope: CapturingScope = new CapturingScope();
