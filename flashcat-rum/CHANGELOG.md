@@ -12,6 +12,8 @@
   issues once after the upgrade. Errors reported with `addError` and failed
   requests stay untyped; an `error.type` attribute passed to `addError` now
   sets the error's type instead of appearing in its context.
+- A freeze's own system text is reported in the error's context as
+  `freeze.reason`.
 
 ## 0.7.8
 

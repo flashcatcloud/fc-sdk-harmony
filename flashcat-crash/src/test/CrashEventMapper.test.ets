@@ -126,7 +126,9 @@ export default function crashEventMapperTests(): void {
       const ev: Record<string, Object> = CrashEventMapper.fromAppFreeze(params);
       expect(ev['crash_kind']).assertEqual('freeze');
       expect(ev['is_crash']).assertEqual(true);
-      expect((ev['message'] as string).indexOf('freeze')).assertLarger(-1);
+      // No kind named: the generic description; the system's text is kept aside.
+      expect(ev['message']).assertEqual('App is not responding');
+      expect(ev['freeze.reason']).assertEqual('App freeze: THREAD_BLOCK_6S');
     });
 
     it('mapsFreezeMainThreadFramesToStack', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
@@ -148,11 +150,35 @@ export default function crashEventMapperTests(): void {
     it('stripsDumpTimeFromFreezeMessage', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
       const first: Record<string, Object> = CrashEventMapper.fromAppFreeze(appFreezeParams('2026-10-27 23:51:37.517'));
       const second: Record<string, Object> = CrashEventMapper.fromAppFreeze(appFreezeParams('2026-10-27 23:58:02.004'));
-      expect(first['message']).assertEqual('THREAD_BLOCK_6S: App main thread is not response!');
+      expect(first['message']).assertEqual('THREAD_BLOCK_6S: App main thread is not responding');
       expect(second['message']).assertEqual(first['message']);
+      expect(first['freeze.reason']).assertEqual('App main thread is not response!');
       expect(second['stack']).assertEqual(first['stack']);
       expect(first['freeze.dump_started_at']).assertEqual('2026-10-27 23:51:37.517');
       expect(second['freeze.dump_started_at']).assertEqual('2026-10-27 23:58:02.004');
+    });
+
+    it('givesEveryFreezeOfOneKindOneMessage', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+      // Two APP_INPUT_BLOCK freezes as the system reports them: different text, log status appended.
+      const freeze = (name: string, message: string): Record<string, Object> => {
+        const exception: Record<string, Object> = { 'name': name, 'message': message };
+        return CrashEventMapper.fromAppFreeze({ 'exception': exception });
+      };
+      const first: Record<string, Object> =
+        freeze('APP_INPUT_BLOCK', 'User input does not respond!FREEZE_HALF_HIVIEW_LOG write success');
+      const second: Record<string, Object> =
+        freeze('APP_INPUT_BLOCK', 'App main thread is not response!Main handler dump start time: 2026-01-02 03:04:05.678');
+      expect(first['message']).assertEqual('APP_INPUT_BLOCK: User input is not responding');
+      expect(second['message']).assertEqual(first['message']);
+      // The system's own text stays available, without the dump time.
+      expect(first['freeze.reason']).assertEqual('User input does not respond!FREEZE_HALF_HIVIEW_LOG write success');
+      expect(second['freeze.reason']).assertEqual('App main thread is not response!');
+      expect(second['freeze.dump_started_at']).assertEqual('2026-01-02 03:04:05.678');
+      expect(freeze('LIFECYCLE_TIMEOUT', 'ability:EntryAbility foreground timeout')['message'])
+        .assertEqual('LIFECYCLE_TIMEOUT: Ability lifecycle timed out');
+      // Negative control: another kind with the same text keeps its own message.
+      expect(freeze('THREAD_BLOCK_6S', 'App main thread is not response!')['message'])
+        .assertEqual('THREAD_BLOCK_6S: App main thread is not responding');
     });
 
     it('keepsInlineFreezeStackWithoutThreadDump', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
@@ -171,7 +197,7 @@ export default function crashEventMapperTests(): void {
       params['pid'] = APP_FREEZE_PID + 1;
       const ev: Record<string, Object> = CrashEventMapper.fromAppFreeze(params);
       expect(ev['stack']).assertEqual('');
-      expect(ev['message']).assertEqual('THREAD_BLOCK_6S: App main thread is not response!');
+      expect(ev['message']).assertEqual('THREAD_BLOCK_6S: App main thread is not responding');
     });
 
     it('mapsPendingIncidentAsCrash', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {

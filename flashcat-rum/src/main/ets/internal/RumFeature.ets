@@ -894,6 +894,7 @@ export class RumFeature implements Feature, FeatureEventReceiver {
         attributes[key] = value;
       }
     }
+    RumFeature.copyNonEmptyString(event, attributes, 'freeze.reason', 'freeze.reason');
     return attributes;
   }
 
