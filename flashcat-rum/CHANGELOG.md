@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+- Unhandled errors, crashes and freezes carry `error.type`. An uncaught exception is typed by its
+  exception name (`Error`, `TypeError`, `SyntaxError`, …), and so is an
+  unhandled promise rejection whose reason is an `Error`; a rejection with any
+  other value has no type, as in the browser SDK. Crashes and freezes take the
+  type the crash module reports (the signal of a native crash, the fault name
+  of a freeze). Without a type the backend took every error to be an `Error`,
+  so errors of any other type, native crashes and freezes are grouped into new
+  issues once after the upgrade. Errors reported with `addError` and failed
+  requests stay untyped; an `error.type` attribute passed to `addError` now
+  sets the error's type instead of appearing in its context.
+
 ## 0.7.8
 
 - New: an active-device beacon, on by default

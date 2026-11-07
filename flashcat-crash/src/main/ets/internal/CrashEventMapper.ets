@@ -15,6 +15,7 @@ import { JsCrashPolicy } from '../CrashConfiguration';
  * {
  *   type: 'crash_report', target: 'rum',
  *   message: string, stack: string, source: 'source',
+ *   error_type: string,       // exception name, signal name or freeze name
  *   is_crash: boolean,       // false only for a jank: the process lives on
  *   crash_kind: 'crash' | 'freeze' | 'jank',
  *   'freeze.dump_started_at'?: string, // freeze only: watchdog dump wall-clock time
@@ -328,15 +329,36 @@ export class CrashEventMapper {
       stack = CrashEventMapper.framesToStack(exception['frames']);
     }
 
+    // A native crash names its signal (`exception.signal`): the signal is its
+    // type, and "SIGSEGV(SEGV_MAPERR)" its message, followed by the system's
+    // reason when it gives one. Neither carries an address, so every
+    // occurrence of one fault shares the message.
+    const signal: Record<string, Object> = CrashEventMapper.asRecord(exception['signal']);
+    const signo: Object | undefined = signal['signo'];
+    const signalName: string = typeof signo === 'number' ? CrashEventMapper.signalName(signo) : '';
     // Message: "Name: reason" when present (JS); a name with no reason (e.g. a
     // banner-only stack parsed to CrashExceptionParts('Error', '')) stays just
-    // the name — never a dangling "Error: ". Native faults have neither, so fall
-    // back to the crash type ("NativeCrash"/...) before the generic placeholder.
+    // the name — never a dangling "Error: ". A fault with neither falls back to
+    // the crash type ("NativeCrash"/...) before the generic placeholder.
     let message: string = name.length > 0
       ? (reason.length > 0 ? `${name}: ${reason}` : name)
       : reason;
+    if (signalName.length > 0) {
+      const code: string = CrashEventMapper.signalCode(signo as number, signal['code']);
+      const signalText: string = code.length > 0 ? `${signalName}(${code})` : signalName;
+      message = message.length > 0 ? `${signalText}: ${message}` : signalText;
+    }
     if (message.length === 0) {
       message = crashType.length > 0 ? crashType : 'Unknown crash';
+    }
+    // error.type: the signal of a native crash, the exception name of an ArkTS
+    // crash, the fault name of a freeze (THREAD_BLOCK_6S, APP_INPUT_BLOCK, …).
+    // Without one: the system event (APP_FREEZE) or crash type, and 'Error' for
+    // an ArkTS crash, as an unnamed exception is typed everywhere else.
+    let errorType: string = signalName.length > 0 ? signalName : name;
+    if (errorType.length === 0) {
+      errorType = kind === 'freeze' ? 'APP_FREEZE'
+        : (crashType.length > 0 && crashType !== 'JsError' ? crashType : 'Error');
     }
 
     const arch: string = CrashEventMapper.arch(params);
@@ -346,6 +368,7 @@ export class CrashEventMapper {
       'type': 'crash_report',
       'target': 'rum',
       'message': CrashEventMapper.truncate(message, MAX_MESSAGE_CHARS),
+      'error_type': errorType,
       'stack': CrashEventMapper.truncate(stack, MAX_STACK_CHARS),
       'source': RumErrorSource.SOURCE as string,
       'is_crash': true,
@@ -643,6 +666,62 @@ export class CrashEventMapper {
         return 'x86';
       default:
         return '';
+    }
+  }
+
+  /** Name of a fault signal (Linux numbering, shared by every HarmonyOS ABI). */
+  private static signalName(signo: number): string {
+    switch (signo) {
+      case 4: return 'SIGILL';
+      case 5: return 'SIGTRAP';
+      case 6: return 'SIGABRT';
+      case 7: return 'SIGBUS';
+      case 8: return 'SIGFPE';
+      case 9: return 'SIGKILL';
+      case 11: return 'SIGSEGV';
+      case 13: return 'SIGPIPE';
+      case 16: return 'SIGSTKFLT';
+      case 31: return 'SIGSYS';
+      default: return `SIG${signo}`;
+    }
+  }
+
+  /** Name of a signal's `si_code` ("SEGV_MAPERR"), the number when it has none, '' without a code. */
+  private static signalCode(signo: number, value: Object | undefined): string {
+    if (typeof value !== 'number') {
+      return '';
+    }
+    const code: number = value;
+    switch (code) {
+      case 0: return 'SI_USER';
+      case 0x80: return 'SI_KERNEL';
+      case -1: return 'SI_QUEUE';
+      case -2: return 'SI_TIMER';
+      case -6: return 'SI_TKILL';
+      default: break;
+    }
+    const names: string[] = CrashEventMapper.signalCodeNames(signo);
+    return code >= 1 && code <= names.length ? names[code - 1] : `${code}`;
+  }
+
+  /** The signal-specific `si_code` names, in order from 1. */
+  private static signalCodeNames(signo: number): string[] {
+    switch (signo) {
+      case 4:
+        return ['ILL_ILLOPC', 'ILL_ILLOPN', 'ILL_ILLADR', 'ILL_ILLTRP', 'ILL_PRVOPC', 'ILL_PRVREG', 'ILL_COPROC',
+          'ILL_BADSTK'];
+      case 5:
+        return ['TRAP_BRKPT', 'TRAP_TRACE', 'TRAP_BRANCH', 'TRAP_HWBKPT'];
+      case 7:
+        return ['BUS_ADRALN', 'BUS_ADRERR', 'BUS_OBJERR', 'BUS_MCEERR_AR', 'BUS_MCEERR_AO'];
+      case 8:
+        return ['FPE_INTDIV', 'FPE_INTOVF', 'FPE_FLTDIV', 'FPE_FLTOVF', 'FPE_FLTUND', 'FPE_FLTRES', 'FPE_FLTINV',
+          'FPE_FLTSUB'];
+      case 11:
+        return ['SEGV_MAPERR', 'SEGV_ACCERR', 'SEGV_BNDERR', 'SEGV_PKUERR', 'SEGV_ACCADI', 'SEGV_ADIDERR',
+          'SEGV_ADIPERR', 'SEGV_MTEAERR', 'SEGV_MTESERR'];
+      default:
+        return [];
     }
   }
 

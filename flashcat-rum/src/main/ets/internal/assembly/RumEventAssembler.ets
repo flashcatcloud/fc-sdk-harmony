@@ -130,6 +130,10 @@ export class RumEventAssembler {
     error['id'] = util.generateRandomUUID(true);
     error['message'] = message;
     error['source'] = source;
+    const errorType: string = RumEventAssembler.asString(attributes[ERROR_TYPE_ATTRIBUTE]);
+    if (errorType.length > 0) {
+      error['type'] = errorType;
+    }
     if (stack !== undefined) {
       error['stack'] = stack;
     }
@@ -138,10 +142,6 @@ export class RumEventAssembler {
     const category: string = RumEventAssembler.asString(attributes[ERROR_CATEGORY_ATTRIBUTE]);
     if (category.length > 0) {
       error['category'] = category;
-    }
-    const errorType: string = RumEventAssembler.asString(attributes[ERROR_TYPE_ATTRIBUTE]);
-    if (errorType.length > 0) {
-      error['type'] = errorType;
     }
     const sourceType: string = RumEventAssembler.asString(attributes[ERROR_SOURCE_TYPE_ATTRIBUTE]);
     if (sourceType.length > 0) {

@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+- Crash and freeze reports carry their error type (`error_type`): the signal
+  of a native crash (`SIGSEGV`), the exception name of an ArkTS crash
+  (`TypeError`, `SyntaxError`, …), the fault name of a freeze
+  (`THREAD_BLOCK_6S`, `APP_INPUT_BLOCK`, …).
+- A native crash's message names its signal and signal code
+  (`SIGSEGV(SEGV_MAPERR)`), followed by the system's reason when it gives one,
+  instead of `NativeCrash`. The fault address is not part of it.
+
 ## 0.7.8
 
 - No changes; released together with `@flashcatcloud/rum` 0.7.8.
