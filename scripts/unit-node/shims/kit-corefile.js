@@ -28,7 +28,7 @@ function flagsFor(mode) {
 }
 
 // Call counters, so tests can pin how much file-system work a path does.
-const calls = { accessSync: 0, listFileSync: 0, statSync: 0 };
+const calls = { accessSync: 0, listFileSync: 0, statSync: 0, readTextSync: 0, stat: 0, readText: 0 };
 
 // Kernel pseudo files (/proc/...): content on read, but a size of 0 — and the
 // device's readTextSync reads only as many bytes as the size says. Tests put
@@ -79,7 +79,9 @@ const fileIo = {
   renameSync: (from, to) => nodeFs.renameSync(from, to),
   unlinkSync: (p) => nodeFs.unlinkSync(p),
   listFileSync: (dir) => { calls.listFileSync += 1; return nodeFs.readdirSync(dir); },
-  readTextSync: (p) => (pseudoFiles.has(p) ? '' : nodeFs.readFileSync(p, 'utf8')),
+  readTextSync: (p) => { calls.readTextSync += 1; return pseudoFiles.has(p) ? '' : nodeFs.readFileSync(p, 'utf8'); },
+  readText: (p) => { calls.readText += 1; return nodeFs.promises.readFile(p, 'utf8'); },
+  stat: (p) => { calls.stat += 1; return nodeFs.promises.stat(p).then((s) => ({ size: s.size, mtimeMs: s.mtimeMs, isDirectory: () => s.isDirectory(), isFile: () => s.isFile() })); },
   statSync: (p) => {
     calls.statSync += 1;
     if (pseudoFiles.has(p)) {

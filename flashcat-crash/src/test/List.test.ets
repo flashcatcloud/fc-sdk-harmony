@@ -3,6 +3,7 @@ import crashSamplingTests from './CrashSampling.test';
 import crashIncidentTests from './CrashIncident.test';
 import jsCrashPolicyTests from './JsCrashPolicy.test';
 import jsCrashLiveCallbackTests from './JsCrashLiveCallback.test';
+import mainThreadJankTests from './MainThreadJank.test';
 
 export default function testsuite(): void {
   crashEventMapperTests();
@@ -10,4 +11,5 @@ export default function testsuite(): void {
   crashIncidentTests();
   jsCrashPolicyTests();
   jsCrashLiveCallbackTests();
+  mainThreadJankTests();
 }

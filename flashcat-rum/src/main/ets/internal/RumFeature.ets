@@ -449,6 +449,10 @@ export class RumFeature implements Feature, FeatureEventReceiver {
    * attributes that RumEventAssembler lifts into backend-consumed error fields.
    */
   private onCrashReport(event: Record<string, Object>): void {
+    if (event['crash_kind'] === 'jank') {
+      this.onJankReport(event);
+      return;
+    }
     // A replayed pending incident carries the crashed run's session/view ids.
     // Write the crash directly into THAT session instead of routing it through
     // the live scope tree: the live tree would mint a fresh session at the old
@@ -514,6 +518,27 @@ export class RumFeature implements Feature, FeatureEventReceiver {
     // freshly minted session re-flips the sampling coin, which can drop the
     // replayed error at sampleRate<100 (sampling applies to replayed orphans).
     event['delivered'] = true;
+  }
+
+  /**
+   * A main-thread jank is delivered while the process that janked is still
+   * running, so it belongs to the current session and view — never to a replayed
+   * original session or to the previous launch's last view. It is a handled,
+   * non-crash error: counted in the view's error count, not its crash count.
+   */
+  private onJankReport(event: Record<string, Object>): void {
+    const m: DefaultRumMonitor | null = this.monitor;
+    if (m === null) {
+      FlashcatLog.d('rum.crash: jank dropped because monitor is null');
+      return;
+    }
+    m.reportError(
+      RumFeature.asString(event['message']),
+      RumErrorSource.SOURCE,
+      RumFeature.asString(event['stack']),
+      false,
+      'handled',
+      RumFeature.crashAttributes(event));
   }
 
   /**
@@ -831,8 +856,17 @@ export class RumFeature implements Feature, FeatureEventReceiver {
     const kind: Object | undefined = event['crash_kind'];
     // APP_FREEZE is the system watchdog's application-not-responding verdict
     // (delivered on next launch, like Android ANRs) — not a self-sampled hang,
-    // so it is categorized as ANR rather than App Hang.
-    attributes['error.category'] = kind === 'freeze' ? 'ANR' : 'Exception';
+    // so it is categorized as ANR rather than App Hang. A MAIN_THREAD_JANK is a
+    // slow main-thread task the process survived. The backend groups both by
+    // these category values, so they change together with it.
+    if (kind === 'freeze') {
+      attributes['error.category'] = 'ANR';
+    } else if (kind === 'jank') {
+      attributes['error.category'] = 'Jank';
+      attributes['error.type'] = 'MAIN_THREAD_JANK';
+    } else {
+      attributes['error.category'] = 'Exception';
+    }
     const buildId: Object | undefined = event['build_id'];
     if (typeof buildId === 'string' && buildId.length > 0) {
       attributes['build_id'] = buildId;
@@ -851,6 +885,12 @@ export class RumFeature implements Feature, FeatureEventReceiver {
       attributes['crash.recovered'] = true;
     }
     RumFeature.copyNonEmptyString(event, attributes, 'freeze.dump_started_at', 'freeze.dump_started_at');
+    for (const key of ['jank.duration_ms', 'jank.sampled_at']) {
+      const value: Object | undefined = event[key];
+      if (typeof value === 'number') {
+        attributes[key] = value;
+      }
+    }
     return attributes;
   }
 
