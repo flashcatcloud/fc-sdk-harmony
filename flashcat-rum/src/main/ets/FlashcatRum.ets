@@ -1,3 +1,4 @@
+import { UIContext } from '@kit.ArkUI';
 import { Flashcat, SdkCore, FeatureScope, FlashcatContext, IntakeTarget,
   RUM_FEATURE_NAME, FlashcatLog } from '@flashcatcloud/core';
 import { RumConfiguration } from './RumConfiguration';
@@ -7,9 +8,18 @@ import { DefaultRumMonitor } from './internal/monitor/DefaultRumMonitor';
 import { RumAutoInstrumentation } from './internal/RumAutoInstrumentation';
 import { RumNavigationTracker, NavContext } from './internal/RumNavigationTracker';
 import { RumEventMapperHolder } from './internal/RumEventMapperHolder';
-import { RemoteConfigStore } from './internal/remoteconfig/RemoteConfigStore';
+import { RemoteConfigStore, RemoteConfigValues } from './internal/remoteconfig/RemoteConfigStore';
 import { RemoteConfigController } from './internal/remoteconfig/RemoteConfigController';
 import { HttpRemoteConfigFetcher, buildConfigUrl } from './internal/remoteconfig/RemoteConfigFetcher';
+import { ResourceSampler } from './internal/vitals/ResourceSampler';
+import { systemResourceReaders } from './internal/vitals/SystemResourceReaders';
+import { FrameObserver } from './internal/vitals/FrameObserver';
+import { systemFrameSources } from './internal/vitals/SystemFrameSources';
+import { VitalsCollectors } from './internal/vitals/VitalsCollector';
+import { VitalsUpdateFrequency, vitalsPeriodMs } from './VitalsUpdateFrequency';
+import { AppLaunchTracker, AppLaunchSink, StartupType } from './internal/startup/AppLaunchTracker';
+import { systemFrameHooks, systemProcessAgeMs, systemElapsedMs } from './internal/startup/SystemLaunchHooks';
+import { APP_LAUNCH_TTID, APP_LAUNCH_TTFD } from './internal/assembly/RumEventAssembler';
 
 /**
  * Enables Real User Monitoring. Call after `Flashcat.initialize`.
@@ -23,6 +33,14 @@ import { HttpRemoteConfigFetcher, buildConfigUrl } from './internal/remoteconfig
  * Mirrors `Rum.enable(rumConfiguration, sdkCore)` on Android.
  */
 export class FlashcatRum {
+  // The frames of every context passed to startViewTracking; one per enable.
+  private static frames: FrameObserver | null = null;
+  // The context first handed over for each ability, by that ability's context.
+  // `getUIContext()` returns a new object on every call, and everything that
+  // tracks a context tells contexts apart by identity: a second one for the
+  // same ability would observe its pages and frames twice.
+  private static readonly tracked: Map<Object, NavContext> = new Map<Object, NavContext>();
+
   static enable(configuration: RumConfiguration, sdkCore?: SdkCore): void {
     // Called from the host's startup path (and possibly before initialize): a
     // failure leaves the app without RUM, never without the app.
@@ -67,6 +85,7 @@ export class FlashcatRum {
     // back — by which time it is there. The controller has to exist first
     // because the monitor owns it.
     let monitorRef: DefaultRumMonitor | null = null;
+    let collectorsRef: VitalsCollectors | null = null;
     if (configuration.remoteConfigurationEnabled) {
       try {
         const intake: IntakeTarget = core.getIntakeTarget();
@@ -78,8 +97,16 @@ export class FlashcatRum {
           new HttpRemoteConfigFetcher(`flashcat-sdk-harmony/${context.sdkVersion}`),
           buildConfigUrl(intake.host, intake.clientToken, context),
           (activation: string, before: number | null, after: number | null): void => {
-            if (monitorRef !== null) {
-              monitorRef.onRemoteConfigurationChanged(activation, before, after);
+            try {
+              if (monitorRef !== null) {
+                monitorRef.onRemoteConfigurationChanged(activation, before, after);
+              }
+            } finally {
+              // A published frequency applies at once, not at the next session,
+              // and not only when the session side took the change cleanly.
+              if (collectorsRef !== null) {
+                collectorsRef.refreshPeriod();
+              }
             }
           }
         );
@@ -92,9 +119,41 @@ export class FlashcatRum {
       }
     }
 
-    const monitor: DefaultRumMonitor = new DefaultRumMonitor(core, scope, configuration, store, controller);
+    const periodOf: () => number = FlashcatRum.vitalsPeriodOf(configuration, store);
+    const apiVersion: number = core.getContext().device.apiVersion;
+    const frames: FrameObserver = new FrameObserver(systemFrameSources(apiVersion), periodOf);
+    const collectors: VitalsCollectors = new VitalsCollectors([
+      new ResourceSampler(systemResourceReaders(), periodOf), frames]);
+    collectorsRef = collectors;
+    // What it measures goes through the monitor, so it lands in whatever
+    // session and view are current, under their sampling.
+    const launchSink: AppLaunchSink = {
+      initialDisplay: (type: StartupType, startMs: number, durationNs: number, atMs: number,
+        fullyDisplayed: boolean): void => {
+        if (monitorRef !== null) {
+          monitorRef.reportAppLaunch(APP_LAUNCH_TTID, type, startMs, durationNs, atMs, fullyDisplayed);
+        }
+      },
+      fullDisplay: (type: StartupType, startMs: number, durationNs: number, atMs: number): void => {
+        if (monitorRef !== null) {
+          monitorRef.reportAppLaunch(APP_LAUNCH_TTFD, type, startMs, durationNs, atMs);
+        }
+      },
+      viewLoaded: (viewKey: string, atMs: number): void => {
+        if (monitorRef !== null) {
+          monitorRef.addAutoViewLoadingTime(viewKey, atMs);
+        }
+      }
+    };
+    const launch: AppLaunchTracker =
+      new AppLaunchTracker(launchSink, systemFrameHooks(apiVersion), systemProcessAgeMs, (): number => Date.now(),
+        systemElapsedMs);
+    const monitor: DefaultRumMonitor =
+      new DefaultRumMonitor(core, scope, configuration, store, controller, collectors, launch);
     monitorRef = monitor;
-    feature.attachMonitor(monitor);
+    feature.attachMonitor(monitor, collectors, launch);
+    FlashcatRum.frames = frames;
+    RumNavigationTracker.configureLaunch(launch);
     GlobalRumMonitor.register(monitor);
 
     // Phase 2: make the auto-instrumentation toggles consultable by the tap /
@@ -108,6 +167,17 @@ export class FlashcatRum {
     }
   }
 
+  /** The sampling period of the console's published frequency, when there is
+   * one, over the init value; 0 (`NEVER`) also turns frame observation off. */
+  private static vitalsPeriodOf(configuration: RumConfiguration, store: RemoteConfigStore | null): () => number {
+    return (): number => {
+      const stored: RemoteConfigValues | null = store === null ? null : store.read();
+      const frequency: VitalsUpdateFrequency =
+        stored !== null && stored.vitalsUpdateFrequency !== null
+          ? stored.vitalsUpdateFrequency : configuration.vitalsUpdateFrequency;
+      return vitalsPeriodMs(frequency);
+    };
+  }
 
   /**
    * Auto-record a TAP action on `target`. No-op unless RUM is enabled with
@@ -122,19 +192,46 @@ export class FlashcatRum {
   /**
    * Start automatic View tracking for `router` navigation, scoped to `context`
    * (a UIAbilityContext or a UIContext from UI land). Each page show/hide then
-   * emits start/stopView automatically. No-op unless RUM is enabled with
-   * `setTrackNavigation(true)`. Idempotent.
+   * emits start/stopView automatically, and each shown page's first frame sets
+   * its `view.loading_time`. Router tracking is a no-op unless RUM is enabled
+   * with `setTrackNavigation(true)`. Idempotent per ability: every
+   * `getUIContext()` of its windows and the ability's own context count as one.
+   * One window per ability is tracked: sub-windows of the same ability share its
+   * host context and are not observed separately.
+   *
+   * Call it in every app, router-based or not: app launch timing (time to
+   * initial display, cold / warm / hot) ends at the first frame drawn, and
+   * this is where the SDK hooks frames — whatever `setTrackNavigation` says.
+   * Call it in the first page's `aboutToAppear`, with `this.getUIContext()`,
+   * so the hook is in place before that page's first frame; a launch whose
+   * first frame was missed is not reported. Launch timing does not depend on
+   * `VitalsUpdateFrequency`: `NEVER` does not turn it off.
    *
    * IMPORTANT: pair with `stopViewTracking(context)` in the ability's
-   * onDestroy — the registry holds a strong reference per context, so
+   * onDestroy (`this.context` there will do) — the registry holds a strong reference per context, so
    * create/destroy churn without the stop call pins each dead context for the
    * lifetime of the RUM enablement.
    *
    * Covers `router`-based navigation only; `Navigation`/`NavDestination`-based
    * apps should call startView/stopView manually for now.
+   *
+   * This is also where views start measuring the frames `context`'s window
+   * draws (`view.refresh_rate_*`, `view.slow_frame` / `view.frozen_frame`,
+   * `view.slow_frames_rate`, `view.freeze_rate`), whether or not navigation is
+   * tracked automatically; `VitalsUpdateFrequency.NEVER` turns it off. On API
+   * 22+ every redraw counts; on API 12–21 only frames drawn while a list or
+   * other scrollable moves. A host driving its own animation with
+   * `displaySync` or `postFrameCallback` makes the system report frames that
+   * redrew nothing, which raises the frame rate RUM reports.
    */
   static startViewTracking(context: NavContext): void {
-    RumNavigationTracker.attach(context);
+    const key: Object = FlashcatRum.abilityOf(context);
+    const tracked: NavContext = FlashcatRum.tracked.get(key) ?? context;
+    FlashcatRum.tracked.set(key, tracked);
+    RumNavigationTracker.attach(tracked);
+    if (FlashcatRum.frames !== null) {
+      FlashcatRum.frames.attach(tracked);
+    }
   }
 
   /**
@@ -142,10 +239,30 @@ export class FlashcatRum {
    * observer (call before an ability is destroyed); without, detaches all.
    */
   static stopViewTracking(context?: NavContext): void {
+    let tracked: NavContext | undefined = undefined;
     if (context !== undefined) {
-      RumNavigationTracker.detachContext(context);
+      const key: Object = FlashcatRum.abilityOf(context);
+      tracked = FlashcatRum.tracked.get(key) ?? context;
+      FlashcatRum.tracked.delete(key);
+      RumNavigationTracker.detachContext(tracked);
     } else {
+      FlashcatRum.tracked.clear();
       RumNavigationTracker.detach();
     }
+    if (FlashcatRum.frames !== null) {
+      FlashcatRum.frames.detach(tracked);
+    }
+  }
+
+  /** The ability a context belongs to: a UIContext's host context, the same
+   * object on every call and the ability's own `this.context`. */
+  private static abilityOf(context: NavContext): Object {
+    if (context instanceof UIContext) {
+      const host: Object | undefined = context.getHostContext() as Object | undefined;
+      if (host !== undefined) {
+        return host;
+      }
+    }
+    return context;
   }
 }

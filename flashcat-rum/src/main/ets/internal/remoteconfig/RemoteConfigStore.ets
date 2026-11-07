@@ -1,5 +1,6 @@
 import { SdkCore, FlashcatContext } from '@flashcatcloud/core';
 import { util } from '@kit.ArkTS';
+import { VitalsUpdateFrequency, parseVitalsUpdateFrequency } from '../../VitalsUpdateFrequency';
 
 export const DEFAULT_TTL_SECONDS: number = 300;
 // Covers the 16 KiB custom budget, the response envelope, and JSON escaping
@@ -22,6 +23,7 @@ export class RemoteConfigValues {
   readonly ttlSeconds: number;
   readonly refreshOnForeground: boolean;
   readonly sessionOnError: boolean | null;
+  readonly vitalsUpdateFrequency: VitalsUpdateFrequency | null;
 
   constructor(
     sessionSampleRate: number | null,
@@ -30,7 +32,8 @@ export class RemoteConfigValues {
     etag: string | null = null,
     ttlSeconds: number = DEFAULT_TTL_SECONDS,
     refreshOnForeground: boolean = false,
-    sessionOnError: boolean | null = null
+    sessionOnError: boolean | null = null,
+    vitalsUpdateFrequency: VitalsUpdateFrequency | null = null
   ) {
     this.sessionSampleRate = sessionSampleRate;
     this.version = version;
@@ -39,6 +42,7 @@ export class RemoteConfigValues {
     this.ttlSeconds = ttlSeconds;
     this.refreshOnForeground = refreshOnForeground;
     this.sessionOnError = sessionOnError;
+    this.vitalsUpdateFrequency = vitalsUpdateFrequency;
   }
 }
 
@@ -71,14 +75,16 @@ const FIELD_ETAG: string = 'etag';
 const FIELD_TTL: string = 'ttl';
 const FIELD_REFRESH_ON_FOREGROUND: string = 'refresh_on_foreground';
 const FIELD_SESSION_ON_ERROR: string = 'session_on_error';
+const FIELD_VITALS_UPDATE_FREQUENCY: string = 'vitals_update_frequency';
 /**
  * Which fields the entry was written with. An entry written by an SDK that did
  * not read every field this one reads carries a validator for a response this
  * SDK has never seen: its values are kept, its validator is not, so the next
- * request asks for the whole body. Format 2 added `session_on_error`.
+ * request asks for the whole body. Format 2 added `session_on_error`, format 3
+ * `vitals_update_frequency`.
  */
 const FIELD_FORMAT: string = 'format';
-const RECORD_FORMAT: number = 2;
+const RECORD_FORMAT: number = 3;
 const MAX_RATE: number = 100;
 
 /**
@@ -137,6 +143,9 @@ export class RemoteConfigStore {
     }
     if (values.sessionOnError !== null) {
       record[FIELD_SESSION_ON_ERROR] = values.sessionOnError;
+    }
+    if (values.vitalsUpdateFrequency !== null) {
+      record[FIELD_VITALS_UPDATE_FREQUENCY] = values.vitalsUpdateFrequency;
     }
     record[FIELD_TTL] = values.ttlSeconds;
     record[FIELD_REFRESH_ON_FOREGROUND] = values.refreshOnForeground;
@@ -228,7 +237,8 @@ export class RemoteConfigStore {
       hasRefreshSettings ? RemoteConfigStore.stringOf(record[FIELD_ETAG]) : null,
       ttl !== null && ttl > 0 ? ttl : DEFAULT_TTL_SECONDS,
       record[FIELD_REFRESH_ON_FOREGROUND] === true,
-      typeof record[FIELD_SESSION_ON_ERROR] === 'boolean' ? record[FIELD_SESSION_ON_ERROR] as boolean : null
+      typeof record[FIELD_SESSION_ON_ERROR] === 'boolean' ? record[FIELD_SESSION_ON_ERROR] as boolean : null,
+      parseVitalsUpdateFrequency(record[FIELD_VITALS_UPDATE_FREQUENCY])
     );
   }
 

@@ -1,6 +1,7 @@
 import { FlashcatLog } from '@flashcatcloud/core';
 import { RemoteConfigStore, RemoteConfigValues, DEFAULT_TTL_SECONDS } from './RemoteConfigStore';
 import { RemoteConfigFetcher, RemoteConfigResponse } from './RemoteConfigFetcher';
+import { VitalsUpdateFrequency, parseVitalsUpdateFrequency } from '../../VitalsUpdateFrequency';
 
 const RETRY_DELAYS_SECONDS: number[] = [5, 60];
 const JITTER_FRACTION: number = 0.2;
@@ -65,6 +66,7 @@ const FIELD_RUM: string = 'rum';
 const FIELD_CUSTOM: string = 'custom';
 const FIELD_SESSION_SAMPLE_RATE: string = 'sessionSampleRate';
 const FIELD_SESSION_ON_ERROR: string = 'sessionOnError';
+const FIELD_VITALS_UPDATE_FREQUENCY: string = 'vitalsUpdateFrequency';
 
 /**
  * Keeps the stored remote configuration in step with what the console says.
@@ -311,11 +313,15 @@ export class RemoteConfigController {
     const rumValues: Record<string, Object> | null = enabled ? RemoteConfigController.objectOf(json[FIELD_RUM]) : null;
     const rate: number | null = RemoteConfigController.readRate(rumValues);
     const sessionOnError: boolean | null = RemoteConfigController.readSwitch(rumValues, FIELD_SESSION_ON_ERROR);
+    // Anything but one of the four names stays absent: the init value applies.
+    const vitalsUpdateFrequency: VitalsUpdateFrequency | null =
+      parseVitalsUpdateFrequency(rumValues === null ? undefined : rumValues[FIELD_VITALS_UPDATE_FREQUENCY]);
     // Stored as the raw string: delivery is the platform's job, the meaning
     // belongs to the host application.
     const custom: string | null = enabled ? RemoteConfigController.rawObjectOf(json[FIELD_CUSTOM]) : null;
     const ttl: number = RemoteConfigController.positiveIntOf(json[FIELD_TTL]) ?? DEFAULT_TTL_SECONDS;
-    if (!this.store.write(new RemoteConfigValues(rate, version, custom, etag, ttl, refreshOnForeground, sessionOnError))) {
+    if (!this.store.write(new RemoteConfigValues(rate, version, custom, etag, ttl, refreshOnForeground, sessionOnError,
+      vitalsUpdateFrequency))) {
       FlashcatLog.d('rum.remoteconfig: configuration exceeds the storage budget; keeping the values already in use');
       return ApplyOutcome.UNREADABLE;
     }
