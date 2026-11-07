@@ -4,12 +4,11 @@ import {
   Feature, FeatureEventReceiver, UserInfo, IntakeTarget
 } from '@flashcatcloud/core';
 import { hidebug } from '@kit.PerformanceAnalysisKit';
-import { taskpool } from '@kit.ArkTS';
 import { fileIo } from '@kit.CoreFileKit';
 import { ViewVitals } from '../main/ets/internal/vitals/ViewVitals';
 import { ResourceSampler, ResourceReaders, SamplerTimer } from '../main/ets/internal/vitals/ResourceSampler';
 import {
-  MemoryPath, memoryPathFor, parseUtimeTicks, systemResourceReaders
+  parseUtimeTicks, parseVmRssKb, systemResourceReaders
 } from '../main/ets/internal/vitals/SystemResourceReaders';
 import {
   VitalsUpdateFrequency, vitalsPeriodMs, parseVitalsUpdateFrequency, DEFAULT_VITALS_UPDATE_FREQUENCY
@@ -214,6 +213,9 @@ export function raw(kind: string, timestampMs: number, key?: string): RumRawEven
 }
 
 /** utime=4242 (field 14); the process name carries spaces and a ")". */
+const STATUS_TEXT: string =
+  'Name:\tentry\nUmask:\t0022\nState:\tS (sleeping)\nVmPeak:\t 9000 kB\nVmSize:\t 8000 kB\n' +
+  'VmHWM:\t 1200 kB\nVmRSS:\t    1000 kB\nRssAnon:\t 600 kB\nThreads:\t12\n';
 const STAT_LINE: string =
   '1234 (com.example.app (x) y) S 1 1234 0 0 -1 4194560 1200 0 3 0 4242 77 0 0 20 0 30 0 5000 0 0';
 
@@ -285,13 +287,10 @@ export default function viewVitalsTests(): void {
       expect(parseVitalsUpdateFrequency(undefined)).assertNull();
     });
 
-    it('memoryPathFollowsTheApiLevel', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
-      expect(memoryPathFor(11)).assertEqual(MemoryPath.NONE);
-      expect(memoryPathFor(12)).assertEqual(MemoryPath.NATIVE_TASKPOOL);
-      expect(memoryPathFor(19)).assertEqual(MemoryPath.NATIVE_TASKPOOL);
-      expect(memoryPathFor(20)).assertEqual(MemoryPath.NATIVE_ASYNC);
-      expect(memoryPathFor(23)).assertEqual(MemoryPath.NATIVE_ASYNC);
-      expect(memoryPathFor(24)).assertEqual(MemoryPath.RSS_INFO);
+    it('vmRssIsReadInKilobytesFromTheStatusText', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+      expect(parseVmRssKb(STATUS_TEXT)).assertEqual(1000);
+      expect(parseVmRssKb('VmHWM:\t 2000 kB\nVmSize:\t 3000 kB\n')).assertNull();
+      expect(parseVmRssKb('not a status file')).assertNull();
     });
 
     it('utimeIsField14CountedAfterTheProcessName', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
@@ -307,34 +306,29 @@ export default function viewVitalsTests(): void {
       pseudo.set('/proc/self/stat', STAT_LINE);
       try {
         expect(fileIo.readTextSync('/proc/self/stat')).assertEqual(''); // the trap the reader must avoid
-        const read: (() => number | null) | null = systemResourceReaders(24).cpuTicks;
+        const read: (() => number | null) | null = systemResourceReaders().cpuTicks;
         expect(read === null ? null : read()).assertEqual(4242);
       } finally {
         pseudo.delete('/proc/self/stat');
       }
     });
 
-    it('eachApiLevelReadsMemoryThroughItsOwnPath', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, async (): Promise<void> => {
+    it('memoryIsReadFromAProcFileWhoseSizeIsZeroWithoutHidebug', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, async (): Promise<void> => {
+      // As on the device: /proc/self/status has content, and a size of 0.
+      const pseudo: Map<string, string> = (fileIo as Object as Record<string, Object>)['pseudoFiles'] as Map<string, string>;
       const debug: Record<string, Object> = hidebug as Object as Record<string, Object>;
       const calls: Record<string, number> = debug['calls'] as Record<string, number>;
-      const pool: Record<string, Object> = taskpool as Object as Record<string, Object>;
-      const before: Record<string, number> = {
-        'rss': calls['getRssInfo'], 'async': calls['getAppNativeMemInfoAsync'],
-        'sync': calls['getAppNativeMemInfo'], 'pool': pool['executed'] as number
-      };
-      const levels: number[] = [24, 21, 15];
-      const bytes: Array<number | null> = [];
-      for (const level of levels) {
-        const read: (() => Promise<number | null>) | null = systemResourceReaders(level).memoryBytes;
-        bytes.push(read === null ? null : await read());
+      const before: number = calls['getRssInfo'] + calls['getAppNativeMemInfo'] + calls['getAppNativeMemInfoAsync'];
+      pseudo.set('/proc/self/status', STATUS_TEXT);
+      try {
+        const read: (() => Promise<number | null>) | null = systemResourceReaders().memoryBytes;
+        // 1000 kB from the kernel, Android's ×1000.
+        expect(read === null ? null : await read()).assertEqual(1_000_000);
+        // hidebug is not called: an isolated call costs milliseconds of CPU on a phone.
+        expect(calls['getRssInfo'] + calls['getAppNativeMemInfo'] + calls['getAppNativeMemInfoAsync']).assertEqual(before);
+      } finally {
+        pseudo.delete('/proc/self/status');
       }
-      // 1000 KB from the system, Android's ×1000.
-      expect(bytes.join(',')).assertEqual('1000000,1000000,1000000');
-      expect(calls['getRssInfo'] - before['rss']).assertEqual(1);
-      expect(calls['getAppNativeMemInfoAsync'] - before['async']).assertEqual(1);
-      expect(calls['getAppNativeMemInfo'] - before['sync']).assertEqual(1);
-      expect((pool['executed'] as number) - before['pool']).assertEqual(1);
-      expect(systemResourceReaders(11).memoryBytes).assertNull();
     });
 
     it('nothingIsSampledInTheBackground', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, async (): Promise<void> => {

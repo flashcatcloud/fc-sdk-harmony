@@ -123,7 +123,7 @@ export class FlashcatRum {
     const apiVersion: number = core.getContext().device.apiVersion;
     const frames: FrameObserver = new FrameObserver(systemFrameSources(apiVersion), periodOf);
     const collectors: VitalsCollectors = new VitalsCollectors([
-      new ResourceSampler(systemResourceReaders(apiVersion), periodOf), frames]);
+      new ResourceSampler(systemResourceReaders(), periodOf), frames]);
     collectorsRef = collectors;
     // What it measures goes through the monitor, so it lands in whatever
     // session and view are current, under their sampling.
