@@ -8,30 +8,30 @@ import {
 } from '../vitals/SystemFrameSources';
 
 /**
- * How long ago this process started, in milliseconds: the clock without deep
- * sleep minus the process start time, which is read on that clock. Against the
- * clock with deep sleep a process a tenth of a second old measured as old as
- * all the device's sleep since boot (18 h on a phone), so every cold start was
- * taken for a warm one. Not `process.uptime()`: that is whole seconds, rounded
- * up. Null when either is unavailable or the two do not make a process age
- * (negative, not finite).
+ * How long ago this process started, in milliseconds: the launch clock minus
+ * the process start time, which is read on that same clock. Not
+ * `process.uptime()`: that is whole seconds, rounded up. Null when either is
+ * unavailable or the two do not make a process age (negative, not finite).
  */
 export function systemProcessAgeMs(): number | null {
   try {
-    const ageMs: number =
-      systemDateTime.getUptime(systemDateTime.TimeType.ACTIVE, false) - process.getStartRealtime();
+    const ageMs: number = systemElapsedMs() - process.getStartRealtime();
     return Number.isFinite(ageMs) && ageMs >= 0 ? ageMs : null;
   } catch (_e) {
     return null;
   }
 }
 
-/** Milliseconds since boot, deep sleep included: the clock launch durations are
- * measured on. NaN when the clock cannot be read: it is read inside lifecycle and
- * frame callbacks, where nothing may throw, and NaN measures nothing. */
+/** Milliseconds since boot, deep sleep excluded: the clock launch durations and
+ * the process age are measured on, because `process.getStartRealtime()` is on
+ * it. Against the clock with deep sleep a process a tenth of a second old
+ * measured as old as all the device's sleep since boot (18 h on a phone), and
+ * every cold start was taken for a warm one. NaN when the clock cannot be read:
+ * it is read inside lifecycle and frame callbacks, where nothing may throw, and
+ * NaN measures nothing. */
 export function systemElapsedMs(): number {
   try {
-    return systemDateTime.getUptime(systemDateTime.TimeType.STARTUP, false);
+    return systemDateTime.getUptime(systemDateTime.TimeType.ACTIVE, false);
   } catch (_e) {
     return NaN;
   }

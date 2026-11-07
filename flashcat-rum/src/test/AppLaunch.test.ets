@@ -821,6 +821,9 @@ export default function appLaunchTests(): void {
       p['startRealtimeMs'] = 344_859;
       clock['asleepMs'] = 66_859_885;
       expect(systemProcessAgeMs()).assertEqual(147);
+      // Launch durations are on the same clock: a launch start taken as
+      // elapsed minus the process age is the process start.
+      expect(systemElapsedMs() - (systemProcessAgeMs() as number)).assertEqual(344_859);
       clock['asleepMs'] = 0;
       clock['elapsedMs'] = null;
       p['uptimeSeconds'] = 0;
