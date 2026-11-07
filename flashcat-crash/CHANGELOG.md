@@ -10,6 +10,10 @@
   (`SIGSEGV(SEGV_MAPERR)`), followed by the system's reason when it gives one,
   instead of `NativeCrash`. The fault address is not part of it.
 
+## 0.7.8
+
+- No changes; released together with `@flashcatcloud/rum` 0.7.8.
+
 ## 0.7.7
 
 - Crash and freeze reports carry the id of the process that faulted

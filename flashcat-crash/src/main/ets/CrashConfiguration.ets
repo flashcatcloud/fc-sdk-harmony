@@ -29,6 +29,14 @@ export class CrashConfiguration {
   readonly crashLoopWindowMs: number;
   /** Crash-free duration that resets persisted loop history. Default 5 minutes. */
   readonly crashLoopCooldownMs: number;
+  /**
+   * Report main-thread janks (hiAppEvent MAIN_THREAD_JANK) as handled errors carrying
+   * the sampled stack. The system decides when to sample and caps the reports per
+   * process. From API 15 the SDK sets the process-wide MAIN_THREAD_JANK sampling
+   * config (stacks only, up to 3 reports), which may override one the app set
+   * itself. Default true.
+   */
+  readonly trackMainThreadJank: boolean;
 
   constructor(
     trackCrashes: boolean,
@@ -37,7 +45,8 @@ export class CrashConfiguration {
     jsCrashPolicy: JsCrashPolicy = JsCrashPolicy.REPORT_THEN_EXIT,
     crashLoopThreshold: number = 3,
     crashLoopWindowMs: number = 60000,
-    crashLoopCooldownMs: number = 300000
+    crashLoopCooldownMs: number = 300000,
+    trackMainThreadJank: boolean = true
   ) {
     this.trackCrashes = trackCrashes;
     this.trackAppHangs = trackAppHangs;
@@ -46,6 +55,7 @@ export class CrashConfiguration {
     this.crashLoopThreshold = crashLoopThreshold;
     this.crashLoopWindowMs = crashLoopWindowMs;
     this.crashLoopCooldownMs = crashLoopCooldownMs;
+    this.trackMainThreadJank = trackMainThreadJank;
   }
 }
 
@@ -57,6 +67,7 @@ export class CrashConfigurationBuilder {
   private crashLoopThreshold: number = 3;
   private crashLoopWindowMs: number = 60000;
   private crashLoopCooldownMs: number = 300000;
+  private trackMainThreadJank: boolean = true;
 
   setTrackCrashes(enabled: boolean): CrashConfigurationBuilder {
     this.trackCrashes = enabled;
@@ -65,6 +76,11 @@ export class CrashConfigurationBuilder {
 
   setTrackAppHangs(enabled: boolean): CrashConfigurationBuilder {
     this.trackAppHangs = enabled;
+    return this;
+  }
+
+  setTrackMainThreadJank(enabled: boolean): CrashConfigurationBuilder {
+    this.trackMainThreadJank = enabled;
     return this;
   }
 
@@ -109,6 +125,7 @@ export class CrashConfigurationBuilder {
       this.jsCrashPolicy,
       this.crashLoopThreshold,
       this.crashLoopWindowMs,
-      this.crashLoopCooldownMs);
+      this.crashLoopCooldownMs,
+      this.trackMainThreadJank);
   }
 }

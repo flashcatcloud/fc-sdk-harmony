@@ -5,3 +5,4 @@ export { RumConfiguration, RumConfigurationBuilder } from './src/main/ets/RumCon
 export { RumMonitor, GlobalRumMonitor } from './src/main/ets/RumMonitor';
 export { RumActionType, RumErrorSource, RumResourceKind, RumResourceMethod, RumEventMapper,
   BeforeSamplingContext, BeforeSamplingCallback } from './src/main/ets/RumTypes';
+export { VitalsUpdateFrequency } from './src/main/ets/VitalsUpdateFrequency';
