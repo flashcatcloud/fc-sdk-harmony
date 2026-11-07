@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.8
+
+- No changes; released together with `@flashcatcloud/rum` 0.7.8.
+
 ## 0.7.7
 
 - Crash and freeze reports carry the id of the process that faulted
