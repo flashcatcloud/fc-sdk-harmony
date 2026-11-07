@@ -6,7 +6,7 @@
 export interface RumRawEvent {
   kind: string;                 // 'startView' | 'stopView' | 'addAction' | 'addError'
                                 // | 'startResource' | 'stopResource' | 'stopResourceWithError'
-                                // | 'keepAlive' | 'markCrash'
+                                // | 'keepAlive' | 'markCrash' | 'appLaunch' | 'addViewLoadingTime'
                                 // markCrash: bump the active view's error+crash counts without
                                 // writing an error event (the error itself is delivered by the
                                 // durable pending-incident replay at next launch).
@@ -34,6 +34,17 @@ export interface RumRawEvent {
   // An error of a process that already died, replayed into whichever session is
   // current because nothing identifies the one it happened in.
   inherited?: boolean;
+
+  // app launch vital (kind === 'appLaunch'); timestampMs is when it was measured
+  launchMetric?: string;        // 'ttid' | 'ttfd'
+  startupType?: string;         // StartupType value
+  launchStartMs?: number;       // epoch ms the launch started: the vital's date
+  launchDurationNs?: number;
+  launchFullyDisplayed?: boolean; // ttid: also report it as the ttfd (fully displayed first)
+
+  // view loading time (kind === 'addViewLoadingTime'); timestampMs is when the view loaded
+  overwrite?: boolean;          // manual: replace a value an earlier manual call set
+  loadingTimeAuto?: boolean;    // measured by the SDK for the router page `key`
 
   // resource specifics (kind === 'startResource' | 'stopResource')
   url?: string;

@@ -1,4 +1,5 @@
 import { RumEventMapper, BeforeSamplingCallback } from './RumTypes';
+import { VitalsUpdateFrequency, DEFAULT_VITALS_UPDATE_FREQUENCY } from './VitalsUpdateFrequency';
 
 /**
  * RUM feature configuration. Built via {@link RumConfigurationBuilder}.
@@ -20,6 +21,8 @@ export class RumConfiguration {
   readonly sessionOnError: boolean;
   /** Send the once-a-day active-device beacon. Default true. */
   readonly trackActiveDevices: boolean;
+  /** How often memory and CPU are sampled for the open view; `NEVER` also stops frame measurement. */
+  readonly vitalsUpdateFrequency: VitalsUpdateFrequency;
 
   constructor(
     applicationId: string,
@@ -33,7 +36,8 @@ export class RumConfiguration {
     remoteConfigurationEnabled: boolean = false,
     beforeSampling: BeforeSamplingCallback | null = null,
     sessionOnError: boolean = false,
-    trackActiveDevices: boolean = true
+    trackActiveDevices: boolean = true,
+    vitalsUpdateFrequency: VitalsUpdateFrequency = DEFAULT_VITALS_UPDATE_FREQUENCY
   ) {
     this.applicationId = applicationId;
     this.sessionSampleRate = sessionSampleRate;
@@ -47,6 +51,7 @@ export class RumConfiguration {
     this.beforeSampling = beforeSampling;
     this.sessionOnError = sessionOnError;
     this.trackActiveDevices = trackActiveDevices;
+    this.vitalsUpdateFrequency = vitalsUpdateFrequency;
   }
 }
 
@@ -66,6 +71,7 @@ export class RumConfigurationBuilder {
   private beforeSampling: BeforeSamplingCallback | null = null;
   private sessionOnError: boolean = false;
   private trackActiveDevices: boolean = true;
+  private vitalsUpdateFrequency: VitalsUpdateFrequency = DEFAULT_VITALS_UPDATE_FREQUENCY;
 
   constructor(applicationId: string) {
     this.applicationId = applicationId;
@@ -194,6 +200,24 @@ export class RumConfigurationBuilder {
   }
 
   /**
+   * How often the memory and CPU of the app are sampled while it is in the
+   * foreground, for the view that is open: `view.memory_average` /
+   * `view.memory_max` (bytes) and `view.cpu_ticks_count` /
+   * `view.cpu_ticks_per_second`. Same values as the Android SDK.
+   * Drawn frames (see `FlashcatRum.startViewTracking`) have no period, only
+   * this switch: any value but `NEVER` measures them.
+   * `NEVER` measures nothing. A field the device cannot read is left out of the
+   * view rather than sent as 0.
+   *
+   * With remote configuration enabled, the console's `vitalsUpdateFrequency`
+   * overrides this value as soon as it arrives.
+   */
+  setVitalsUpdateFrequency(frequency: VitalsUpdateFrequency): RumConfigurationBuilder {
+    this.vitalsUpdateFrequency = frequency;
+    return this;
+  }
+
+  /**
    * Report that the app is in use: at most one beacon per local day per device,
    * user and app version. Default true.
    *
@@ -224,7 +248,8 @@ export class RumConfigurationBuilder {
       this.remoteConfigurationEnabled,
       this.beforeSampling,
       this.sessionOnError,
-      this.trackActiveDevices
+      this.trackActiveDevices,
+      this.vitalsUpdateFrequency
     );
   }
 }

@@ -10,6 +10,16 @@ const ERROR_SOURCE_TYPE_ATTRIBUTE: string = 'error.source_type';
 const ERROR_META_CODE_TYPE_ATTRIBUTE: string = 'error.meta.code_type';
 const ERROR_THREADS_ATTRIBUTE: string = 'error.threads';
 
+export const APP_LAUNCH_TTID: string = 'ttid';
+export const APP_LAUNCH_TTFD: string = 'ttfd';
+
+/** The view an app launch vital is reported on. */
+export interface LaunchView {
+  readonly id: string;
+  readonly name: string;
+  readonly url: string;
+}
+
 /**
  * Builds RUM event objects (View / Error / Resource) for phase 1. Fields follow
  * the shared `rum-events-format` ViewEvent / ErrorEvent / ResourceEvent shapes.
@@ -38,7 +48,8 @@ export class RumEventAssembler {
     isActive: boolean,
     attributes: Record<string, Object>,
     draw: DrawnConfiguration | null = null,
-    sampledForError: boolean = false
+    sampledForError: boolean = false,
+    vitalFields: Record<string, Object> = {}
   ): Record<string, Object> {
     const event: Record<string, Object> = {};
     event['type'] = 'view';
@@ -66,6 +77,10 @@ export class RumEventAssembler {
     // crash-free rate. Without it every session reads as crash-free even when
     // is_crash errors were reported. Counts is_crash errors, matching 崩溃次数.
     view['crash'] = RumEventAssembler.count(crashCount);
+    // Only the keys that have samples behind them (memory, CPU, frames).
+    for (const k of Object.keys(vitalFields)) {
+      view[k] = vitalFields[k];
+    }
     event['view'] = view;
 
     RumEventAssembler.applyContext(event, context, attributes);
@@ -150,6 +165,50 @@ export class RumEventAssembler {
       error['resource'] = errResource;
     }
     event['error'] = error;
+
+    RumEventAssembler.applyContext(event, context, attributes);
+    return event;
+  }
+
+  /**
+   * An app launch vital (`type: vital`, `vital.type: app_launch`), as the
+   * Android SDK writes it. `date` is when the launch started; `duration` is in
+   * nanoseconds. The open view, when there is one, is the view it is reported on.
+   */
+  static appLaunch(
+    context: FlashcatContext,
+    applicationId: string,
+    sessionId: string,
+    view: LaunchView | null,
+    metric: string,
+    startupType: string,
+    dateMs: number,
+    durationNs: number,
+    attributes: Record<string, Object>,
+    draw: DrawnConfiguration | null = null,
+    sampledForError: boolean = false
+  ): Record<string, Object> {
+    const event: Record<string, Object> = {};
+    event['type'] = 'vital';
+    event['date'] = dateMs;
+    event['_dd'] = RumEventAssembler.dd(0, draw, sampledForError);
+    event['application'] = RumEventAssembler.idObj(applicationId);
+    event['session'] = RumEventAssembler.session(sessionId);
+    if (view !== null) {
+      const v: Record<string, Object> = {};
+      v['id'] = view.id;
+      v['url'] = view.url;
+      v['name'] = view.name;
+      event['view'] = v;
+    }
+    const vital: Record<string, Object> = {};
+    vital['id'] = util.generateRandomUUID(true);
+    vital['type'] = 'app_launch';
+    vital['name'] = metric === APP_LAUNCH_TTID ? 'time_to_initial_display' : 'time_to_full_display';
+    vital['app_launch_metric'] = metric;
+    vital['duration'] = durationNs;
+    vital['startup_type'] = startupType;
+    event['vital'] = vital;
 
     RumEventAssembler.applyContext(event, context, attributes);
     return event;

@@ -24,6 +24,8 @@ import { RumNavigationTracker } from './RumNavigationTracker';
 import { RumEventMapperHolder } from './RumEventMapperHolder';
 import { LastView, LastViewSnapshot } from './LastViewSnapshot';
 import { AppForegroundHistory } from './AppForegroundHistory';
+import { VitalsCollector } from './vitals/VitalsCollector';
+import { AppLaunchTracker } from './startup/AppLaunchTracker';
 import { ActiveDeviceBeacon, HttpActiveBeaconSender } from './ActiveDeviceBeacon';
 
 // Internal core receiver owning the crash sidecar files. MessageBus contract.
@@ -64,6 +66,10 @@ export class RumFeature implements Feature, FeatureEventReceiver {
   // The last view the PREVIOUS process wrote, loaded once at init. Held for the
   // whole run because a hiAppEvent replay can arrive well after startup.
   private previousRunView: Record<string, Object> | null = null;
+  // Memory/CPU sampling and frame observation for the open view; foreground only.
+  private collector: VitalsCollector | null = null;
+  // Times app launches and router page loads; fed the app's lifecycle from here.
+  private launch: AppLaunchTracker | null = null;
   /** The process that wrote previousRunView, -1 when unknown. */
   private previousRunPid: number = -1;
   private activeBeacon: ActiveDeviceBeacon | null = null;
@@ -74,9 +80,23 @@ export class RumFeature implements Feature, FeatureEventReceiver {
   }
 
   /** Set by FlashcatRum.enable once the monitor is built (after registration). */
-  attachMonitor(monitor: DefaultRumMonitor): void {
+  attachMonitor(monitor: DefaultRumMonitor, collector: VitalsCollector | null = null,
+    launch: AppLaunchTracker | null = null): void {
     this.monitor = monitor;
+    this.collector = collector;
+    this.launch = launch;
     FlashcatLog.d('rum: monitor attached');
+    // RUM enabled after the core already learned it is in the foreground: no
+    // foreground message is coming. Sampling starts now, and an ability created
+    // from here on is opened in front of the user, not launched.
+    if (this.core.isAppInForeground()) {
+      if (collector !== null) {
+        collector.setForeground(true);
+      }
+      if (launch !== null) {
+        launch.onForegroundDetected();
+      }
+    }
     // If the crash feature was enabled BEFORE RUM, its startup replay found no
     // RUM receiver and retained the pending incidents — ask it to replay now.
     // Without this, a crash-before-RUM enable order strands every pending
@@ -272,6 +292,16 @@ export class RumFeature implements Feature, FeatureEventReceiver {
       this.rejectionObserver = null;
     }
     this.activeJsCrashPolicy = null;
+    // The core's stop wrote the final view documents (with what was sampled)
+    // just before this; nothing samples after it.
+    if (this.collector !== null) {
+      this.collector.stop();
+      this.collector = null;
+    }
+    if (this.launch !== null) {
+      this.launch.stop(); // unhook every frame source
+      this.launch = null;
+    }
     if (this.activeBeacon !== null) {
       this.activeBeacon.stop();
       this.activeBeacon = null;
@@ -282,6 +312,7 @@ export class RumFeature implements Feature, FeatureEventReceiver {
       this.monitor.stopWithheld(); // and any withheld release still waiting on its jitter
     }
     RumNavigationTracker.detach(); // remove the router observer
+    RumNavigationTracker.configureLaunch(null); // launch timing ends with RUM
     RumAutoInstrumentation.reset(); // make tap/nav trackers inert after stop
     RumEventMapperHolder.reset(); // clear the event mapper
     LastViewSnapshot.reset(); // stop snapshotting through a torn-down core
@@ -299,10 +330,10 @@ export class RumFeature implements Feature, FeatureEventReceiver {
    * events from the Crash feature (hiAppEvent → CrashEventMapper). */
   onReceive(event: Record<string, Object>): void {
     const type: Object | undefined = event['type'];
-    // Recorded before anything else reacts to the same message.
+    // Recorded before anything else reacts to the same message; the launch
+    // tracker and the vitals sampler below act on it too.
     if (type === 'app_background') {
       AppForegroundHistory.enteredBackground();
-      return;
     }
     if (type === 'app_foreground' || type === 'app_foreground_detected') {
       AppForegroundHistory.enteredForeground();
@@ -345,8 +376,33 @@ export class RumFeature implements Feature, FeatureEventReceiver {
       if (m !== null) {
         m.refreshRemoteConfig();
       }
+      this.setForeground(true);
+      if (this.launch !== null) {
+        this.launch.onForeground();
+      }
       this.triggerActiveBeacon();
-    } else if (type === 'app_foreground_detected' || type === 'consent_granted' || type === 'user_changed') {
+    } else if (type === 'app_foreground_detected') {
+      // Already in the foreground when the SDK started: no return from the
+      // background, so no hot start.
+      if (this.launch !== null) {
+        this.launch.onForegroundDetected();
+      }
+      this.setForeground(true);
+      this.triggerActiveBeacon();
+    } else if (type === 'app_background') {
+      this.setForeground(false);
+      if (this.launch !== null) {
+        this.launch.onBackground();
+      }
+    } else if (type === 'ability_created') {
+      if (this.launch !== null) {
+        this.launch.onAbilityCreated();
+      }
+    } else if (type === 'ability_destroyed') {
+      if (this.launch !== null) {
+        this.launch.onAbilityDestroyed();
+      }
+    } else if (type === 'consent_granted' || type === 'user_changed') {
       this.triggerActiveBeacon();
     } else if (type === 'keep_alive') {
       // App backgrounded — refresh the active view so its final time_spent is sent
@@ -378,6 +434,12 @@ export class RumFeature implements Feature, FeatureEventReceiver {
   private triggerActiveBeacon(): void {
     if (this.activeBeacon !== null) {
       this.activeBeacon.trigger();
+    }
+  }
+
+  private setForeground(foreground: boolean): void {
+    if (this.collector !== null) {
+      this.collector.setForeground(foreground);
     }
   }
 
