@@ -12,7 +12,7 @@ import {
   FlashcatLog
 } from '@flashcatcloud/core';
 import { errorManager } from '@kit.AbilityKit';
-import { process, util } from '@kit.ArkTS';
+import { process } from '@kit.ArkTS';
 import appRecovery from '@ohos.app.ability.appRecovery';
 import { RumConfiguration } from '../RumConfiguration';
 import { RumErrorSource, RumResourceKind, RumResourceMethod } from '../RumTypes';
@@ -434,13 +434,14 @@ export class RumFeature implements Feature, FeatureEventReceiver {
     if (crashedAtMs !== undefined) {
       attributes['crash.crashed_at_ms'] = crashedAtMs;
     }
-    // countInView: an incident that HAD an original session reached this
-    // fallback only because it is >23 h old — markCrash already counted it in
-    // the crashed run's view document, so counting again would double it.
-    // Everything else on this path (freezes, native crashes, watcher-only
-    // JsErrors, crash-before-first-session replays) was never counted anywhere
-    // — it MUST count here or crash-free rate reads those sessions as clean.
-    const alreadyCounted: boolean = originalSessionId.length > 0;
+    // countInView: an incident that HAD an original view reached this fallback
+    // only because it is >23 h old — markCrash already counted it in that view's
+    // document, so counting again would double it. A session without a view
+    // had no document to count it in. Everything else on this path (freezes,
+    // native crashes, watcher-only JsErrors, crashes before the first view)
+    // was never counted anywhere — it MUST count here or crash-free rate reads
+    // those sessions as clean.
+    const alreadyCounted: boolean = RumFeature.asString(event['original_view_id']).length > 0;
     const refusedBy: DrawnConfiguration | null = m.reportError(
       RumFeature.asString(event['message']),
       RumErrorSource.SOURCE,
@@ -480,9 +481,15 @@ export class RumFeature implements Feature, FeatureEventReceiver {
    * incident past the intake's 24 h window (see isReplayTooOld) is stamped now,
    * as on the fallback path, and keeps its real time in `crash.crashed_at_ms`.
    *
-   * `alreadyCounted`: the crash was counted in its own session's view when it
-   * happened (the incident is here only for its age), so only the error is
-   * written — a view counting it again would count the crash twice.
+   * `alreadyCounted`: the crash was counted in a view of its own run when it
+   * happened (the incident is here only for its age). The view is still
+   * written — the backend builds a session only from view documents — but
+   * counts neither the crash nor its error a second time.
+   *
+   * Session, view and error ids are derived from the incident, so a retry after
+   * a partial write rewrites the same documents and the intake's id dedup
+   * absorbs what had already landed. The view goes first: an error without its
+   * view is the one partial result that would leave the crash unreachable.
    *
    * Returns whether everything landed (or was dropped on purpose — mapper,
    * consent), so a failed write leaves the incident for the next launch.
@@ -497,8 +504,9 @@ export class RumFeature implements Feature, FeatureEventReceiver {
     const nowMs: number = Date.now();
     const dateMs: number = crashedAtMs !== undefined && !RumFeature.isReplayTooOld(event) ?
       Math.min(crashedAtMs, nowMs) : nowMs;
-    const sessionId: string = util.generateRandomUUID(true);
-    const viewId: string = util.generateRandomUUID(true);
+    const identity: string = RumFeature.incidentIdentity(event);
+    const sessionId: string = RumFeature.derivedUuid(`${identity}#session`);
+    const viewId: string = RumFeature.derivedUuid(`${identity}#view`);
     const viewAttributes: Record<string, Object> = {};
     for (const key of Object.keys(globalAttributes)) {
       viewAttributes[key] = globalAttributes[key];
@@ -511,40 +519,70 @@ export class RumFeature implements Feature, FeatureEventReceiver {
     for (const key of Object.keys(crashAttributes)) {
       errorAttributes[key] = crashAttributes[key];
     }
+    const counted: number = alreadyCounted ? 0 : 1;
     const applicationId: string = this.configuration.applicationId;
     let delivered: boolean = false;
     scope.withWriteContext((context: FlashcatContext, writer: EventWriter) => {
       const errorEvent: Record<string, Object> = RumEventAssembler.error(
-        context, applicationId, sessionId,
-        alreadyCounted ? undefined : viewId, alreadyCounted ? undefined : APPLICATION_LAUNCH_VIEW,
+        context, applicationId, sessionId, viewId, APPLICATION_LAUNCH_VIEW,
         RumFeature.asString(event['message']),
         RumErrorSource.SOURCE as string,
         RumFeature.asString(event['stack']),
         true, 'unhandled', dateMs, errorAttributes);
-      const mapped: Record<string, Object> | null = RumEventMapperHolder.apply(errorEvent);
-      if (mapped === null) {
-        delivered = true; // the app's mapper dropped it on purpose — handled
-        return;
-      }
-      if (!writer.write(mapped, true)) {
-        return;
-      }
-      if (alreadyCounted) {
-        delivered = true;
+      RumFeature.recordValue(errorEvent['error'])['id'] = RumFeature.derivedUuid(`${identity}#error`);
+      const error: Record<string, Object> | null = RumEventMapperHolder.apply(errorEvent);
+      if (error === null) {
+        delivered = true; // the app's mapper dropped the crash on purpose — handled
         return;
       }
       // Not through writeMapped: this view is not the current one, and recording
       // it as the last view would attribute this launch's own crash to it.
       const view: Record<string, Object> | null = RumEventMapperHolder.apply(RumEventAssembler.view(
         context, applicationId, sessionId, viewId, APPLICATION_LAUNCH_VIEW, dateMs, 0,
-        0, 1, 0, 1, 1, false, viewAttributes, draw, true));
-      delivered = view === null || writer.write(view, true);
+        0, counted, 0, counted, 1, false, viewAttributes, draw, true));
+      // A mapper that drops a view it has never heard of still keeps the crash:
+      // losing the crash would be worse than a session without its view.
+      if (view !== null && !writer.write(view, false)) {
+        return;
+      }
+      delivered = writer.write(error, true);
     });
     if (!delivered && this.core.getTrackingConsent() === TrackingConsent.NOT_GRANTED) {
       delivered = true;
     }
     FlashcatLog.d(`rum.crash: reported crash in a standalone session=${sessionId} delivered=${delivered}`);
     return delivered;
+  }
+
+  /**
+   * What identifies one fault across the launches that try to report it: the
+   * persisted incident's id, or, for a fault the system reports, what it says
+   * about the fault.
+   */
+  private static incidentIdentity(event: Record<string, Object>): string {
+    const incidentId: string = RumFeature.asString(event['incident_id']);
+    if (incidentId.length > 0) {
+      return `incident:${incidentId}`;
+    }
+    return `fault:${RumFeature.asString(event['crash_kind'])}|${RumFeature.asString(event['crash_type'])}|` +
+      `${RumFeature.optionalPositiveNumber(event['timestamp_ms']) ?? 0}|` +
+      `${RumFeature.optionalPositiveNumber(event['process_id']) ?? 0}|` +
+      `${RumFeature.asString(event['message'])}|${RumFeature.asString(event['stack'])}`;
+  }
+
+  /** Pure: a UUID-shaped id that is the same for the same `key` (four FNV-1a 32-bit lanes). */
+  static derivedUuid(key: string): string {
+    let hex: string = '';
+    for (let lane: number = 0; lane < 4; lane++) {
+      let hash: number = (0x811c9dc5 ^ Math.imul(lane + 1, 0x9e3779b1)) >>> 0;
+      for (let i: number = 0; i < key.length; i++) {
+        hash = Math.imul(hash ^ key.charCodeAt(i), 0x01000193) >>> 0;
+      }
+      hex += hash.toString(16).padStart(8, '0');
+    }
+    // Version 8 (custom) and the RFC 4122 variant, so it parses as a UUID anywhere.
+    return `${hex.substring(0, 8)}-${hex.substring(8, 12)}-8${hex.substring(13, 16)}-` +
+      `${(8 | (parseInt(hex.charAt(16), 16) & 3)).toString(16)}${hex.substring(17, 20)}-${hex.substring(20, 32)}`;
   }
 
   /**

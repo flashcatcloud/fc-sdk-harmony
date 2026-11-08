@@ -119,6 +119,8 @@ class CapturingScope implements FeatureScope {
   readonly flushes: boolean[] = [];
   /** Storage's per-event size limit: a larger event is refused, as the core's persistence refuses it. */
   rejectAbove: number = Number.MAX_SAFE_INTEGER;
+  /** Events of this type are refused, as a storage failure on that one write would. */
+  refuseType: string = '';
 
   withWriteContext(callback: (context: FlashcatContext, writer: EventWriter) => void): void {
     callback(this.core !== null ? this.core.getContext() : testContext(), new CapturingWriter(this));
@@ -156,7 +158,7 @@ class CapturingWriter implements EventWriter {
 
   write(event: Record<string, Object>, forceFlush?: boolean): boolean {
     // Storage stores a line: the newline counts toward its limit.
-    if (JSON.stringify(event).length + 1 > this.scope.rejectAbove) {
+    if (JSON.stringify(event).length + 1 > this.scope.rejectAbove || event['type'] === this.scope.refuseType) {
       return false;
     }
     this.scope.written.push(event);
@@ -792,10 +794,11 @@ export default function sessionOnErrorTests(): void {
         expect(dropped['delivered']).assertEqual(true);
       });
 
-    it('aCountedCrashTooOldForItsSessionIsReportedAloneWithoutAView',
+    it('aCrashTooOldForItsViewIsReportedInAViewThatDoesNotCountItAgain',
       TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
-        // An incident with its own session, past the intake's window: its crash was counted in
-        // that session's view when it happened, so only the error goes out, stamped now.
+        // An incident with its own view, past the intake's window: its crash was counted in
+        // that view's document when it happened. The session of its own still gets its view
+        // (the backend builds sessions from view documents), counting nothing twice.
         const core: FakeCore = new FakeCore();
         const scope: CapturingScope = new CapturingScope();
         const monitor: DefaultRumMonitor = crashFeature(core, scope, 0, true);
@@ -807,13 +810,102 @@ export default function sessionOnErrorTests(): void {
         const before: number = Date.now();
         replayCrash(core, replay);
         expect(replay['delivered']).assertEqual(true);
-        expect(scope.ofType('view').length).assertEqual(0);
+        const views: Array<Record<string, Object>> = scope.ofType('view');
+        expect(views.length).assertEqual(1);
+        const view: Record<string, Object> = views[0]['view'] as Record<string, Object>;
+        expect((view['crash'] as Record<string, Object>)['count']).assertEqual(0);
+        expect((view['error'] as Record<string, Object>)['count']).assertEqual(0);
         const errors: Array<Record<string, Object>> = scope.ofType('error');
         expect(errors.length).assertEqual(1);
+        expect((errors[0]['view'] as Record<string, Object>)['id']).assertEqual(view['id']);
         expect((errors[0]['date'] as number) >= before).assertTrue();
         expect((errors[0]['context'] as Record<string, Object>)['crash.crashed_at_ms']).assertEqual(crashedAtMs);
         expect(sessionOf(errors[0])['id'] === core.featureContext['session.id']).assertFalse();
         expect(monitor.isWithholding()).assertTrue();
+      });
+
+    it('aCrashOfASessionWithoutAViewIsCountedOnce',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        // The crashed run had a session but no view yet: nothing counted the crash.
+        const core: FakeCore = new FakeCore();
+        const scope: CapturingScope = new CapturingScope();
+        const monitor: DefaultRumMonitor = crashFeature(core, scope, 0, true);
+        monitor.startView('home', 'home');
+        const replay: Record<string, Object> = launchCrash(Date.now() - 25 * 60 * 60 * 1000);
+        replay['original_session_id'] = 'old-session';
+        replayCrash(core, replay);
+        const views: Array<Record<string, Object>> = scope.ofType('view');
+        expect(views.length).assertEqual(1);
+        const view: Record<string, Object> = views[0]['view'] as Record<string, Object>;
+        expect((view['crash'] as Record<string, Object>)['count']).assertEqual(1);
+        expect(scope.ofType('error').length).assertEqual(1);
+      });
+
+    it('aRetryAfterAPartialWriteRewritesTheSameDocuments',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        // Either write of the standalone session can fail alone. The incident stays, and the
+        // retry writes documents with the same ids, so the intake's id dedup keeps one of each.
+        for (const failing of ['view', 'error']) {
+          const core: FakeCore = new FakeCore();
+          const scope: CapturingScope = new CapturingScope();
+          const monitor: DefaultRumMonitor = crashFeature(core, scope, 0, true);
+          monitor.startView('home', 'home');
+          const crashedAtMs: number = Date.now() - 5000;
+          scope.refuseType = failing;
+          const first: Record<string, Object> = launchCrash(crashedAtMs);
+          replayCrash(core, first);
+          expect(first['delivered'] === true).assertFalse();
+          // An error must never be on record without its view.
+          expect(scope.ofType('error').length <= scope.ofType('view').length).assertTrue();
+          scope.refuseType = '';
+          const retry: Record<string, Object> = launchCrash(crashedAtMs); // the same incident, next launch
+          replayCrash(core, retry);
+          expect(retry['delivered']).assertEqual(true);
+          const errorIds: Set<string> = new Set<string>();
+          for (const e of scope.ofType('error')) {
+            errorIds.add((e['error'] as Record<string, Object>)['id'] as string);
+          }
+          const viewIds: Set<string> = new Set<string>();
+          const sessionIds: Set<string> = new Set<string>();
+          for (const e of scope.written) {
+            sessionIds.add(sessionOf(e)['id'] as string);
+            if (e['type'] === 'view') {
+              viewIds.add((e['view'] as Record<string, Object>)['id'] as string);
+            }
+          }
+          expect(errorIds.size).assertEqual(1);
+          expect(viewIds.size).assertEqual(1);
+          expect(sessionIds.size).assertEqual(1);
+        }
+        // Negative control: another incident is another session.
+        expect(RumFeature.derivedUuid('incident:a') === RumFeature.derivedUuid('incident:b')).assertFalse();
+        expect(RumFeature.derivedUuid('incident:a')).assertEqual(RumFeature.derivedUuid('incident:a'));
+      });
+
+    it('aMapperThatDropsTheLaunchViewStillKeepsTheCrash',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        const core: FakeCore = new FakeCore();
+        const scope: CapturingScope = new CapturingScope();
+        const monitor: DefaultRumMonitor = crashFeature(core, scope, 0, true);
+        monitor.startView('home', 'home');
+        RumEventMapperHolder.configure((event: Record<string, Object>): Record<string, Object> | null =>
+          event['type'] === 'view' && (event['view'] as Record<string, Object>)['name'] === 'ApplicationLaunch' ?
+            null : event);
+        try {
+          const replay: Record<string, Object> = launchCrash(Date.now() - 5000);
+          replayCrash(core, replay);
+          expect(replay['delivered']).assertEqual(true);
+          expect(scope.ofType('view').length).assertEqual(0);
+          expect(scope.ofType('error').length).assertEqual(1);
+          // A mapper that drops the crash drops the whole session.
+          new CountingMapper().install();
+          const dropped: Record<string, Object> = launchCrash(Date.now() - 4000);
+          replayCrash(core, dropped);
+          expect(dropped['delivered']).assertEqual(true);
+          expect(scope.written.length).assertEqual(1);
+        } finally {
+          RumEventMapperHolder.reset();
+        }
       });
 
     it('setForcedSessionReleasesWithoutAnError',
