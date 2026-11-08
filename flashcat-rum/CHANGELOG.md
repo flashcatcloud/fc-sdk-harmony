@@ -28,7 +28,10 @@
   reported in a session of its own, with one `ApplicationLaunch` view counting
   the crash, at the real crash time, and marked like a session kept on error.
   The current session is left as it was. The incident is deleted only once
-  both events are written, so a failed write is retried on the next launch.
+  both events are written, so a failed write is retried on the next launch;
+  the retry reuses the same session, view and error ids, so a partly written
+  attempt is not counted twice. A crash already counted in a view of its own
+  run still gets the view, which then does not count it again.
 - A session kept only on error holds at most the newest 20 actions of one
   name (`action.target.name`, case-sensitive). An action reported many times a
   second used to fill the 200-event history with itself and push out the taps,
