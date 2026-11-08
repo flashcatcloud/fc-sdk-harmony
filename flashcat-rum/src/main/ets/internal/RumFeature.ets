@@ -27,6 +27,7 @@ import { AppForegroundHistory } from './AppForegroundHistory';
 import { VitalsCollector } from './vitals/VitalsCollector';
 import { AppLaunchTracker } from './startup/AppLaunchTracker';
 import { ActiveDeviceBeacon, HttpActiveBeaconSender } from './ActiveDeviceBeacon';
+import { DrawnConfiguration } from './remoteconfig/RemoteConfigStore';
 
 // Internal core receiver owning the crash sidecar files. MessageBus contract.
 const CRASH_STORAGE_TARGET: string = '__flashcat_crash_storage';
@@ -42,6 +43,9 @@ const CRASHED_RUN_FIELDS: string[] = ['version', 'os', 'usr', 'connectivity'];
 const SOURCEMAP_BANNERS: string[] = ['Cannot get SourceMap info', 'SourceMap is not initialized yet'];
 // Cap for a JSON-serialized rejection reason used as message/stack text.
 const MAX_REJECTION_REASON_CHARS: number = 500;
+// Name and url of the view holding a crash reported in a session of its own:
+// the convention for events before the first view.
+const APPLICATION_LAUNCH_VIEW: string = 'ApplicationLaunch';
 
 /**
  * The RUM feature. Installs the unhandled-exception hook (auto Error capture) and
@@ -499,14 +503,15 @@ export class RumFeature implements Feature, FeatureEventReceiver {
     if (crashedAtMs !== undefined) {
       attributes['crash.crashed_at_ms'] = crashedAtMs;
     }
-    // countInView: an incident that HAD an original session reached this
-    // fallback only because it is >23 h old — markCrash already counted it in
-    // the crashed run's view document, so counting again would double it.
-    // Everything else on this path (freezes, native crashes, watcher-only
-    // JsErrors, crash-before-first-session replays) was never counted anywhere
-    // — it MUST count here or crash-free rate reads those sessions as clean.
-    const alreadyCounted: boolean = originalSessionId.length > 0;
-    m.reportError(
+    // countInView: an incident that HAD an original view reached this fallback
+    // only because it is >23 h old — markCrash already counted it in that view's
+    // document, so counting again would double it. A session without a view
+    // had no document to count it in. Everything else on this path (freezes,
+    // native crashes, watcher-only JsErrors, crashes before the first view)
+    // was never counted anywhere — it MUST count here or crash-free rate reads
+    // those sessions as clean.
+    const alreadyCounted: boolean = RumFeature.asString(event['original_view_id']).length > 0;
+    const refusedBy: DrawnConfiguration | null = m.reportError(
       RumFeature.asString(event['message']),
       RumErrorSource.SOURCE,
       RumFeature.asString(event['stack']),
@@ -516,6 +521,15 @@ export class RumFeature implements Feature, FeatureEventReceiver {
       undefined,
       !alreadyCounted,
       true);
+    if (refusedBy !== null) {
+      // The current session is kept only on error and has not errored: it
+      // turned the crash away rather than become an error session for a crash
+      // that did not happen in it. Dropping it would lose the crash for good,
+      // so it is reported in a session of its own.
+      event['delivered'] = this.writeStandaloneCrash(event, attributes, alreadyCounted, refusedBy,
+        m.getAttributes());
+      return;
+    }
     // Known limitation: this path cannot observe the write result (the scope
     // tree has no return channel), so delivered=true is optimistic; and the
     // freshly minted session re-flips the sampling coin, which can drop the
@@ -542,6 +556,128 @@ export class RumFeature implements Feature, FeatureEventReceiver {
       false,
       'handled',
       RumFeature.crashAttributes(event));
+  }
+
+  /**
+   * A replayed crash that nothing attributes to the session it happened in,
+   * reported in a session of its own: one `ApplicationLaunch` view holding
+   * exactly this crash — the convention for events before the first view. The
+   * session exists only because of the crash, so it is marked like a session
+   * kept on error (`session.sampled_for_error`, counted as one session).
+   *
+   * Timestamps: the real crash time. The current-session fallback cannot use it,
+   * because a session started in the past expires on its next event; this one
+   * is complete the moment it is written and never receives another event. An
+   * incident past the intake's 24 h window (see isReplayTooOld) is stamped now,
+   * as on the fallback path, and keeps its real time in `crash.crashed_at_ms`.
+   *
+   * `alreadyCounted`: the crash was counted in a view of its own run when it
+   * happened (the incident is here only for its age). The view is still
+   * written — the backend builds a session only from view documents — but
+   * counts neither the crash nor its error a second time.
+   *
+   * Session, view and error ids are derived from the incident, so a retry after
+   * a partial write rewrites the same documents and the intake's id dedup
+   * absorbs what had already landed. The view goes first: an error without its
+   * view is the one partial result that would leave the crash unreachable.
+   *
+   * Returns whether everything landed (or was dropped on purpose — mapper,
+   * consent), so a failed write leaves the incident for the next launch.
+   */
+  private writeStandaloneCrash(event: Record<string, Object>, crashAttributes: Record<string, Object>,
+    alreadyCounted: boolean, draw: DrawnConfiguration, globalAttributes: Record<string, Object>): boolean {
+    const scope: FeatureScope | null = this.core.getFeature(RUM_FEATURE_NAME);
+    if (scope === null) {
+      return false;
+    }
+    const crashedAtMs: number | undefined = RumFeature.optionalPositiveNumber(event['timestamp_ms']);
+    const nowMs: number = Date.now();
+    const dateMs: number = crashedAtMs !== undefined && !RumFeature.isReplayTooOld(event) ?
+      Math.min(crashedAtMs, nowMs) : nowMs;
+    const identity: string = RumFeature.incidentIdentity(event);
+    const sessionId: string = RumFeature.derivedUuid(`${identity}#session`);
+    const viewId: string = RumFeature.derivedUuid(`${identity}#view`);
+    const viewAttributes: Record<string, Object> = {};
+    for (const key of Object.keys(globalAttributes)) {
+      viewAttributes[key] = globalAttributes[key];
+    }
+    viewAttributes['view.url'] = APPLICATION_LAUNCH_VIEW;
+    const errorAttributes: Record<string, Object> = {};
+    for (const key of Object.keys(viewAttributes)) {
+      errorAttributes[key] = viewAttributes[key];
+    }
+    for (const key of Object.keys(crashAttributes)) {
+      errorAttributes[key] = crashAttributes[key];
+    }
+    const counted: number = alreadyCounted ? 0 : 1;
+    const applicationId: string = this.configuration.applicationId;
+    let delivered: boolean = false;
+    scope.withWriteContext((context: FlashcatContext, writer: EventWriter) => {
+      const errorEvent: Record<string, Object> = RumEventAssembler.error(
+        context, applicationId, sessionId, viewId, APPLICATION_LAUNCH_VIEW,
+        RumFeature.asString(event['message']),
+        RumErrorSource.SOURCE as string,
+        RumFeature.asString(event['stack']),
+        true, 'unhandled', dateMs, errorAttributes);
+      RumFeature.recordValue(errorEvent['error'])['id'] = RumFeature.derivedUuid(`${identity}#error`);
+      const error: Record<string, Object> | null = RumEventMapperHolder.apply(errorEvent);
+      if (error === null) {
+        delivered = true; // the app's mapper dropped the crash on purpose — handled
+        return;
+      }
+      // Not through writeMapped: this view is not the current one, and recording
+      // it as the last view would attribute this launch's own crash to it.
+      const view: Record<string, Object> | null = RumEventMapperHolder.apply(RumEventAssembler.view(
+        context, applicationId, sessionId, viewId, APPLICATION_LAUNCH_VIEW, dateMs, 0,
+        0, counted, 0, counted, 1, false, viewAttributes, draw, true));
+      // A mapper that drops a view it has never heard of still keeps the crash:
+      // losing the crash would be worse than a session without its view.
+      if (view !== null && !writer.write(view, false)) {
+        return;
+      }
+      delivered = writer.write(error, true);
+    });
+    if (!delivered && this.core.getTrackingConsent() === TrackingConsent.NOT_GRANTED) {
+      delivered = true;
+    }
+    FlashcatLog.d(`rum.crash: reported crash in a standalone session=${sessionId} delivered=${delivered}`);
+    return delivered;
+  }
+
+  /**
+   * What identifies one fault across the launches that try to report it: the
+   * persisted incident's id, or, for a fault the system reports, what it says
+   * about the fault.
+   */
+  static incidentIdentity(event: Record<string, Object>): string {
+    const incidentId: string = RumFeature.asString(event['incident_id']);
+    if (incidentId.length > 0) {
+      return `incident:${incidentId}`;
+    }
+    // Encoded as a JSON array, not joined with a separator: a message or stack
+    // may contain any separator, and two faults must not encode alike.
+    const parts: Array<string | number> = [
+      RumFeature.asString(event['crash_kind']), RumFeature.asString(event['crash_type']),
+      RumFeature.optionalPositiveNumber(event['timestamp_ms']) ?? 0,
+      RumFeature.optionalPositiveNumber(event['process_id']) ?? 0,
+      RumFeature.asString(event['message']), RumFeature.asString(event['stack'])
+    ];
+    return `fault:${JSON.stringify(parts)}`;
+  }
+
+  /** Pure: a UUID-shaped id that is the same for the same `key` (four FNV-1a 32-bit lanes). */
+  static derivedUuid(key: string): string {
+    let hex: string = '';
+    for (let lane: number = 0; lane < 4; lane++) {
+      let hash: number = (0x811c9dc5 ^ Math.imul(lane + 1, 0x9e3779b1)) >>> 0;
+      for (let i: number = 0; i < key.length; i++) {
+        hash = Math.imul(hash ^ key.charCodeAt(i), 0x01000193) >>> 0;
+      }
+      hex += hash.toString(16).padStart(8, '0');
+    }
+    // Version 8 (custom) and the RFC 4122 variant, so it parses as a UUID anywhere.
+    return `${hex.substring(0, 8)}-${hex.substring(8, 12)}-8${hex.substring(13, 16)}-` +
+      `${(8 | (parseInt(hex.charAt(16), 16) & 3)).toString(16)}${hex.substring(17, 20)}-${hex.substring(20, 32)}`;
   }
 
   /**

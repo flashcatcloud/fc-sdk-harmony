@@ -1,3 +1,5 @@
+import { DrawnConfiguration } from '../remoteconfig/RemoteConfigStore';
+
 /**
  * Internal raw event passed down the scope hierarchy. Scopes react to these and
  * emit assembled RUM events (view / error) to the writer.
@@ -34,6 +36,10 @@ export interface RumRawEvent {
   // An error of a process that already died, replayed into whichever session is
   // current because nothing identifies the one it happened in.
   inherited?: boolean;
+  // Set by a session that withholds its events and therefore turns an inherited
+  // error away: the settings it was drawn under, so the caller can report the
+  // error in a session of its own instead (see RumFeature.writeStandaloneCrash).
+  refusedBy?: DrawnConfiguration;
 
   // app launch vital (kind === 'appLaunch'); timestampMs is when it was measured
   launchMetric?: string;        // 'ttid' | 'ttfd'

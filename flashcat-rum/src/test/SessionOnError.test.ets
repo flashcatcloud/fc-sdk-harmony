@@ -7,7 +7,7 @@ import { RumApplicationScope } from '../main/ets/internal/scope/RumApplicationSc
 import { RumRawEvent } from '../main/ets/internal/scope/RumScope';
 import {
   WithheldEventBuffer, computeReleaseDelay, WITHHELD_BUFFER_BYTES_LIMIT, WITHHELD_BUFFER_EVENTS_LIMIT,
-  WITHHELD_BUFFER_VIEWS_LIMIT, WITHHELD_BUFFER_VIEW_BYTES_LIMIT, WITHHELD_BUFFER_DURATION_MS,
+  WITHHELD_BUFFER_VIEWS_LIMIT, WITHHELD_BUFFER_VIEW_BYTES_LIMIT, WITHHELD_BUFFER_SAME_ACTION_LIMIT, WITHHELD_BUFFER_DURATION_MS,
   WITHHELD_BUFFER_RELEASE_MAX_DELAY_MS
 } from '../main/ets/internal/scope/WithheldEvents';
 import { RemoteConfigStore, RemoteConfigValues } from '../main/ets/internal/remoteconfig/RemoteConfigStore';
@@ -119,6 +119,8 @@ class CapturingScope implements FeatureScope {
   readonly flushes: boolean[] = [];
   /** Storage's per-event size limit: a larger event is refused, as the core's persistence refuses it. */
   rejectAbove: number = Number.MAX_SAFE_INTEGER;
+  /** Events of this type are refused, as a storage failure on that one write would. */
+  refuseType: string = '';
 
   withWriteContext(callback: (context: FlashcatContext, writer: EventWriter) => void): void {
     callback(this.core !== null ? this.core.getContext() : testContext(), new CapturingWriter(this));
@@ -156,7 +158,7 @@ class CapturingWriter implements EventWriter {
 
   write(event: Record<string, Object>, forceFlush?: boolean): boolean {
     // Storage stores a line: the newline counts toward its limit.
-    if (JSON.stringify(event).length + 1 > this.scope.rejectAbove) {
+    if (JSON.stringify(event).length + 1 > this.scope.rejectAbove || event['type'] === this.scope.refuseType) {
       return false;
     }
     this.scope.written.push(event);
@@ -363,6 +365,25 @@ function sampleRateOf(event: Record<string, Object>): Object | undefined {
 
 function newStore(core: FakeCore): RemoteConfigStore {
   return new RemoteConfigStore(core, RemoteConfigStore.buildStoreKey(core.getContext(), 'https://intake.example.com', 'app-1'));
+}
+
+/** A replayed crash that names no session: what a fault before the first view leaves. */
+function launchCrash(crashedAtMs: number): Record<string, Object> {
+  return {
+    'type': 'crash_report', 'message': 'NativeCrash', 'stack': '#00 pc', 'crash_kind': 'crash',
+    'crash_type': 'NativeCrash', 'timestamp_ms': crashedAtMs, 'incident_id': 'incident-1'
+  } as Record<string, Object>;
+}
+
+/** A RUM feature (see featureWith) with the crash feature on the bus to replay incidents into it. */
+function crashFeature(core: FakeCore, scope: CapturingScope, rate: number, sessionOnError: boolean): DefaultRumMonitor {
+  core.crashScope = new FakeCrashScope(core);
+  return featureWith(core, scope, rate, sessionOnError);
+}
+
+/** Deliver `replay` to the RUM feature the crash feature would hand it to. */
+function replayCrash(core: FakeCore, replay: Record<string, Object>): void {
+  ((core.crashScope as FakeCrashScope).rum as RumFeature).onReceive(replay);
 }
 
 /** A scope that keeps only the sessions that error (rate 0 + `sessionOnError`). */
@@ -623,42 +644,290 @@ export default function sessionOnErrorTests(): void {
         expect(scope.ofType('action').length).assertEqual(1);
       });
 
-    it('anInheritedCrashDoesNotMakeAWithheldSessionAnErrorSession',
+    it('aLaunchCrashMeetingAWithheldSessionIsReportedInASessionOfItsOwn',
       TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
-        // A crash of a process that already died, with nothing to attribute it
-        // to, is replayed into the current session. One that withholds its
-        // events is not made an error session by it.
+        // A replayed crash nothing attributes to its own session (here: no ids, no last view)
+        // meets a current session kept only on error. It is reported in a session of its own,
+        // for every kind of fault that reaches this path.
+        const kinds: Array<Record<string, Object>> = [
+          { 'crash_kind': 'crash', 'crash_type': 'NativeCrash', 'category': 'Exception' },
+          { 'crash_kind': 'crash', 'crash_type': 'JsError', 'category': 'Exception' },
+          { 'crash_kind': 'freeze', 'crash_type': 'AppFreeze', 'category': 'ANR' }
+        ];
+        for (const kind of kinds) {
+          const core: FakeCore = new FakeCore();
+          const scope: CapturingScope = new CapturingScope();
+          const monitor: DefaultRumMonitor = crashFeature(core, scope, 0, true);
+          monitor.startView('home', 'home');
+          const current: string = core.featureContext['session.id'] as string;
+          const crashedAtMs: number = Date.now() - 5000;
+          const replay: Record<string, Object> = launchCrash(crashedAtMs);
+          replay['crash_kind'] = kind['crash_kind'];
+          replay['crash_type'] = kind['crash_type'];
+          replayCrash(core, replay);
+          expect(replay['delivered']).assertEqual(true);
+          expect(scope.written.length).assertEqual(2);
+          const error: Record<string, Object> = scope.ofType('error')[0];
+          const view: Record<string, Object> = scope.ofType('view')[0];
+          const errorBody: Record<string, Object> = error['error'] as Record<string, Object>;
+          expect(errorBody['is_crash']).assertEqual(true);
+          expect(errorBody['category']).assertEqual(kind['category'] as string);
+          expect(errorBody['stack']).assertEqual('#00 pc');
+          expect(error['date']).assertEqual(crashedAtMs);
+          expect((error['context'] as Record<string, Object>)['crash.crashed_at_ms']).assertEqual(crashedAtMs);
+          const session: string = sessionOf(error)['id'] as string;
+          expect(session === current).assertFalse();
+          expect(sessionOf(view)['id']).assertEqual(session);
+          const errorView: Record<string, Object> = error['view'] as Record<string, Object>;
+          const viewBody: Record<string, Object> = view['view'] as Record<string, Object>;
+          expect(errorView['id']).assertEqual(viewBody['id']);
+          expect(viewBody['name']).assertEqual('ApplicationLaunch');
+          expect(viewBody['url']).assertEqual('ApplicationLaunch');
+          expect(errorView['name']).assertEqual('ApplicationLaunch');
+          expect(view['date']).assertEqual(crashedAtMs);
+          expect(viewBody['is_active']).assertEqual(false);
+          expect((viewBody['crash'] as Record<string, Object>)['count']).assertEqual(1);
+          expect((viewBody['error'] as Record<string, Object>)['count']).assertEqual(1);
+          // Marked as a session kept on error: it exists only because of the crash.
+          expect(sessionOf(view)['sampled_for_error']).assertEqual(true);
+          expect(sampleRateOf(view)).assertEqual(0);
+        }
+      });
+
+    it('aLaunchCrashLeavesTheWithheldCurrentSessionAsItWas',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
         const core: FakeCore = new FakeCore();
         const scope: CapturingScope = new CapturingScope();
-        const monitor: DefaultRumMonitor = new DefaultRumMonitor(core, scope,
-          new RumConfigurationBuilder('app-1').setSessionSampleRate(0).setSessionOnError(true).build());
-        monitor.stopKeepAlive();
+        const monitor: DefaultRumMonitor = crashFeature(core, scope, 0, true);
         monitor.startView('home', 'home');
-        monitor.reportError('NativeCrash', RumErrorSource.SOURCE, '#00 pc', true, 'unhandled', {}, undefined, true, true);
+        monitor.addAction(RumActionType.TAP, 'before');
+        const current: string = core.featureContext['session.id'] as string;
+        const replay: Record<string, Object> = launchCrash(Date.now() - 5000);
+        replayCrash(core, replay);
         monitor.releaseScheduledWithheld();
-        expect(scope.written.length).assertEqual(0);
-        monitor.stopSession();
-        expect(scope.written.length).assertEqual(0);
-        // Negative controls: a session collected on its own merits takes it —
-        // one the rate drew, and one the switch kept that has errored itself.
+        expect(scope.written.length).assertEqual(2); // the standalone session only
+        expect(monitor.isWithholding()).assertTrue();
+        expect(core.featureContext['session.id']).assertEqual(current);
+        for (const e of scope.written) {
+          expect(sessionOf(e)['id'] === current).assertFalse();
+        }
+        // The current session's own error releases its untouched history: the
+        // view never counted the replayed crash, and the action held before it is there.
+        monitor.addError('own', RumErrorSource.SOURCE);
+        monitor.releaseScheduledWithheld();
+        const own: Array<Record<string, Object>> =
+          scope.written.filter((e: Record<string, Object>) => sessionOf(e)['id'] === current);
+        expect(own.filter((e: Record<string, Object>) => e['type'] === 'action').length).assertEqual(1);
+        const ownErrors: Array<Record<string, Object>> =
+          own.filter((e: Record<string, Object>) => e['type'] === 'error');
+        expect(ownErrors.length).assertEqual(1);
+        expect(((ownErrors[0]['error'] as Record<string, Object>)['message'])).assertEqual('own');
+        for (const e of own.filter((e: Record<string, Object>) => e['type'] === 'view')) {
+          const crash: Record<string, Object> = (e['view'] as Record<string, Object>)['crash'] as Record<string, Object>;
+          expect(crash['count']).assertEqual(0);
+        }
+      });
+
+    it('aLaunchCrashStillJoinsACollectedSessionOrFollowsSampling',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        // Drawn by the rate: the crash joins the current session, as before.
         const sampledCore: FakeCore = new FakeCore();
         const sampled: CapturingScope = new CapturingScope();
-        const monitor2: DefaultRumMonitor = new DefaultRumMonitor(sampledCore, sampled,
-          new RumConfigurationBuilder('app-1').setSessionSampleRate(100).setSessionOnError(true).build());
-        monitor2.stopKeepAlive();
-        monitor2.startView('home', 'home');
-        monitor2.reportError('NativeCrash', RumErrorSource.SOURCE, '#00 pc', true, 'unhandled', {}, undefined, true, true);
+        const monitor: DefaultRumMonitor = crashFeature(sampledCore, sampled, 100, true);
+        monitor.startView('home', 'home');
+        const current: string = sampledCore.featureContext['session.id'] as string;
+        replayCrash(sampledCore, launchCrash(Date.now() - 5000));
         expect(sampled.ofType('error').length).assertEqual(1);
+        expect(sessionOf(sampled.ofType('error')[0])['id']).assertEqual(current);
+        for (const e of sampled.ofType('view')) {
+          expect(((e['view'] as Record<string, Object>)['name'])).assertEqual('home');
+        }
+        // Kept on error and already released by its own error: it takes the crash too.
         const releasedCore: FakeCore = new FakeCore();
         const released: CapturingScope = new CapturingScope();
-        const monitor3: DefaultRumMonitor = new DefaultRumMonitor(releasedCore, released,
-          new RumConfigurationBuilder('app-1').setSessionSampleRate(0).setSessionOnError(true).build());
-        monitor3.stopKeepAlive();
+        const monitor2: DefaultRumMonitor = crashFeature(releasedCore, released, 0, true);
+        monitor2.startView('home', 'home');
+        monitor2.addError('own', RumErrorSource.SOURCE);
+        monitor2.releaseScheduledWithheld();
+        const releasedId: string = releasedCore.featureContext['session.id'] as string;
+        replayCrash(releasedCore, launchCrash(Date.now() - 5000));
+        const errors: Array<Record<string, Object>> = released.ofType('error');
+        expect(errors.length).assertEqual(2);
+        expect(sessionOf(errors[1])['id']).assertEqual(releasedId);
+        // Not sampled, and the switch is off: the crash follows sampling and goes nowhere.
+        const offCore: FakeCore = new FakeCore();
+        const off: CapturingScope = new CapturingScope();
+        const monitor3: DefaultRumMonitor = crashFeature(offCore, off, 0, false);
         monitor3.startView('home', 'home');
-        monitor3.addError('own', RumErrorSource.SOURCE);
-        monitor3.releaseScheduledWithheld();
-        monitor3.reportError('NativeCrash', RumErrorSource.SOURCE, '#00 pc', true, 'unhandled', {}, undefined, true, true);
-        expect(released.ofType('error').length).assertEqual(2);
+        const replay: Record<string, Object> = launchCrash(Date.now() - 5000);
+        replayCrash(offCore, replay);
+        expect(off.written.length).assertEqual(0);
+        expect(replay['delivered']).assertEqual(true);
+      });
+
+    it('aLaunchCrashInASessionOfItsOwnRespectsConsentAndRetriesAFailedWrite',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        // Storage refuses the write: the incident stays for the next launch.
+        const core: FakeCore = new FakeCore();
+        const scope: CapturingScope = new CapturingScope();
+        const monitor: DefaultRumMonitor = crashFeature(core, scope, 0, true);
+        monitor.startView('home', 'home');
+        scope.rejectAbove = 0;
+        const failed: Record<string, Object> = launchCrash(Date.now() - 5000);
+        replayCrash(core, failed);
+        expect(failed['delivered'] === true).assertFalse();
+        expect(scope.written.length).assertEqual(0);
+        expect(monitor.isWithholding()).assertTrue();
+        // The next attempt lands, whole.
+        scope.rejectAbove = Number.MAX_SAFE_INTEGER;
+        const retried: Record<string, Object> = launchCrash(Date.now() - 5000);
+        replayCrash(core, retried);
+        expect(retried['delivered']).assertEqual(true);
+        expect(scope.ofType('error').length).assertEqual(1);
+        expect(scope.ofType('view').length).assertEqual(1);
+        // Consent refused: the core writes nothing, and the incident is dropped on purpose
+        // rather than retried every launch.
+        const refusedCore: FakeCore = new FakeCore();
+        const refused: CapturingScope = new CapturingScope();
+        const monitor2: DefaultRumMonitor = crashFeature(refusedCore, refused, 0, true);
+        monitor2.startView('home', 'home');
+        refusedCore.consent = TrackingConsent.NOT_GRANTED;
+        refused.rejectAbove = 0; // what the core's writer does under a refused consent
+        const dropped: Record<string, Object> = launchCrash(Date.now() - 5000);
+        replayCrash(refusedCore, dropped);
+        expect(refused.written.length).assertEqual(0);
+        expect(dropped['delivered']).assertEqual(true);
+      });
+
+    it('aCrashTooOldForItsViewIsReportedInAViewThatDoesNotCountItAgain',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        // An incident with its own view, past the intake's window: its crash was counted in
+        // that view's document when it happened. The session of its own still gets its view
+        // (the backend builds sessions from view documents), counting nothing twice.
+        const core: FakeCore = new FakeCore();
+        const scope: CapturingScope = new CapturingScope();
+        const monitor: DefaultRumMonitor = crashFeature(core, scope, 0, true);
+        monitor.startView('home', 'home');
+        const crashedAtMs: number = Date.now() - 25 * 60 * 60 * 1000;
+        const replay: Record<string, Object> = launchCrash(crashedAtMs);
+        replay['original_session_id'] = 'old-session';
+        replay['original_view_id'] = 'old-view';
+        const before: number = Date.now();
+        replayCrash(core, replay);
+        expect(replay['delivered']).assertEqual(true);
+        const views: Array<Record<string, Object>> = scope.ofType('view');
+        expect(views.length).assertEqual(1);
+        const view: Record<string, Object> = views[0]['view'] as Record<string, Object>;
+        expect((view['crash'] as Record<string, Object>)['count']).assertEqual(0);
+        expect((view['error'] as Record<string, Object>)['count']).assertEqual(0);
+        const errors: Array<Record<string, Object>> = scope.ofType('error');
+        expect(errors.length).assertEqual(1);
+        expect((errors[0]['view'] as Record<string, Object>)['id']).assertEqual(view['id']);
+        expect((errors[0]['date'] as number) >= before).assertTrue();
+        expect((errors[0]['context'] as Record<string, Object>)['crash.crashed_at_ms']).assertEqual(crashedAtMs);
+        expect(sessionOf(errors[0])['id'] === core.featureContext['session.id']).assertFalse();
+        expect(monitor.isWithholding()).assertTrue();
+      });
+
+    it('aCrashOfASessionWithoutAViewIsCountedOnce',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        // The crashed run had a session but no view yet: nothing counted the crash.
+        const core: FakeCore = new FakeCore();
+        const scope: CapturingScope = new CapturingScope();
+        const monitor: DefaultRumMonitor = crashFeature(core, scope, 0, true);
+        monitor.startView('home', 'home');
+        const replay: Record<string, Object> = launchCrash(Date.now() - 25 * 60 * 60 * 1000);
+        replay['original_session_id'] = 'old-session';
+        replayCrash(core, replay);
+        const views: Array<Record<string, Object>> = scope.ofType('view');
+        expect(views.length).assertEqual(1);
+        const view: Record<string, Object> = views[0]['view'] as Record<string, Object>;
+        expect((view['crash'] as Record<string, Object>)['count']).assertEqual(1);
+        expect(scope.ofType('error').length).assertEqual(1);
+      });
+
+    it('twoFaultsWhoseFieldsSplitDifferentlyGetDifferentIdentities', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+      const base: Record<string, Object> = { 'crash_kind': 'native', 'crash_type': 'NativeCrash', 'timestamp_ms': 1000, 'process_id': 7 };
+      const one: Record<string, Object> = { 'message': 'a|b', 'stack': 'c' };
+      const two: Record<string, Object> = { 'message': 'a', 'stack': 'b|c' };
+      for (const k of Object.keys(base)) {
+        one[k] = base[k];
+        two[k] = base[k];
+      }
+      expect(RumFeature.incidentIdentity(one) === RumFeature.incidentIdentity(two)).assertFalse();
+      // Negative control: the same fault twice has one identity.
+      const again: Record<string, Object> = { 'message': 'a|b', 'stack': 'c' };
+      for (const k of Object.keys(base)) {
+        again[k] = base[k];
+      }
+      expect(RumFeature.incidentIdentity(again)).assertEqual(RumFeature.incidentIdentity(one));
+    });
+
+    it('aRetryAfterAPartialWriteRewritesTheSameDocuments',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        // Either write of the standalone session can fail alone. The incident stays, and the
+        // retry writes documents with the same ids, so the intake's id dedup keeps one of each.
+        for (const failing of ['view', 'error']) {
+          const core: FakeCore = new FakeCore();
+          const scope: CapturingScope = new CapturingScope();
+          const monitor: DefaultRumMonitor = crashFeature(core, scope, 0, true);
+          monitor.startView('home', 'home');
+          const crashedAtMs: number = Date.now() - 5000;
+          scope.refuseType = failing;
+          const first: Record<string, Object> = launchCrash(crashedAtMs);
+          replayCrash(core, first);
+          expect(first['delivered'] === true).assertFalse();
+          // An error must never be on record without its view.
+          expect(scope.ofType('error').length <= scope.ofType('view').length).assertTrue();
+          scope.refuseType = '';
+          const retry: Record<string, Object> = launchCrash(crashedAtMs); // the same incident, next launch
+          replayCrash(core, retry);
+          expect(retry['delivered']).assertEqual(true);
+          const errorIds: Set<string> = new Set<string>();
+          for (const e of scope.ofType('error')) {
+            errorIds.add((e['error'] as Record<string, Object>)['id'] as string);
+          }
+          const viewIds: Set<string> = new Set<string>();
+          const sessionIds: Set<string> = new Set<string>();
+          for (const e of scope.written) {
+            sessionIds.add(sessionOf(e)['id'] as string);
+            if (e['type'] === 'view') {
+              viewIds.add((e['view'] as Record<string, Object>)['id'] as string);
+            }
+          }
+          expect(errorIds.size).assertEqual(1);
+          expect(viewIds.size).assertEqual(1);
+          expect(sessionIds.size).assertEqual(1);
+        }
+        // Negative control: another incident is another session.
+        expect(RumFeature.derivedUuid('incident:a') === RumFeature.derivedUuid('incident:b')).assertFalse();
+        expect(RumFeature.derivedUuid('incident:a')).assertEqual(RumFeature.derivedUuid('incident:a'));
+      });
+
+    it('aMapperThatDropsTheLaunchViewStillKeepsTheCrash',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        const core: FakeCore = new FakeCore();
+        const scope: CapturingScope = new CapturingScope();
+        const monitor: DefaultRumMonitor = crashFeature(core, scope, 0, true);
+        monitor.startView('home', 'home');
+        RumEventMapperHolder.configure((event: Record<string, Object>): Record<string, Object> | null =>
+          event['type'] === 'view' && (event['view'] as Record<string, Object>)['name'] === 'ApplicationLaunch' ?
+            null : event);
+        try {
+          const replay: Record<string, Object> = launchCrash(Date.now() - 5000);
+          replayCrash(core, replay);
+          expect(replay['delivered']).assertEqual(true);
+          expect(scope.ofType('view').length).assertEqual(0);
+          expect(scope.ofType('error').length).assertEqual(1);
+          // A mapper that drops the crash drops the whole session.
+          new CountingMapper().install();
+          const dropped: Record<string, Object> = launchCrash(Date.now() - 4000);
+          replayCrash(core, dropped);
+          expect(dropped['delivered']).assertEqual(true);
+          expect(scope.written.length).assertEqual(1);
+        } finally {
+          RumEventMapperHolder.reset();
+        }
       });
 
     it('setForcedSessionReleasesWithoutAnError',
@@ -948,6 +1217,52 @@ export default function sessionOnErrorTests(): void {
         }
         expect(scope.ofType('resource').length).assertEqual(0);
         expect(scope.ofType('error').length).assertEqual(1);
+      });
+
+    it('aBurstOfOneActionKeepsOnlyItsNewestAndLeavesTheRestOfTheHistory',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        const scope: CapturingScope = new CapturingScope();
+        const app: RumApplicationScope = onErrorApp(scope);
+        const t0: number = Date.now();
+        startView(app, t0);
+        addAction(app, t0 + 1, 'before');
+        app.handleEvent(raw('startResource', t0 + 2, 'r1'));
+        const failed: RumRawEvent = raw('stopResource', t0 + 3, 'r1');
+        failed.statusCode = 503;
+        app.handleEvent(failed);
+        for (let i: number = 0; i < 150; i++) {
+          if (i === 75) {
+            startView(app, t0 + 10 + i, 'second');
+          }
+          addAction(app, t0 + 10 + i, 'scroll');
+          if (i % 50 === 0) {
+            addAction(app, t0 + 10 + i, 'Scroll'); // another name: case matters
+          }
+        }
+        addAction(app, t0 + 200, 'after');
+        addError(app, t0 + 201);
+        app.releaseScheduledWithheld();
+        const named = (name: string): Array<Record<string, Object>> => scope.ofType('action').filter(
+          (e: Record<string, Object>) =>
+            ((e['action'] as Record<string, Object>)['target'] as Record<string, Object>)['name'] === name);
+        const burst: Array<Record<string, Object>> = named('scroll');
+        expect(burst.length).assertEqual(WITHHELD_BUFFER_SAME_ACTION_LIMIT);
+        for (let i: number = 0; i < burst.length; i++) {
+          // The newest of the burst, in order.
+          expect((burst[i]['action'] as Record<string, Object>)['id'])
+            .assertEqual(`scroll-${t0 + 10 + 150 - WITHHELD_BUFFER_SAME_ACTION_LIMIT + i}`);
+        }
+        expect(named('Scroll').length).assertEqual(3);
+        expect(named('before').length).assertEqual(1);
+        expect(named('after').length).assertEqual(1);
+        expect(scope.ofType('resource').length).assertEqual(1);
+        expect(scope.ofType('error').length).assertEqual(1);
+        const viewNames: Set<string> = new Set<string>();
+        for (const e of scope.ofType('view')) {
+          viewNames.add((e['view'] as Record<string, Object>)['name'] as string);
+        }
+        expect(viewNames.has('home')).assertTrue();
+        expect(viewNames.has('second')).assertTrue();
       });
 
     it('aStragglerOfAReleasedSessionStillGoesOut',
