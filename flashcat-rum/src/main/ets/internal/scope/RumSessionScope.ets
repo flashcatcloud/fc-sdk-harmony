@@ -184,9 +184,10 @@ export class RumSessionScope implements RumScope {
     if (event.kind === 'addError' && event.inherited === true && this.withheld !== null && this.withheld.isWithholding()) {
       // A crash of a process that already died is not this session's error: it
       // must not turn a session the backend has never seen into an error
-      // session. Nothing identifies the session it happened in, so it goes
-      // nowhere — as it does when the current session was not drawn at all.
-      FlashcatLog.d('rum.session: inherited crash not reported — the current session is withheld');
+      // session, nor release its history. The caller reports it in a session
+      // of its own instead; this one is left exactly as it was.
+      FlashcatLog.d('rum.session: inherited crash turned away — the current session is withheld');
+      event.refusedBy = this.draw;
       return this;
     }
 

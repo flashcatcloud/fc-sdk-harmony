@@ -12,7 +12,7 @@ import {
   FlashcatLog
 } from '@flashcatcloud/core';
 import { errorManager } from '@kit.AbilityKit';
-import { process } from '@kit.ArkTS';
+import { process, util } from '@kit.ArkTS';
 import appRecovery from '@ohos.app.ability.appRecovery';
 import { RumConfiguration } from '../RumConfiguration';
 import { RumErrorSource, RumResourceKind, RumResourceMethod } from '../RumTypes';
@@ -27,6 +27,7 @@ import { AppForegroundHistory } from './AppForegroundHistory';
 import { VitalsCollector } from './vitals/VitalsCollector';
 import { AppLaunchTracker } from './startup/AppLaunchTracker';
 import { ActiveDeviceBeacon, HttpActiveBeaconSender } from './ActiveDeviceBeacon';
+import { DrawnConfiguration } from './remoteconfig/RemoteConfigStore';
 
 // Internal core receiver owning the crash sidecar files. MessageBus contract.
 const CRASH_STORAGE_TARGET: string = '__flashcat_crash_storage';
@@ -42,6 +43,9 @@ const CRASHED_RUN_FIELDS: string[] = ['version', 'os', 'usr', 'connectivity'];
 const SOURCEMAP_BANNERS: string[] = ['Cannot get SourceMap info', 'SourceMap is not initialized yet'];
 // Cap for a JSON-serialized rejection reason used as message/stack text.
 const MAX_REJECTION_REASON_CHARS: number = 500;
+// Name and url of the view holding a crash reported in a session of its own:
+// the convention for events before the first view.
+const APPLICATION_LAUNCH_VIEW: string = 'ApplicationLaunch';
 
 /**
  * The RUM feature. Installs the unhandled-exception hook (auto Error capture) and
@@ -506,7 +510,7 @@ export class RumFeature implements Feature, FeatureEventReceiver {
     // JsErrors, crash-before-first-session replays) was never counted anywhere
     // — it MUST count here or crash-free rate reads those sessions as clean.
     const alreadyCounted: boolean = originalSessionId.length > 0;
-    m.reportError(
+    const refusedBy: DrawnConfiguration | null = m.reportError(
       RumFeature.asString(event['message']),
       RumErrorSource.SOURCE,
       RumFeature.asString(event['stack']),
@@ -516,6 +520,15 @@ export class RumFeature implements Feature, FeatureEventReceiver {
       undefined,
       !alreadyCounted,
       true);
+    if (refusedBy !== null) {
+      // The current session is kept only on error and has not errored: it
+      // turned the crash away rather than become an error session for a crash
+      // that did not happen in it. Dropping it would lose the crash for good,
+      // so it is reported in a session of its own.
+      event['delivered'] = this.writeStandaloneCrash(event, attributes, alreadyCounted, refusedBy,
+        m.getAttributes());
+      return;
+    }
     // Known limitation: this path cannot observe the write result (the scope
     // tree has no return channel), so delivered=true is optimistic; and the
     // freshly minted session re-flips the sampling coin, which can drop the
@@ -542,6 +555,86 @@ export class RumFeature implements Feature, FeatureEventReceiver {
       false,
       'handled',
       RumFeature.crashAttributes(event));
+  }
+
+  /**
+   * A replayed crash that nothing attributes to the session it happened in,
+   * reported in a session of its own: one `ApplicationLaunch` view holding
+   * exactly this crash — the convention for events before the first view. The
+   * session exists only because of the crash, so it is marked like a session
+   * kept on error (`session.sampled_for_error`, counted as one session).
+   *
+   * Timestamps: the real crash time. The current-session fallback cannot use it,
+   * because a session started in the past expires on its next event; this one
+   * is complete the moment it is written and never receives another event. An
+   * incident past the intake's 24 h window (see isReplayTooOld) is stamped now,
+   * as on the fallback path, and keeps its real time in `crash.crashed_at_ms`.
+   *
+   * `alreadyCounted`: the crash was counted in its own session's view when it
+   * happened (the incident is here only for its age), so only the error is
+   * written — a view counting it again would count the crash twice.
+   *
+   * Returns whether everything landed (or was dropped on purpose — mapper,
+   * consent), so a failed write leaves the incident for the next launch.
+   */
+  private writeStandaloneCrash(event: Record<string, Object>, crashAttributes: Record<string, Object>,
+    alreadyCounted: boolean, draw: DrawnConfiguration, globalAttributes: Record<string, Object>): boolean {
+    const scope: FeatureScope | null = this.core.getFeature(RUM_FEATURE_NAME);
+    if (scope === null) {
+      return false;
+    }
+    const crashedAtMs: number | undefined = RumFeature.optionalPositiveNumber(event['timestamp_ms']);
+    const nowMs: number = Date.now();
+    const dateMs: number = crashedAtMs !== undefined && !RumFeature.isReplayTooOld(event) ?
+      Math.min(crashedAtMs, nowMs) : nowMs;
+    const sessionId: string = util.generateRandomUUID(true);
+    const viewId: string = util.generateRandomUUID(true);
+    const viewAttributes: Record<string, Object> = {};
+    for (const key of Object.keys(globalAttributes)) {
+      viewAttributes[key] = globalAttributes[key];
+    }
+    viewAttributes['view.url'] = APPLICATION_LAUNCH_VIEW;
+    const errorAttributes: Record<string, Object> = {};
+    for (const key of Object.keys(viewAttributes)) {
+      errorAttributes[key] = viewAttributes[key];
+    }
+    for (const key of Object.keys(crashAttributes)) {
+      errorAttributes[key] = crashAttributes[key];
+    }
+    const applicationId: string = this.configuration.applicationId;
+    let delivered: boolean = false;
+    scope.withWriteContext((context: FlashcatContext, writer: EventWriter) => {
+      const errorEvent: Record<string, Object> = RumEventAssembler.error(
+        context, applicationId, sessionId,
+        alreadyCounted ? undefined : viewId, alreadyCounted ? undefined : APPLICATION_LAUNCH_VIEW,
+        RumFeature.asString(event['message']),
+        RumErrorSource.SOURCE as string,
+        RumFeature.asString(event['stack']),
+        true, 'unhandled', dateMs, errorAttributes);
+      const mapped: Record<string, Object> | null = RumEventMapperHolder.apply(errorEvent);
+      if (mapped === null) {
+        delivered = true; // the app's mapper dropped it on purpose — handled
+        return;
+      }
+      if (!writer.write(mapped, true)) {
+        return;
+      }
+      if (alreadyCounted) {
+        delivered = true;
+        return;
+      }
+      // Not through writeMapped: this view is not the current one, and recording
+      // it as the last view would attribute this launch's own crash to it.
+      const view: Record<string, Object> | null = RumEventMapperHolder.apply(RumEventAssembler.view(
+        context, applicationId, sessionId, viewId, APPLICATION_LAUNCH_VIEW, dateMs, 0,
+        0, 1, 0, 1, 1, false, viewAttributes, draw, true));
+      delivered = view === null || writer.write(view, true);
+    });
+    if (!delivered && this.core.getTrackingConsent() === TrackingConsent.NOT_GRANTED) {
+      delivered = true;
+    }
+    FlashcatLog.d(`rum.crash: reported crash in a standalone session=${sessionId} delivered=${delivered}`);
+    return delivered;
   }
 
   /**
