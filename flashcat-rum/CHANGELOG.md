@@ -11,6 +11,11 @@
   the crash, at the real crash time, and marked like a session kept on error.
   The current session is left as it was. The incident is deleted only once
   both events are written, so a failed write is retried on the next launch.
+- A session kept only on error holds at most the newest 20 actions of one
+  name (`action.target.name`, case-sensitive). An action reported many times a
+  second used to fill the 200-event history with itself and push out the taps,
+  view changes and failed requests that explain the error. The other limits
+  are unchanged.
 
 ## 0.7.8
 

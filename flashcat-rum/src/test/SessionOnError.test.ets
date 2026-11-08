@@ -7,7 +7,7 @@ import { RumApplicationScope } from '../main/ets/internal/scope/RumApplicationSc
 import { RumRawEvent } from '../main/ets/internal/scope/RumScope';
 import {
   WithheldEventBuffer, computeReleaseDelay, WITHHELD_BUFFER_BYTES_LIMIT, WITHHELD_BUFFER_EVENTS_LIMIT,
-  WITHHELD_BUFFER_VIEWS_LIMIT, WITHHELD_BUFFER_VIEW_BYTES_LIMIT, WITHHELD_BUFFER_DURATION_MS,
+  WITHHELD_BUFFER_VIEWS_LIMIT, WITHHELD_BUFFER_VIEW_BYTES_LIMIT, WITHHELD_BUFFER_SAME_ACTION_LIMIT, WITHHELD_BUFFER_DURATION_MS,
   WITHHELD_BUFFER_RELEASE_MAX_DELAY_MS
 } from '../main/ets/internal/scope/WithheldEvents';
 import { RemoteConfigStore, RemoteConfigValues } from '../main/ets/internal/remoteconfig/RemoteConfigStore';
@@ -1103,6 +1103,52 @@ export default function sessionOnErrorTests(): void {
         }
         expect(scope.ofType('resource').length).assertEqual(0);
         expect(scope.ofType('error').length).assertEqual(1);
+      });
+
+    it('aBurstOfOneActionKeepsOnlyItsNewestAndLeavesTheRestOfTheHistory',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        const scope: CapturingScope = new CapturingScope();
+        const app: RumApplicationScope = onErrorApp(scope);
+        const t0: number = Date.now();
+        startView(app, t0);
+        addAction(app, t0 + 1, 'before');
+        app.handleEvent(raw('startResource', t0 + 2, 'r1'));
+        const failed: RumRawEvent = raw('stopResource', t0 + 3, 'r1');
+        failed.statusCode = 503;
+        app.handleEvent(failed);
+        for (let i: number = 0; i < 150; i++) {
+          if (i === 75) {
+            startView(app, t0 + 10 + i, 'second');
+          }
+          addAction(app, t0 + 10 + i, 'scroll');
+          if (i % 50 === 0) {
+            addAction(app, t0 + 10 + i, 'Scroll'); // another name: case matters
+          }
+        }
+        addAction(app, t0 + 200, 'after');
+        addError(app, t0 + 201);
+        app.releaseScheduledWithheld();
+        const named = (name: string): Array<Record<string, Object>> => scope.ofType('action').filter(
+          (e: Record<string, Object>) =>
+            ((e['action'] as Record<string, Object>)['target'] as Record<string, Object>)['name'] === name);
+        const burst: Array<Record<string, Object>> = named('scroll');
+        expect(burst.length).assertEqual(WITHHELD_BUFFER_SAME_ACTION_LIMIT);
+        for (let i: number = 0; i < burst.length; i++) {
+          // The newest of the burst, in order.
+          expect((burst[i]['action'] as Record<string, Object>)['id'])
+            .assertEqual(`scroll-${t0 + 10 + 150 - WITHHELD_BUFFER_SAME_ACTION_LIMIT + i}`);
+        }
+        expect(named('Scroll').length).assertEqual(3);
+        expect(named('before').length).assertEqual(1);
+        expect(named('after').length).assertEqual(1);
+        expect(scope.ofType('resource').length).assertEqual(1);
+        expect(scope.ofType('error').length).assertEqual(1);
+        const viewNames: Set<string> = new Set<string>();
+        for (const e of scope.ofType('view')) {
+          viewNames.add((e['view'] as Record<string, Object>)['name'] as string);
+        }
+        expect(viewNames.has('home')).assertTrue();
+        expect(viewNames.has('second')).assertTrue();
       });
 
     it('aStragglerOfAReleasedSessionStillGoesOut',
