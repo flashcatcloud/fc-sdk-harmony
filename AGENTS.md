@@ -44,10 +44,10 @@ A manual run (`workflow_dispatch`) is only accepted on `publish`, defaults to a 
 
 When `main` already carries work that must not ship yet, a patch (X.Y.Z+1) is cut from the released state instead of from `main`:
 
-1. Branch from `publish`: `git switch -c hotfix/X.Y.Z origin/publish`. Commit the fix, then the version bump (same files as step 1 above; the `CHANGELOG.md` sections get the new version directly).
-2. Open a pull request from the hotfix branch into `publish` and merge it with a merge commit.
-3. Tag the tip of `publish` and publish exactly as in the steps above.
-4. Land the same fix on `main` through its own pull request (ported, not merged from `publish`, when the code has moved on), so nothing exists only on `publish`. The version bump stays on `publish`; `main` moves on to its next version, and its `CHANGELOG.md` records the patch under its own version heading.
+1. Branch from `publish`: `git switch -c hotfix/X.Y.Z origin/publish`. Commit the fix, then the version bump (same files as step 1 above; the `CHANGELOG.md` sections get the new version directly). Open a pull request into `publish`.
+2. Land the same fix on `main` first, through its own pull request (ported when the code has moved on, not merged from `publish`), so nothing reaches `publish` that is not on `main`. The version bump stays off `main`; `main` moves on to its next version and records the patch under its own heading in `CHANGELOG.md`.
+3. Then merge the `publish` pull request with a merge commit.
+4. Tag the tip of `publish` and publish exactly as in the steps above.
 
 ## Releasing the hvigor plugin (npm)
 
