@@ -7,11 +7,11 @@ Notes for anyone (human or coding agent) changing or releasing this repository.
 | Branch | Role |
 |---|---|
 | `main` | Single source of truth. Every change lands here first, through a pull request. |
-| `publish` | Release branch. It only ever receives `main`, through a `main` → `publish` pull request merged with a merge commit. It differs from `main` by merge commits only. |
+| `publish` | Release branch. It receives `main`, through a `main` → `publish` pull request merged with a merge commit — or, for a patch release while `main` holds unreleased work, a hotfix branch (see below). Apart from merge commits and patch-release version bumps it holds nothing that is not on `main`. |
 | `dev` | Unused since June 2026. Do not target it. |
 | feature branches | One change per branch, cut from `main`, pull request into `main`. |
 
-- Never commit or merge anything into `publish` that is not on `main` — not even CI fixes. A change made only on `publish` is lost from `main` and silently diverges the two.
+- Never commit or merge anything into `publish` that is not also on `main` — not even CI fixes. A change made only on `publish` is lost from `main` and silently diverges the two. The one exception is a patch release's version bump (below); its fix must reach `main` too.
 - Never force-push, and never move or delete a release tag.
 - Stacked work (a branch based on another open pull request) is fine; once the base merges, bring the branch up to date by merging `main` into it, not by rebasing a pushed branch.
 
@@ -39,6 +39,15 @@ The five packages `@flashcatcloud/core`, `rum`, `crash`, `trace` and `axios` are
 5. **Done means installable** — OHPM reviews every published package by hand; until then `ohpm info @flashcatcloud/core@X.Y.Z` fails. A release is complete only when all five packages install at the new version in an empty project and report the new `SDK_VERSION`, not when the workflow turns green.
 
 A manual run (`workflow_dispatch`) is only accepted on `publish`, defaults to a dry run, and needs `confirm_publish=yes` to publish.
+
+## Patch release while `main` holds unreleased work
+
+When `main` already carries work that must not ship yet, a patch (X.Y.Z+1) is cut from the released state instead of from `main`:
+
+1. Branch from `publish`: `git switch -c hotfix/X.Y.Z origin/publish`. Commit the fix, then the version bump (same files as step 1 above; the `CHANGELOG.md` sections get the new version directly).
+2. Open a pull request from the hotfix branch into `publish` and merge it with a merge commit.
+3. Tag the tip of `publish` and publish exactly as in the steps above.
+4. Land the same fix on `main` through its own pull request (ported, not merged from `publish`, when the code has moved on), so nothing exists only on `publish`. The version bump stays on `publish`; `main` moves on to its next version, and its `CHANGELOG.md` records the patch under its own version heading.
 
 ## Releasing the hvigor plugin (npm)
 
