@@ -13,6 +13,13 @@ export const WITHHELD_BUFFER_DURATION_MS: number = 60 * 1000;
 export const WITHHELD_BUFFER_BYTES_LIMIT: number = 64 * 1024;
 export const WITHHELD_BUFFER_EVENTS_LIMIT: number = 200;
 /**
+ * Actions of one name kept at most, the newest. An app that reports the same
+ * action many times a second would otherwise fill the whole event budget with
+ * it and push out the taps, view changes and failed requests that explain the
+ * error. Compared by `action.target.name`, exactly (case matters).
+ */
+export const WITHHELD_BUFFER_SAME_ACTION_LIMIT: number = 20;
+/**
  * Views are the containers their events hang from — the backend builds the session
  * row out of view events — so they stay out of the detail budget and have their
  * own, against pathological navigation counts and against host attributes that
@@ -52,13 +59,17 @@ class HeldEvent {
   readonly timeMs: number;
   readonly bytes: number;
   readonly tier: EvictionTier;
+  /** `action.target.name` of an action, null for every other event. */
+  readonly actionName: string | null;
 
-  constructor(line: string, viewId: string, timeMs: number, bytes: number, tier: EvictionTier) {
+  constructor(line: string, viewId: string, timeMs: number, bytes: number, tier: EvictionTier,
+    actionName: string | null) {
     this.line = line;
     this.viewId = viewId;
     this.timeMs = timeMs;
     this.bytes = bytes;
     this.tier = tier;
+    this.actionName = actionName;
   }
 }
 
@@ -151,7 +162,11 @@ export class WithheldEventBuffer {
       this.droppedCount += 1;
       return false;
     }
-    this.details.push(new HeldEvent(line, viewId, nowMs, bytes, WithheldEventBuffer.tierOf(event)));
+    const actionName: string | null = WithheldEventBuffer.actionNameOf(event);
+    if (actionName !== null) {
+      this.capSameAction(actionName);
+    }
+    this.details.push(new HeldEvent(line, viewId, nowMs, bytes, WithheldEventBuffer.tierOf(event), actionName));
     this.bytes += bytes;
     this.prune(nowMs);
     while (this.details.length > WITHHELD_BUFFER_EVENTS_LIMIT || this.bytes > WITHHELD_BUFFER_BYTES_LIMIT) {
@@ -277,6 +292,23 @@ export class WithheldEventBuffer {
     }
   }
 
+  /** Makes room for one more action named `name`: drops the oldest once the limit is held. */
+  private capSameAction(name: string): void {
+    let count: number = 0;
+    let oldest: number = -1;
+    for (let index: number = 0; index < this.details.length; index++) {
+      if (this.details[index].actionName === name) {
+        if (oldest === -1) {
+          oldest = index;
+        }
+        count += 1;
+      }
+    }
+    if (count >= WITHHELD_BUFFER_SAME_ACTION_LIMIT) {
+      this.evictAt(oldest);
+    }
+  }
+
   private evictOne(): boolean {
     const tiers: EvictionTier[] = [EvictionTier.FIRST, EvictionTier.LAST];
     for (const tier of tiers) {
@@ -322,6 +354,18 @@ export class WithheldEventBuffer {
       return code === 0 || code >= 400 ? EvictionTier.LAST : EvictionTier.FIRST;
     }
     return EvictionTier.LAST;
+  }
+
+  private static actionNameOf(event: Record<string, Object>): string | null {
+    if (event['type'] !== 'action') {
+      return null;
+    }
+    const action: Object | undefined = event['action'];
+    const target: Object | undefined = typeof action === 'object' && action !== null ?
+      (action as Record<string, Object>)['target'] : undefined;
+    const name: Object | undefined = typeof target === 'object' && target !== null ?
+      (target as Record<string, Object>)['name'] : undefined;
+    return typeof name === 'string' ? name as string : '';
   }
 
   private static documentVersionOf(event: Record<string, Object>): number {
