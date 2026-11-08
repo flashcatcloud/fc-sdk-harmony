@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.7.9
+
+- With `setSessionOnError(true)` and a sample rate below 100, a crash, native
+  crash or app freeze replayed on the next launch that cannot be attributed to
+  the session it happened in (typically a fault during launch, before the
+  first view) was dropped when the current session had not been kept: it
+  is not that session's error, so it must not release it. Such a crash is now
+  reported in a session of its own, with one `ApplicationLaunch` view counting
+  the crash, at the real crash time, and marked like a session kept on error.
+  The current session is left as it was. The incident is deleted only once
+  both events are written, so a failed write is retried on the next launch;
+  the retry reuses the same session, view and error ids, so a partly written
+  attempt is not counted twice. A crash already counted in a view of its own
+  run still gets the view, which then does not count it again.
+- A session kept only on error holds at most the newest 20 actions of one
+  name (`action.target.name`, case-sensitive). An action reported many times a
+  second used to fill the 200-event history with itself and push out the taps,
+  view changes and failed requests that explain the error. The other limits
+  are unchanged.
+
 ## 0.7.8
 
 - New: an active-device beacon, on by default
