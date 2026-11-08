@@ -559,15 +559,20 @@ export class RumFeature implements Feature, FeatureEventReceiver {
    * persisted incident's id, or, for a fault the system reports, what it says
    * about the fault.
    */
-  private static incidentIdentity(event: Record<string, Object>): string {
+  static incidentIdentity(event: Record<string, Object>): string {
     const incidentId: string = RumFeature.asString(event['incident_id']);
     if (incidentId.length > 0) {
       return `incident:${incidentId}`;
     }
-    return `fault:${RumFeature.asString(event['crash_kind'])}|${RumFeature.asString(event['crash_type'])}|` +
-      `${RumFeature.optionalPositiveNumber(event['timestamp_ms']) ?? 0}|` +
-      `${RumFeature.optionalPositiveNumber(event['process_id']) ?? 0}|` +
-      `${RumFeature.asString(event['message'])}|${RumFeature.asString(event['stack'])}`;
+    // Encoded as a JSON array, not joined with a separator: a message or stack
+    // may contain any separator, and two faults must not encode alike.
+    const parts: Array<string | number> = [
+      RumFeature.asString(event['crash_kind']), RumFeature.asString(event['crash_type']),
+      RumFeature.optionalPositiveNumber(event['timestamp_ms']) ?? 0,
+      RumFeature.optionalPositiveNumber(event['process_id']) ?? 0,
+      RumFeature.asString(event['message']), RumFeature.asString(event['stack'])
+    ];
+    return `fault:${JSON.stringify(parts)}`;
   }
 
   /** Pure: a UUID-shaped id that is the same for the same `key` (four FNV-1a 32-bit lanes). */

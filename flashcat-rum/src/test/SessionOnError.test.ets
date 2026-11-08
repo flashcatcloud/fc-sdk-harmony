@@ -841,6 +841,23 @@ export default function sessionOnErrorTests(): void {
         expect(scope.ofType('error').length).assertEqual(1);
       });
 
+    it('twoFaultsWhoseFieldsSplitDifferentlyGetDifferentIdentities', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+      const base: Record<string, Object> = { 'crash_kind': 'native', 'crash_type': 'NativeCrash', 'timestamp_ms': 1000, 'process_id': 7 };
+      const one: Record<string, Object> = { 'message': 'a|b', 'stack': 'c' };
+      const two: Record<string, Object> = { 'message': 'a', 'stack': 'b|c' };
+      for (const k of Object.keys(base)) {
+        one[k] = base[k];
+        two[k] = base[k];
+      }
+      expect(RumFeature.incidentIdentity(one) === RumFeature.incidentIdentity(two)).assertFalse();
+      // Negative control: the same fault twice has one identity.
+      const again: Record<string, Object> = { 'message': 'a|b', 'stack': 'c' };
+      for (const k of Object.keys(base)) {
+        again[k] = base[k];
+      }
+      expect(RumFeature.incidentIdentity(again)).assertEqual(RumFeature.incidentIdentity(one));
+    });
+
     it('aRetryAfterAPartialWriteRewritesTheSameDocuments',
       TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
         // Either write of the standalone session can fail alone. The incident stays, and the
