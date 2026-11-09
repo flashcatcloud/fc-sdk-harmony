@@ -101,6 +101,10 @@ export class RumSessionScope implements RumScope {
       return this;
     }
     if (this.isExpired(event.timestampMs)) {
+      // A crash counts in this session only if it had a view to count it on; a
+      // session that never had one gave the crash up already (openLaunchView).
+      const crashIsOurs: boolean = event.kind === 'markCrash' &&
+        (this.activeView !== null || this.lastStoppedView !== null);
       // Close the open view before discarding the session, so its final state is
       // sent. Close it at the last observed-alive time, NOT at the detecting
       // event's time: after a background gap the detecting event can be hours
@@ -124,7 +128,7 @@ export class RumSessionScope implements RumScope {
         this.lastStoppedView.handleEvent(event);
       }
       if (this.withheld !== null) {
-        if (event.kind === 'markCrash') {
+        if (crashIsOurs) {
           this.withheld.releaseForCrash();
         } else {
           this.withheld.settle();
@@ -247,15 +251,26 @@ export class RumSessionScope implements RumScope {
    * from view documents: the crash would belong to a session that never exists.
    *
    * A session that had a view and is between two keeps counting on the last
-   * one (see markCrash). An expired session is left to the fault's own events,
-   * which close it. Not a view of the app's: it is not remembered as the view to
+   * one (see markCrash). A session that expired without ever having a view is
+   * no longer where the fault happens: its identity is withdrawn now, before
+   * the snapshot, so the crash is reported as one with no session of its own,
+   * and what the session held is discarded when the fault's own events expire
+   * it. Not a view of the app's: it is not remembered as the view to
    * restore, so a later session never restarts it (the last-view snapshot does
    * record it — it is where the session's crash happened), and the app's first
    * view replaces it like any view replaces the one before.
    */
   private openLaunchView(event: RumRawEvent): void {
-    if (!this.sampled || this.activeView !== null || this.lastStoppedView !== null ||
-      this.isExpired(event.timestampMs)) {
+    if (this.activeView !== null || this.lastStoppedView !== null) {
+      return;
+    }
+    if (this.isExpired(event.timestampMs)) {
+      const cleared: Record<string, Object> = {};
+      cleared['session.id'] = '';
+      this.core.updateFeatureContext('rum', cleared);
+      return;
+    }
+    if (!this.sampled) {
       return;
     }
     this.activeView = new RumViewScope(

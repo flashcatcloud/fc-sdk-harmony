@@ -3328,6 +3328,41 @@ export default function sessionOnErrorTests(): void {
         expect(core.crashScope.probes[0]['original_session_id']).assertEqual('');
       });
 
+    it('aSessionThatExpiredWithoutAViewGivesTheCrashUp',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        // An action minted a withheld session, no view ever opened, then 16 idle minutes.
+        const core: FakeCore = new FakeCore();
+        const scope: CapturingScope = new CapturingScope();
+        const app: RumApplicationScope = onErrorApp(scope, core);
+        const t0: number = Date.now();
+        addAction(app, t0);
+        expect((core.featureContext['session.id'] as string).length > 0).assertTrue();
+        const crashAtMs: number = t0 + MIN_15 + 60 * 1000;
+        app.handleEvent(raw('openLaunchView', crashAtMs));
+        // Withdrawn before the crash feature snapshots it: the incident names no session.
+        expect(core.featureContext['session.id']).assertEqual('');
+        app.handleEvent(raw('markCrash', crashAtMs));
+        // Nothing of the expired session goes out: no view, and the held action is discarded.
+        expect(scope.written.length).assertEqual(0);
+      });
+
+    it('aSessionStillAliveWithoutAViewKeepsTheCrash',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        // Negative control for the expiry boundary: one idle minute, the launch view opens.
+        const core: FakeCore = new FakeCore();
+        const scope: CapturingScope = new CapturingScope();
+        const app: RumApplicationScope = onErrorApp(scope, core);
+        const t0: number = Date.now();
+        addAction(app, t0);
+        const sessionId: string = core.featureContext['session.id'] as string;
+        app.handleEvent(raw('openLaunchView', t0 + 60 * 1000));
+        expect(core.featureContext['session.id']).assertEqual(sessionId);
+        app.handleEvent(raw('markCrash', t0 + 60 * 1000));
+        const view: Record<string, Object> = lastLaunchView(scope);
+        expect(sessionOf(view)['id']).assertEqual(sessionId);
+        expect(((view['view'] as Record<string, Object>)['crash'] as Record<string, Object>)['count']).assertEqual(1);
+      });
+
     it('anUnsampledSessionOpensNoLaunchView',
       TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
         const core: FakeCore = new FakeCore();

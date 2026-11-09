@@ -31,6 +31,11 @@
   written in it, and a session kept on error releases it with the crash. The
   app's first view replaces it, as any view replaces the one before. A crash
   between two views is still counted on the last one.
+- A JS crash in a session that expired (15 minutes idle) without ever having a
+  view is reported as a crash with no session of its own, like a crash before
+  the first session, instead of into the expired session. A crash after an
+  unsampled session ended is no longer dropped as sampled out: it, too, is
+  reported in a session of its own, drawn as a new session would be.
 - A crash, native crash or app freeze replayed on the next launch that cannot
   be attributed to the session it happened in (typically a fault during
   launch, before the first view) is always reported in a session of its own:
