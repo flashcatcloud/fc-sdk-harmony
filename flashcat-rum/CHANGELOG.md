@@ -2,6 +2,17 @@
 
 ## 0.7.10
 
+- A JS crash before the first view of its session is counted on an
+  `ApplicationLaunch` view of that session. The crash module's incident named
+  the session but no view, so the replayed error went into a session with no
+  view document; the backend builds a session only from view documents, so
+  the crash belonged to a session that never appeared. The view is opened as
+  the fault is handled, before the incident is written: a persisted crash is
+  counted on it and replayed into it, a crash under `REPORT_AND_CONTINUE` (or
+  without the crash module) and the error of an `OBSERVE_ONLY` fault are
+  written in it, and a session kept on error releases it with the crash. The
+  app's first view replaces it, as any view replaces the one before. A crash
+  between two views is still counted on the last one.
 - A crash, native crash or app freeze replayed on the next launch that cannot
   be attributed to the session it happened in (typically a fault during
   launch, before the first view) is always reported in a session of its own:

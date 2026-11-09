@@ -26,6 +26,7 @@ import { LastView, LastViewSnapshot } from './LastViewSnapshot';
 import { AppForegroundHistory } from './AppForegroundHistory';
 import { ActiveDeviceBeacon, HttpActiveBeaconSender } from './ActiveDeviceBeacon';
 import { DetachedDraw } from './scope/RumApplicationScope';
+import { APPLICATION_LAUNCH_VIEW } from './scope/RumScope';
 
 // Internal core receiver owning the crash sidecar files. MessageBus contract.
 const CRASH_STORAGE_TARGET: string = '__flashcat_crash_storage';
@@ -42,7 +43,6 @@ const SOURCEMAP_BANNER: string = 'Cannot get SourceMap info';
 const MAX_REJECTION_REASON_CHARS: number = 500;
 // Name and url of the view holding a crash reported in a session of its own:
 // the convention for events before the first view.
-const APPLICATION_LAUNCH_VIEW: string = 'ApplicationLaunch';
 
 /**
  * The RUM feature. Installs the unhandled-exception hook (auto Error capture) and
@@ -978,6 +978,17 @@ export class RumFeature implements Feature, FeatureEventReceiver {
     this.handlingError = true;
     let asyncReportAttempted: boolean = false;
     try {
+      // Before anything snapshots the RUM context for this fault: a session with
+      // no view yet gets the ApplicationLaunch view, or the fault and its crash
+      // incident would name a session that has no view document.
+      try {
+        const monitor: DefaultRumMonitor | null = this.monitor;
+        if (monitor !== null) {
+          monitor.openLaunchView();
+        }
+      } catch (viewError) {
+        FlashcatLog.e(`rum.error: launch view failed: ${RumFeature.errorText(viewError)}`);
+      }
       // The crash policy is active only after FlashcatCrash.enable publishes an
       // owner. Without the crash module RUM applies the default policy itself
       // (below).

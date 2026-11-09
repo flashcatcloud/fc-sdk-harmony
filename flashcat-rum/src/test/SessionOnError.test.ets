@@ -3003,4 +3003,167 @@ export default function sessionOnErrorTests(): void {
         expect(scope.lastView.length > 0).assertTrue();
       });
   });
+
+  describe('rum-crash-before-first-view', (): void => {
+    /** A session with no view yet: an action mints it and is dropped for want of a view. */
+    const sessionWithoutView = (monitor: DefaultRumMonitor, core: FakeCore): string => {
+      monitor.addAction(RumActionType.TAP, 'tap');
+      const sessionId: string = core.featureContext['session.id'] as string;
+      expect(sessionId.length > 0).assertTrue();
+      expect((core.featureContext['view.id'] ?? '') as string).assertEqual('');
+      return sessionId;
+    };
+    const launchViewsOf = (scope: CapturingScope): Array<Record<string, Object>> =>
+      scope.ofType('view').filter((v: Record<string, Object>) =>
+        (v['view'] as Record<string, Object>)['url'] === 'ApplicationLaunch');
+    const lastLaunchView = (scope: CapturingScope): Record<string, Object> => {
+      const views: Array<Record<string, Object>> = launchViewsOf(scope);
+      expect(views.length > 0).assertTrue();
+      return views[views.length - 1];
+    };
+
+    it('aPersistedCrashBeforeTheFirstViewNamesTheLaunchViewItIsCountedOn',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        const core: FakeCore = new FakeCore();
+        core.crashScope = new FakeCrashScope(core);
+        const scope: CapturingScope = new CapturingScope();
+        const monitor: DefaultRumMonitor = featureWith(core, scope, 100, false);
+        const sessionId: string = sessionWithoutView(monitor, core);
+        fireUnhandledException(CRASH_TEXT);
+        const view: Record<string, Object> = lastLaunchView(scope);
+        expect(sessionOf(view)['id']).assertEqual(sessionId);
+        expect(((view['view'] as Record<string, Object>)['crash'] as Record<string, Object>)['count']).assertEqual(1);
+        expect(sessionOf(view)['sampled_for_error']).assertUndefined();
+        // The incident snapshots the context after the view opened: its replay joins this view.
+        const probe: Record<string, Object> = core.crashScope.probes[0];
+        expect(probe['original_session_id']).assertEqual(sessionId);
+        expect(probe['original_view_id']).assertEqual((view['view'] as Record<string, Object>)['id']);
+        // The error itself is the replay's, not this process's.
+        expect(scope.ofType('error').length).assertEqual(0);
+      });
+
+    it('aWithheldSessionReleasesItsLaunchViewWithTheCrash',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        const core: FakeCore = new FakeCore();
+        core.crashScope = new FakeCrashScope(core);
+        const scope: CapturingScope = new CapturingScope();
+        const monitor: DefaultRumMonitor = featureWith(core, scope, 0, true);
+        const sessionId: string = sessionWithoutView(monitor, core);
+        expect(monitor.isWithholding()).assertTrue();
+        fireUnhandledException(CRASH_TEXT);
+        const view: Record<string, Object> = lastLaunchView(scope);
+        expect(sessionOf(view)['id']).assertEqual(sessionId);
+        expect(sessionOf(view)['sampled_for_error']).assertEqual(true);
+        expect(sampleRateOf(view)).assertEqual(0);
+        expect(((view['view'] as Record<string, Object>)['crash'] as Record<string, Object>)['count']).assertEqual(1);
+        expect(core.crashScope.probes[0]['original_view_id'])
+          .assertEqual((view['view'] as Record<string, Object>)['id']);
+      });
+
+    it('aLiveCrashBeforeTheFirstViewIsWrittenInTheLaunchViewThatTheFirstViewReplaces',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        const core: FakeCore = new FakeCore();
+        core.crashScope = new FakeCrashScope(core);
+        core.crashScope.policy = 'report_and_continue';
+        const scope: CapturingScope = new CapturingScope();
+        const monitor: DefaultRumMonitor = featureWith(core, scope, 100, false);
+        sessionWithoutView(monitor, core);
+        fireUnhandledException(CRASH_TEXT);
+        const errors: Array<Record<string, Object>> = scope.ofType('error');
+        expect(errors.length).assertEqual(1);
+        const launchViewId: Object = (lastLaunchView(scope)['view'] as Record<string, Object>)['id'];
+        expect((errors[0]['view'] as Record<string, Object>)['id']).assertEqual(launchViewId);
+        // The app's first view takes over, as any view takes over from the one before.
+        monitor.startView('home', 'home');
+        const closed: Record<string, Object> = lastLaunchView(scope);
+        expect((closed['view'] as Record<string, Object>)['id']).assertEqual(launchViewId);
+        expect((closed['view'] as Record<string, Object>)['is_active']).assertEqual(false);
+        expect(core.featureContext['view.name']).assertEqual('home');
+      });
+
+    it('aSecondFaultBeforeTheFirstViewOpensNoSecondLaunchView',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        const core: FakeCore = new FakeCore();
+        core.crashScope = new FakeCrashScope(core);
+        core.crashScope.policy = 'report_and_continue';
+        const scope: CapturingScope = new CapturingScope();
+        const monitor: DefaultRumMonitor = featureWith(core, scope, 100, false);
+        sessionWithoutView(monitor, core);
+        fireUnhandledException(CRASH_TEXT);
+        fireUnhandledException(CRASH_TEXT);
+        const ids: Set<Object> = new Set<Object>(launchViewsOf(scope).map((v: Record<string, Object>) =>
+          (v['view'] as Record<string, Object>)['id']));
+        expect(ids.size).assertEqual(1);
+        const errors: Array<Record<string, Object>> = scope.ofType('error');
+        expect(errors.length).assertEqual(2);
+        for (const error of errors) {
+          expect(ids.has((error['view'] as Record<string, Object>)['id'])).assertTrue();
+        }
+      });
+
+    it('theReplayedCrashJoinsTheLaunchViewWithoutCountingItAgain',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        const core: FakeCore = new FakeCore();
+        core.crashScope = new FakeCrashScope(core);
+        const scope: CapturingScope = new CapturingScope();
+        const monitor: DefaultRumMonitor = featureWith(core, scope, 100, false);
+        const sessionId: string = sessionWithoutView(monitor, core);
+        fireUnhandledException(CRASH_TEXT);
+        const launchViewId: Object = (lastLaunchView(scope)['view'] as Record<string, Object>)['id'];
+        const viewsBefore: number = scope.ofType('view').length;
+        // The next launch replays the persisted incident: the very event the probe was built as.
+        const replay: Record<string, Object> = core.crashScope.probes[0];
+        replay['type'] = 'crash_report';
+        replayCrash(core, replay);
+        expect(replay['delivered']).assertEqual(true);
+        const errors: Array<Record<string, Object>> = scope.ofType('error');
+        expect(errors.length).assertEqual(1);
+        expect(sessionOf(errors[0])['id']).assertEqual(sessionId);
+        expect((errors[0]['view'] as Record<string, Object>)['id']).assertEqual(launchViewId);
+        // Counted once, by markCrash in the crashed process; the replay writes no view.
+        expect(scope.ofType('view').length).assertEqual(viewsBefore);
+        expect(((lastLaunchView(scope)['view'] as Record<string, Object>)['crash'] as Record<string, Object>)['count'])
+          .assertEqual(1);
+      });
+
+    it('aCrashBetweenTwoViewsStaysOnTheLastViewWithoutALaunchView',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        const core: FakeCore = new FakeCore();
+        core.crashScope = new FakeCrashScope(core);
+        const scope: CapturingScope = new CapturingScope();
+        const monitor: DefaultRumMonitor = featureWith(core, scope, 100, false);
+        monitor.startView('home', 'home');
+        monitor.stopView('home');
+        fireUnhandledException(CRASH_TEXT);
+        expect(launchViewsOf(scope).length).assertEqual(0);
+        const views: Array<Record<string, Object>> = scope.ofType('view');
+        const last: Record<string, Object> = views[views.length - 1]['view'] as Record<string, Object>;
+        expect(last['url']).assertEqual('home');
+        expect((last['crash'] as Record<string, Object>)['count']).assertEqual(1);
+      });
+
+    it('aCrashWithNoSessionMintsNeitherASessionNorAView',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        const core: FakeCore = new FakeCore();
+        core.crashScope = new FakeCrashScope(core);
+        const scope: CapturingScope = new CapturingScope();
+        featureWith(core, scope, 100, false);
+        fireUnhandledException(CRASH_TEXT);
+        expect((core.featureContext['session.id'] ?? '') as string).assertEqual('');
+        expect(scope.ofType('view').length).assertEqual(0);
+        expect(core.crashScope.probes[0]['original_session_id']).assertEqual('');
+      });
+
+    it('anUnsampledSessionOpensNoLaunchView',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        const core: FakeCore = new FakeCore();
+        core.crashScope = new FakeCrashScope(core);
+        const scope: CapturingScope = new CapturingScope();
+        const monitor: DefaultRumMonitor = featureWith(core, scope, 0, false);
+        monitor.addAction(RumActionType.TAP, 'tap');
+        fireUnhandledException(CRASH_TEXT);
+        expect(scope.ofType('view').length).assertEqual(0);
+        expect((core.featureContext['view.id'] ?? '') as string).assertEqual('');
+      });
+  });
 }
