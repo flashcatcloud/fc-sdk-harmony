@@ -18,6 +18,28 @@
   `SourceMap is not initialized yet` line, as they already skipped
   `Cannot get SourceMap info`.
 
+## 0.7.10
+
+- A crash, native crash or app freeze replayed on the next launch that cannot
+  be attributed to the session it happened in (typically a fault during
+  launch, before the first view) is always reported in a session of its own:
+  one `ApplicationLaunch` view counting the crash, at the real crash time (or
+  now, with the real time in `crash.crashed_at_ms`, past the intake's 24 h
+  window). It used to go into the current session whenever that session was
+  collected (with a sample rate of 100, every time): at the current time,
+  counted in whichever view was current, so a session the crash did not happen
+  in read as crashed. The current session is now never touched. The session of
+  its own is drawn as a new session would be at that moment (the console's
+  rate or the init value, then `setBeforeSampling`, which is asked for this
+  draw too): drawn by the rate, it is an ordinary session; missed by the rate
+  but kept by `setSessionOnError(true)`, it is marked like a session kept on
+  error, as in 0.7.9; missed with neither, the crash is not reported, as
+  before. The draw is derived from the incident, so a retry after a failed
+  write draws the same way and never leaves half a session behind.
+- Known limitation: such a crash carries the current launch's application
+  version, OS, user and connectivity. Nothing in it says what the crashed
+  run's were.
+
 ## 0.7.9
 
 - With `setSessionOnError(true)` and a sample rate below 100, a crash, native

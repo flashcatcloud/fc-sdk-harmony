@@ -3,9 +3,9 @@ import { util } from '@kit.ArkTS';
 import { RumMonitor } from '../../RumMonitor';
 import { RumConfiguration } from '../../RumConfiguration';
 import { RumActionType, RumErrorSource, RumResourceKind, RumResourceMethod } from '../../RumTypes';
-import { RumApplicationScope } from '../scope/RumApplicationScope';
+import { RumApplicationScope, DetachedDraw } from '../scope/RumApplicationScope';
 import { RumRawEvent } from '../scope/RumScope';
-import { RemoteConfigStore, RemoteConfigValues, DrawnConfiguration } from '../remoteconfig/RemoteConfigStore';
+import { RemoteConfigStore, RemoteConfigValues } from '../remoteconfig/RemoteConfigStore';
 import { RemoteConfigController } from '../remoteconfig/RemoteConfigController';
 import { RumEventMapperHolder } from '../RumEventMapperHolder';
 import { VitalsCollector } from '../vitals/VitalsCollector';
@@ -393,26 +393,25 @@ export class DefaultRumMonitor implements RumMonitor {
    * errors as unhandled. Unlike the public API this lets a failure propagate:
    * crash replay reads a throw as "not delivered" and keeps the incident for
    * the next launch instead of deleting it. Every internal caller contains it.
-   *
-   * Returns the settings of the session that turned an `inherited` error away
-   * because it withholds its events, null when the error went the usual way.
    */
   reportError(message: string, source: RumErrorSource, stack: string | undefined,
-    isCrash: boolean, handling: string, attributes?: Record<string, Object>, timestampMs?: number,
-    countInView: boolean = true, inherited: boolean = false): DrawnConfiguration | null {
+    isCrash: boolean, handling: string, attributes?: Record<string, Object>): void {
     const e: RumRawEvent = this.raw('addError', attributes);
-    e.inherited = inherited;
-    if (timestampMs !== undefined) {
-      e.timestampMs = timestampMs;
-    }
     e.errorMessage = message;
     e.errorSource = source as string;
     e.errorStack = stack;
     e.isCrash = isCrash;
-    e.countInView = countInView;
     e.errorHandling = handling;
     this.applicationScope.handleEvent(e);
-    return e.refusedBy ?? null;
+  }
+
+  /**
+   * The draw of a session of its own for an event that belongs to no session
+   * of this launch (see RumApplicationScope.drawDetachedSession). Like
+   * reportError, a failure propagates to the internal caller.
+   */
+  drawDetachedSession(roll: number): DetachedDraw | null {
+    return this.applicationScope.drawDetachedSession(roll);
   }
 
   addAttribute(key: string, value: Object): void {
