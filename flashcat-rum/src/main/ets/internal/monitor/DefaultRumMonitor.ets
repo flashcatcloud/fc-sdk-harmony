@@ -330,6 +330,15 @@ export class DefaultRumMonitor implements RumMonitor {
     this.dispatch('markCrash', () => ({ kind: 'markCrash', attributes: {}, timestampMs: Date.now() } as RumRawEvent));
   }
 
+  /**
+   * Internal: a JS fault is about to be handled. A session that has never had a
+   * view opens the ApplicationLaunch view, so the fault — and the crash incident
+   * persisted for it — belongs to a view of the session it happened in.
+   */
+  openLaunchView(): void {
+    this.dispatch('openLaunchView', () => this.raw('openLaunchView'));
+  }
+
   private startKeepAlive(): void {
     this.keepAliveTimerId = setInterval(() => {
       this.keepAlive();

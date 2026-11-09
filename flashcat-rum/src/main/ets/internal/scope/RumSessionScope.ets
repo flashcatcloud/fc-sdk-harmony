@@ -1,6 +1,6 @@
 import { FeatureScope, FlashcatContext, EventWriter, SdkCore, FlashcatLog } from '@flashcatcloud/core';
 import { util } from '@kit.ArkTS';
-import { RumScope, RumRawEvent } from './RumScope';
+import { RumScope, RumRawEvent, APPLICATION_LAUNCH_VIEW } from './RumScope';
 import { RumViewScope } from './RumViewScope';
 import { RumEventAssembler, LaunchView, APP_LAUNCH_TTID, APP_LAUNCH_TTFD } from '../assembly/RumEventAssembler';
 import { StartupType } from '../startup/AppLaunchTracker';
@@ -96,6 +96,10 @@ export class RumSessionScope implements RumScope {
   }
 
   handleEvent(event: RumRawEvent): RumScope | null {
+    if (event.kind === 'openLaunchView') {
+      this.openLaunchView(event);
+      return this;
+    }
     if (this.isExpired(event.timestampMs)) {
       // Close the open view before discarding the session, so its final state is
       // sent. Close it at the last observed-alive time, NOT at the detecting
@@ -231,6 +235,33 @@ export class RumSessionScope implements RumScope {
       this.withheld.releaseForCrash();
     }
     return this;
+  }
+
+  /**
+   * A JS fault is about to be handled in a session that has never had a view:
+   * open the ApplicationLaunch view, the view that holds what a session records
+   * before its first one. Opened here, before the crash feature snapshots the
+   * RUM context for its incident, so the incident names this view; the crash
+   * is then counted on it, and the replayed error joins it. Without it the
+   * session would have no view document, and the backend builds a session only
+   * from view documents: the crash would belong to a session that never exists.
+   *
+   * A session that had a view and is between two keeps counting on the last
+   * one (see markCrash). An expired session is left to the fault's own events,
+   * which close it. Not a view of the app's: it is not remembered as the view to
+   * restore, so a later session never restarts it (the last-view snapshot does
+   * record it — it is where the session's crash happened), and the app's first
+   * view replaces it like any view replaces the one before.
+   */
+  private openLaunchView(event: RumRawEvent): void {
+    if (!this.sampled || this.activeView !== null || this.lastStoppedView !== null ||
+      this.isExpired(event.timestampMs)) {
+      return;
+    }
+    this.activeView = new RumViewScope(
+      this.featureScope, this.core, this.applicationId, this.sessionId,
+      APPLICATION_LAUNCH_VIEW, APPLICATION_LAUNCH_VIEW, util.generateRandomUUID(true), event.timestampMs,
+      event.attributes, this.draw, this.sampledOnError, this.collector);
   }
 
   /** Keep a closed view alive (bounded) while it still owns in-flight resources,

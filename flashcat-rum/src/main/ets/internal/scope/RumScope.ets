@@ -1,3 +1,6 @@
+/** The view that holds what a session records before its first view. */
+export const APPLICATION_LAUNCH_VIEW: string = 'ApplicationLaunch';
+
 /**
  * Internal raw event passed down the scope hierarchy. Scopes react to these and
  * emit assembled RUM events (view / error) to the writer.
@@ -7,9 +10,12 @@ export interface RumRawEvent {
   kind: string;                 // 'startView' | 'stopView' | 'addAction' | 'addError'
                                 // | 'startResource' | 'stopResource' | 'stopResourceWithError'
                                 // | 'keepAlive' | 'markCrash' | 'appLaunch' | 'addViewLoadingTime'
+                                // | 'openLaunchView'
                                 // markCrash: bump the active view's error+crash counts without
                                 // writing an error event (the error itself is delivered by the
                                 // durable pending-incident replay at next launch).
+                                // openLaunchView: a JS fault is about to be handled; a session
+                                // that has never had a view opens the ApplicationLaunch view for it.
   key?: string;                 // view key, or resource key
   name?: string;
   attributes: Record<string, Object>;

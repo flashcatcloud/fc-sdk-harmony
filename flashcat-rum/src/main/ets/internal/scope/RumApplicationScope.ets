@@ -99,6 +99,8 @@ export class RumApplicationScope implements RumScope {
       // - markCrash belongs to the PREVIOUS session (the persisted incident
       //   already snapshots its ids) — a fresh session here would count the
       //   crash in a phantom session the replayed error never joins.
+      // - openLaunchView, for the same reason: a fault with no session to
+      //   record it in is reported on its own at the next launch.
       // - stop-type events merely close out something from a dead session; a
       //   session minted for them emits zero view documents (invisible to the
       //   backend) yet publishes its session.id — a ghost that swallows
@@ -152,7 +154,7 @@ export class RumApplicationScope implements RumScope {
   }
 
   private static startsUserActivity(event: RumRawEvent): boolean {
-    return event.kind !== 'keepAlive' && event.kind !== 'markCrash'
+    return event.kind !== 'keepAlive' && event.kind !== 'markCrash' && event.kind !== 'openLaunchView'
       && event.kind !== 'stopView' && event.kind !== 'stopResource'
       && event.kind !== 'stopResourceWithError' && event.kind !== 'addViewLoadingTime';
   }
