@@ -166,15 +166,6 @@ export class RumSessionScope implements RumScope {
     if (!this.sampled) {
       return this; // session dropped — track lifecycle but emit nothing
     }
-    if (event.kind === 'addError' && event.inherited === true && this.withheld !== null && this.withheld.isWithholding()) {
-      // A crash of a process that already died is not this session's error: it
-      // must not turn a session the backend has never seen into an error
-      // session, nor release its history. The caller reports it in a session
-      // of its own instead; this one is left exactly as it was.
-      FlashcatLog.d('rum.session: inherited crash turned away — the current session is withheld');
-      event.refusedBy = this.draw;
-      return this;
-    }
 
     // Late resource completions may belong to an already-closed view held in
     // the draining set — route by ownership, not blindly to the active view.
@@ -204,13 +195,11 @@ export class RumSessionScope implements RumScope {
       } else {
         FlashcatLog.d('rum.session: markCrash with no view — crash not counted in any view document');
       }
-    } else if (event.kind === 'addError' && event.isCrash === true && event.countInView !== false &&
-      event.inherited !== true && this.lastStoppedView !== null) {
+    } else if (event.kind === 'addError' && event.isCrash === true && this.lastStoppedView !== null) {
       // A crash the process survives, in the gap between stopView and the next
       // startView (e.g. a timer throwing while backgrounded): like markCrash,
       // it belongs to the most recently closed view, or it never reaches
-      // session_crash_count. An inherited crash (a previous launch's) never
-      // belongs to a view of this launch.
+      // session_crash_count.
       this.lastStoppedView.handleEvent(event);
     } else if (event.kind === 'addError') {
       this.writeViewlessError(event); // error before any view started
@@ -395,7 +384,8 @@ export class RumSessionScope implements RumScope {
       || (nowMs - this.startedAtMs) >= SESSION_MAX_DURATION_MS;
   }
 
-  private static decideSampling(sampleRate: number): boolean {
+  /** `roll` is uniform in [0, 100): random for a live session, fixed for one whose draw must repeat. */
+  static decideSampling(sampleRate: number, roll: number = Math.random() * 100): boolean {
     // Per-session coin flip (sampleRate is 0..100). Independent per session.
     if (sampleRate >= 100) {
       return true;
@@ -403,6 +393,6 @@ export class RumSessionScope implements RumScope {
     if (sampleRate <= 0) {
       return false;
     }
-    return (Math.random() * 100) < sampleRate;
+    return roll < sampleRate;
   }
 }

@@ -25,7 +25,7 @@ import { RumEventMapperHolder } from './RumEventMapperHolder';
 import { LastView, LastViewSnapshot } from './LastViewSnapshot';
 import { AppForegroundHistory } from './AppForegroundHistory';
 import { ActiveDeviceBeacon, HttpActiveBeaconSender } from './ActiveDeviceBeacon';
-import { DrawnConfiguration } from './remoteconfig/RemoteConfigStore';
+import { DetachedDraw } from './scope/RumApplicationScope';
 
 // Internal core receiver owning the crash sidecar files. MessageBus contract.
 const CRASH_STORAGE_TARGET: string = '__flashcat_crash_storage';
@@ -425,16 +425,30 @@ export class RumFeature implements Feature, FeatureEventReceiver {
       return; // delivered stays unset — a durable incident is retained for retry
     }
     FlashcatLog.d(`rum.crash: reporting crash kind=${RumFeature.asString(event['crash_kind'])}`);
-    // No original session to attach to (crash before the first session, or an
-    // unsampled one) — report into the current session at the current time. A
-    // backdated timestamp would start the session in the past and expire it
-    // instantly, so the original crash time is preserved as an attribute only.
+    // Nothing attributes the crash to the run it happened in (a crash before
+    // the first view, an unsampled run, an incident too old for its own
+    // session). It did not happen in the current session either, so it never
+    // goes there: it is reported in a session of its own, drawn the way a new
+    // session would be drawn now, and the current session is left as it is.
+    // The coin comes from the incident, like the session's ids: a retry after a
+    // partial write draws the same way instead of dropping what already landed.
+    const roll: number =
+      parseInt(RumFeature.derivedUuid(`${RumFeature.incidentIdentity(event)}#draw`).substring(0, 8), 16) /
+        0x100000000 * 100;
+    const drawn: DetachedDraw | null = m.drawDetachedSession(roll);
+    if (drawn === null) {
+      // Not drawn, and nothing keeps it on error: sampling drops it, as it
+      // drops any session it does not draw. Handled, not retried.
+      FlashcatLog.d('rum.crash: not reported — its session was not drawn');
+      event['delivered'] = true;
+      return;
+    }
     const attributes: Record<string, Object> = RumFeature.crashAttributes(event);
     const crashedAtMs: number | undefined = RumFeature.optionalPositiveNumber(event['timestamp_ms']);
     if (crashedAtMs !== undefined) {
       attributes['crash.crashed_at_ms'] = crashedAtMs;
     }
-    // countInView: an incident that HAD an original view reached this fallback
+    // alreadyCounted: an incident that HAD an original view reached this path
     // only because it is >23 h old — markCrash already counted it in that view's
     // document, so counting again would double it. A session without a view
     // had no document to count it in. Everything else on this path (freezes,
@@ -442,44 +456,24 @@ export class RumFeature implements Feature, FeatureEventReceiver {
     // was never counted anywhere — it MUST count here or crash-free rate reads
     // those sessions as clean.
     const alreadyCounted: boolean = RumFeature.asString(event['original_view_id']).length > 0;
-    const refusedBy: DrawnConfiguration | null = m.reportError(
-      RumFeature.asString(event['message']),
-      RumErrorSource.SOURCE,
-      RumFeature.asString(event['stack']),
-      true,
-      'unhandled',
-      attributes,
-      undefined,
-      !alreadyCounted,
-      true);
-    if (refusedBy !== null) {
-      // The current session is kept only on error and has not errored: it
-      // turned the crash away rather than become an error session for a crash
-      // that did not happen in it. Dropping it would lose the crash for good,
-      // so it is reported in a session of its own.
-      event['delivered'] = this.writeStandaloneCrash(event, attributes, alreadyCounted, refusedBy,
-        m.getAttributes());
-      return;
-    }
-    // Known limitation: this path cannot observe the write result (the scope
-    // tree has no return channel), so delivered=true is optimistic; and the
-    // freshly minted session re-flips the sampling coin, which can drop the
-    // replayed error at sampleRate<100 (sampling applies to replayed orphans).
-    event['delivered'] = true;
+    event['delivered'] = this.writeStandaloneCrash(event, attributes, alreadyCounted, drawn, m.getAttributes());
   }
 
   /**
    * A replayed crash that nothing attributes to the session it happened in,
    * reported in a session of its own: one `ApplicationLaunch` view holding
    * exactly this crash — the convention for events before the first view. The
-   * session exists only because of the crash, so it is marked like a session
-   * kept on error (`session.sampled_for_error`, counted as one session).
+   * session carries its own draw: an ordinary session when the rate drew it,
+   * one marked as kept on error (`session.sampled_for_error`, rate 0) when only
+   * `sessionOnError` kept it.
    *
-   * Timestamps: the real crash time. The current-session fallback cannot use it,
-   * because a session started in the past expires on its next event; this one
-   * is complete the moment it is written and never receives another event. An
-   * incident past the intake's 24 h window (see isReplayTooOld) is stamped now,
-   * as on the fallback path, and keeps its real time in `crash.crashed_at_ms`.
+   * Context: this launch's (version, OS, user, connectivity, global
+   * attributes). Nothing in such an incident says what the crashed run's were.
+   *
+   * Timestamps: the real crash time. The session is complete the moment it is
+   * written and never receives another event, so a time in the past cannot
+   * expire it. An incident past the intake's 24 h window (see isReplayTooOld)
+   * is stamped now and keeps its real time in `crash.crashed_at_ms`.
    *
    * `alreadyCounted`: the crash was counted in a view of its own run when it
    * happened (the incident is here only for its age). The view is still
@@ -495,7 +489,7 @@ export class RumFeature implements Feature, FeatureEventReceiver {
    * consent), so a failed write leaves the incident for the next launch.
    */
   private writeStandaloneCrash(event: Record<string, Object>, crashAttributes: Record<string, Object>,
-    alreadyCounted: boolean, draw: DrawnConfiguration, globalAttributes: Record<string, Object>): boolean {
+    alreadyCounted: boolean, drawn: DetachedDraw, globalAttributes: Record<string, Object>): boolean {
     const scope: FeatureScope | null = this.core.getFeature(RUM_FEATURE_NAME);
     if (scope === null) {
       return false;
@@ -539,7 +533,7 @@ export class RumFeature implements Feature, FeatureEventReceiver {
       // it as the last view would attribute this launch's own crash to it.
       const view: Record<string, Object> | null = RumEventMapperHolder.apply(RumEventAssembler.view(
         context, applicationId, sessionId, viewId, APPLICATION_LAUNCH_VIEW, dateMs, 0,
-        0, counted, 0, counted, 1, false, viewAttributes, draw, true));
+        0, counted, 0, counted, 1, false, viewAttributes, drawn.draw, drawn.sampledForError));
       // A mapper that drops a view it has never heard of still keeps the crash:
       // losing the crash would be worse than a session without its view.
       if (view !== null && !writer.write(view, false)) {
@@ -594,8 +588,8 @@ export class RumFeature implements Feature, FeatureEventReceiver {
    * The intake silently discards events older than 24 h (while returning 2xx),
    * so a replayed crash backdated past that window would be marked delivered,
    * deleted, and lost. Crash Friday night, reopen Monday — the archetypal
-   * crash-then-abandon pattern. Such incidents fall back to the current-time
-   * monitor path, which preserves the real crash time as an attribute.
+   * crash-then-abandon pattern. Such incidents are reported in a session of
+   * their own stamped now, with the real crash time as an attribute.
    * 23 h keeps the same safety margin as the batch retention cap.
    */
   private static isReplayTooOld(event: Record<string, Object>): boolean {
@@ -710,7 +704,7 @@ export class RumFeature implements Feature, FeatureEventReceiver {
     // resurrect a document that has long since settled.
     const viewStartedAtMs: number = RumFeature.optionalPositiveNumber(snapshot['date']) ?? 0;
     if (viewStartedAtMs <= 0 || (Date.now() - viewStartedAtMs) >= LAST_VIEW_MAX_AGE_MS) {
-      FlashcatLog.d('rum.crash: last-view snapshot too old; falling back to current session');
+      FlashcatLog.d('rum.crash: last-view snapshot too old; reporting in a session of its own');
       return false;
     }
     const scope: FeatureScope | null = this.core.getFeature(RUM_FEATURE_NAME);
@@ -721,7 +715,7 @@ export class RumFeature implements Feature, FeatureEventReceiver {
     if (faultAtMs !== undefined && faultAtMs < viewStartedAtMs) {
       // The view started after the fault, so it is not the view the fault happened in, and its
       // session and run (user, app version, attributes) are not the crashed run's either.
-      FlashcatLog.d('rum.crash: fault predates the last-view snapshot; falling back to current session');
+      FlashcatLog.d('rum.crash: fault predates the last-view snapshot; reporting in a session of its own');
       return false;
     }
     const viewName: string = RumFeature.asString(view['name']);
