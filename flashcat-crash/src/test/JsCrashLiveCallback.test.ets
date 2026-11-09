@@ -63,7 +63,7 @@ class FakeCore implements SdkCore {
 /** A core a persisting policy can snapshot (the keep-alive policies never ask). */
 class PersistingCore extends FakeCore {
   getContext(): FlashcatContext {
-    return { featureContext: {}, sdkVersion: '0.7.9' } as Object as FlashcatContext;
+    return { featureContext: {}, sdkVersion: '0.7.10' } as Object as FlashcatContext;
   }
 }
 

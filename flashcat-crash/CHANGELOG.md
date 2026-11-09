@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.10
+
+- No changes; released together with `@flashcatcloud/rum` 0.7.10.
+
 ## 0.7.9
 
 - No changes; released together with `@flashcatcloud/rum` 0.7.9.
