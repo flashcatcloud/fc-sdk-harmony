@@ -232,8 +232,12 @@ export class CrashFeature implements Feature, FeatureEventReceiver {
     // Only record the crashed run's session/view when that session was sampled
     // in: the replay stamps these ids onto the reported error, and stamping an
     // unsampled session would surface a session that emitted no other events.
-    const sessionSampled: boolean = rumContext['session.sampled'] !== false;
-    const originSessionId: string = sessionSampled ? CrashFeature.stringValue(rumContext['session.id']) : '';
+    // With no session id published there is no session to be sampled out of: a
+    // `session.sampled` left by a session that has since ended does not apply,
+    // and the replay draws a session for the crash.
+    const liveSessionId: string = CrashFeature.stringValue(rumContext['session.id']);
+    const sessionSampled: boolean = liveSessionId.length === 0 || rumContext['session.sampled'] !== false;
+    const originSessionId: string = sessionSampled ? liveSessionId : '';
     const originViewId: string = sessionSampled ? CrashFeature.stringValue(rumContext['view.id']) : '';
     const originViewName: string = sessionSampled ? CrashFeature.stringValue(rumContext['view.name']) : '';
     const originViewUrl: string = sessionSampled ? CrashFeature.stringValue(rumContext['view.url']) : '';

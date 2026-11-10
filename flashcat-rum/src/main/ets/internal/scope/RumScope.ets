@@ -1,4 +1,5 @@
-import { DrawnConfiguration } from '../remoteconfig/RemoteConfigStore';
+/** The view that holds what a session records before its first view. */
+export const APPLICATION_LAUNCH_VIEW: string = 'ApplicationLaunch';
 
 /**
  * Internal raw event passed down the scope hierarchy. Scopes react to these and
@@ -9,9 +10,12 @@ export interface RumRawEvent {
   kind: string;                 // 'startView' | 'stopView' | 'addAction' | 'addError'
                                 // | 'startResource' | 'stopResource' | 'stopResourceWithError'
                                 // | 'keepAlive' | 'markCrash' | 'appLaunch' | 'addViewLoadingTime'
+                                // | 'openLaunchView'
                                 // markCrash: bump the active view's error+crash counts without
                                 // writing an error event (the error itself is delivered by the
                                 // durable pending-incident replay at next launch).
+                                // openLaunchView: a JS fault is about to be handled; a session
+                                // that has never had a view opens the ApplicationLaunch view for it.
   key?: string;                 // view key, or resource key
   name?: string;
   attributes: Record<string, Object>;
@@ -28,18 +32,6 @@ export interface RumRawEvent {
   errorStack?: string;
   errorHandling?: string;       // 'handled' | 'unhandled'
   isCrash?: boolean;
-  // false ONLY for replayed crashes from a previous run: the error event keeps
-  // is_crash for the error list, but the crash must not bump the CURRENT
-  // view's crash count (it was already counted in the crashed run's view doc,
-  // and it did not happen in this session).
-  countInView?: boolean;
-  // An error of a process that already died, replayed into whichever session is
-  // current because nothing identifies the one it happened in.
-  inherited?: boolean;
-  // Set by a session that withholds its events and therefore turns an inherited
-  // error away: the settings it was drawn under, so the caller can report the
-  // error in a session of its own instead (see RumFeature.writeStandaloneCrash).
-  refusedBy?: DrawnConfiguration;
 
   // app launch vital (kind === 'appLaunch'); timestampMs is when it was measured
   launchMetric?: string;        // 'ttid' | 'ttfd'
