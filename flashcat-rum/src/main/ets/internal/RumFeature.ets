@@ -409,6 +409,12 @@ export class RumFeature implements Feature, FeatureEventReceiver {
       if (this.launch !== null) {
         this.launch.onAbilityDestroyed();
       }
+    } else if (type === 'drain_pending') {
+      // The user or the consent is about to change: queued events go out under the current ones.
+      const m: DefaultRumMonitor | null = this.monitor;
+      if (m !== null) {
+        m.drainPending();
+      }
     } else if (type === 'consent_granted' || type === 'user_changed') {
       this.triggerActiveBeacon();
     } else if (type === 'keep_alive') {

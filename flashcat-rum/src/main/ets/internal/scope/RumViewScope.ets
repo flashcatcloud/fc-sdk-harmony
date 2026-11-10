@@ -18,6 +18,31 @@ const MAX_PENDING_RESOURCES: number = 100;
  * while it is active, and owns the in-flight RumResourceScopes.
  */
 export class RumViewScope implements RumScope {
+  // While the monitor works through queued events, an action only marks its
+  // view: the view document (a full rewrite per action otherwise) is written
+  // once, when the slice ends, with the counts of every action in it.
+  private static deferring: boolean = false;
+  private static deferred: Set<RumViewScope> = new Set<RumViewScope>();
+
+  static deferActionViewWrites(defer: boolean): void {
+    RumViewScope.deferring = defer;
+    if (defer) {
+      return;
+    }
+    const views: RumViewScope[] = Array.from(RumViewScope.deferred);
+    RumViewScope.deferred.clear();
+    for (const view of views) {
+      // One failing write must not cost the other views theirs, nor throw into a timer.
+      try {
+        if (view.deferredViewAtMs > 0) {
+          view.writeViewEvent(view.deferredViewAtMs);
+        }
+      } catch (error) {
+        FlashcatLog.e(`rum.view: deferred write failed: ${error instanceof Error ? error.message : 'error'}`);
+      }
+    }
+  }
+
   private readonly featureScope: FeatureScope;
   private readonly core: SdkCore;
   private readonly applicationId: string;
@@ -34,6 +59,8 @@ export class RumViewScope implements RumScope {
   // Whether the session is kept only because it errors (`sessionOnError`).
   private readonly sampledForError: boolean;
   private actionCount: number = 0;
+  // Timestamp of the latest action whose view write is deferred; 0 when none is.
+  private deferredViewAtMs: number = 0;
   private errorCount: number = 0;
   private resourceCount: number = 0;
   private crashCount: number = 0;
@@ -158,7 +185,12 @@ export class RumViewScope implements RumScope {
       case 'addAction':
         this.actionCount += 1;
         this.writeAction(event);
-        this.writeViewEvent(event.timestampMs);
+        if (RumViewScope.deferring) {
+          this.deferredViewAtMs = Math.max(this.deferredViewAtMs, event.timestampMs);
+          RumViewScope.deferred.add(this);
+        } else {
+          this.writeViewEvent(event.timestampMs);
+        }
         return this;
       case 'keepAlive':
         // Refresh time_spent without counting as a child event.
@@ -310,6 +342,8 @@ export class RumViewScope implements RumScope {
 
 
   private writeViewEvent(nowMs: number): void {
+    // This document carries every count so far: a deferred write is no longer due.
+    this.deferredViewAtMs = 0;
     this.documentVersion += 1;
     // Once closed, time freezes at the close timestamp: late count updates
     // (draining resources, crash marks) must not extend dwell time.

@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Before the user (`setUserInfo`, `clearUserInfo`) or the tracking consent
+  changes, the core asks RUM to process the events it still holds queued, so
+  they are written with the user and consent of their call.
+
 ## 0.7.8
 
 - No changes; released together with `@flashcatcloud/rum` 0.7.8.
