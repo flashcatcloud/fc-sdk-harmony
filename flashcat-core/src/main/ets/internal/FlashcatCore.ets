@@ -267,12 +267,23 @@ export class FlashcatCore implements SdkCore {
     return this.appForeground;
   }
 
+  /**
+   * RUM may hold events the host called before this change but that are still
+   * queued (it spreads bursts over later turns): they are written now, with the
+   * user and consent of their call, before either changes.
+   */
+  private drainPendingRum(): void {
+    this.bus.send(RUM_FEATURE_NAME, { 'type': 'drain_pending' } as Record<string, Object>);
+  }
+
   setUserInfo(user: UserInfo): void {
+    this.drainPendingRum();
     this.contextProvider.setUser(user);
     this.bus.send(RUM_FEATURE_NAME, { 'type': 'user_changed' } as Record<string, Object>);
   }
 
   clearUserInfo(): void {
+    this.drainPendingRum();
     this.contextProvider.setUser({});
     this.bus.send(RUM_FEATURE_NAME, { 'type': 'user_changed' } as Record<string, Object>);
   }
@@ -283,10 +294,11 @@ export class FlashcatCore implements SdkCore {
       return;
     }
     const previous: TrackingConsent = this.consent;
-    this.consent = consent;
     if (previous === consent) {
       return;
     }
+    this.drainPendingRum();
+    this.consent = consent;
     FlashcatCore.persistConsent(this.context, consent);
     if (consent === TrackingConsent.GRANTED) {
       // Durable writes are now allowed: persist the in-memory anonymous id so the

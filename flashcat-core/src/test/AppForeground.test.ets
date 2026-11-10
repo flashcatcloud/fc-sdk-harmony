@@ -124,5 +124,22 @@ export default function appForegroundTests(): void {
       expect(received.indexOf('consent_granted') !== -1).assertTrue();
       core.stop();
     });
+
+    it('rumDrainsItsQueueBeforeTheUserOrTheConsentChanges', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+      const received: string[] = [];
+      const core: FlashcatCore =
+        build(new FakeApp(appManager.ProcessState.STATE_CREATE), received, TrackingConsent.PENDING);
+      received.length = 0;
+      core.setUserInfo({ id: 'u1' });
+      core.clearUserInfo();
+      expect(received.join(',')).assertEqual('drain_pending,user_changed,drain_pending,user_changed');
+      received.length = 0;
+      core.setTrackingConsent(TrackingConsent.PENDING);
+      expect(received.length).assertEqual(0);
+      core.setTrackingConsent(TrackingConsent.GRANTED);
+      expect(received[0]).assertEqual('drain_pending');
+      expect(received.indexOf('consent_granted') > 0).assertTrue();
+      core.stop();
+    });
   });
 }

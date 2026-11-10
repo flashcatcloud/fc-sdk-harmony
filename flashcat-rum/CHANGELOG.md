@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.7.11
+
+Cuts main-thread load and avoids losing events to the disk quota under bursts
+of RUM calls.
+
+- A burst of RUM calls no longer holds the calling thread. Within one turn of
+  the event loop the SDK processes events on the caller's turn for at most
+  4 ms; calls past that budget are queued and processed in slices of the same
+  size on later turns, so the thread yields between slices. Events keep the
+  time and attributes of their call and their order. The queue is processed
+  synchronously, on the caller's turn, before an error or a crash is reported,
+  before the app goes to the background or is flushed, before the user or the
+  tracking consent changes, before session queries, and on stop.
+- While queued events are processed, the view document an action updates is
+  written once per slice instead of once per action. A burst writes about half
+  as much: a few thousand actions in a row no longer exceed the 4 MB disk quota
+  and evict the oldest batches before they are uploaded.
+
 ## 0.7.10
 
 - A JS crash before the first view of its session is counted on an
