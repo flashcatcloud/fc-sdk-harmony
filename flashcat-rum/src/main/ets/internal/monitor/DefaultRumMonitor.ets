@@ -4,6 +4,7 @@ import { RumMonitor } from '../../RumMonitor';
 import { RumConfiguration } from '../../RumConfiguration';
 import { RumActionType, RumErrorSource, RumResourceKind, RumResourceMethod } from '../../RumTypes';
 import { RumApplicationScope, DetachedDraw } from '../scope/RumApplicationScope';
+import { RumViewScope } from '../scope/RumViewScope';
 import { RumRawEvent } from '../scope/RumScope';
 import { RemoteConfigStore, RemoteConfigValues } from '../remoteconfig/RemoteConfigStore';
 import { RemoteConfigController } from '../remoteconfig/RemoteConfigController';
@@ -21,6 +22,14 @@ const KEEP_ALIVE_MS: number = 5 * 60 * 1000;
 // later same-key stopAction must not report an hours-long loading_time.
 const ACTION_MAX_DURATION_MS: number = 10 * 60 * 1000;
 const MAX_ACTIVE_ACTIONS: number = 128;
+// Event processing runs on the caller's thread — the UI thread for most hosts.
+// Within one turn of the event loop the SDK spends at most this much of it;
+// events past the budget are queued and processed in slices of the same size,
+// each on a later turn, so a burst of calls never holds the thread for long.
+const TURN_BUDGET_MS: number = 4;
+// Bounds the memory a host calling faster than the slices drain can pin: at
+// the bound, a slice runs on the caller's turn before the event is queued.
+const MAX_QUEUED_EVENTS: number = 5000;
 
 class ActiveActionRecord {
   readonly startMs: number;
@@ -45,6 +54,15 @@ export class DefaultRumMonitor implements RumMonitor {
   private readonly globalAttributes: Map<string, Object> = new Map<string, Object>();
   private readonly activeActions: Map<string, ActiveActionRecord> = new Map<string, ActiveActionRecord>();
   private keepAliveTimerId: number = -1;
+  // Events over the turn budget, in call order; `queueHead` is the next one.
+  private queue: RumRawEvent[] = [];
+  private queueHead: number = 0;
+  // SDK time spent on the current turn; reset by the timer that ends the turn.
+  private turnSpentMs: number = 0;
+  private turnTimerId: number = -1;
+  private draining: boolean = false;
+  // After stop nothing drains the queue any more: events are processed on the caller's turn, as before.
+  private stopped: boolean = false;
   // Null unless the app opted into remote configuration.
   private readonly remoteConfig: RemoteConfigStore | null;
   private readonly controller: RemoteConfigController | null;
@@ -80,6 +98,7 @@ export class DefaultRumMonitor implements RumMonitor {
    * under a refused consent) must not fire through a stopped core.
    */
   stopWithheld(): void {
+    this.drainPending();
     this.applicationScope.stopWithheld();
   }
 
@@ -96,6 +115,7 @@ export class DefaultRumMonitor implements RumMonitor {
    * whether the application forced it, and what its hook says.
    */
   onRemoteConfigurationChanged(activation: string, before: number | null, after: number | null): void {
+    this.drainPending();
     this.applicationScope.onConfigurationChanged(activation, before, after, Date.now());
   }
 
@@ -104,6 +124,7 @@ export class DefaultRumMonitor implements RumMonitor {
       return;
     }
     try {
+      this.drainPending();
       this.applicationScope.forceSession(Date.now());
     } catch (error) {
       DefaultRumMonitor.logFailure('setForcedSession', error);
@@ -236,7 +257,8 @@ export class DefaultRumMonitor implements RumMonitor {
 
   /** Re-emit the active view (keep its time_spent / the session duration current). */
   keepAlive(): void {
-    this.dispatch('keepAlive', () => ({ kind: 'keepAlive', attributes: {}, timestampMs: Date.now() } as RumRawEvent));
+    this.dispatch('keepAlive', () => ({ kind: 'keepAlive', attributes: {}, timestampMs: Date.now() } as RumRawEvent),
+      true);
   }
 
   /**
@@ -245,6 +267,7 @@ export class DefaultRumMonitor implements RumMonitor {
    * instead of after its jitter: the process may not live that long.
    */
   releaseScheduledWithheld(): void {
+    this.drainPending();
     this.applicationScope.releaseScheduledWithheld();
   }
 
@@ -254,6 +277,7 @@ export class DefaultRumMonitor implements RumMonitor {
    * consent granted again later would release what the refusal was meant to end.
    */
   forgetWithheld(): void {
+    this.drainPending();
     this.applicationScope.forgetWithheld();
   }
 
@@ -264,7 +288,8 @@ export class DefaultRumMonitor implements RumMonitor {
    * event itself is written by the replay.
    */
   markCrash(): void {
-    this.dispatch('markCrash', () => ({ kind: 'markCrash', attributes: {}, timestampMs: Date.now() } as RumRawEvent));
+    this.dispatch('markCrash', () => ({ kind: 'markCrash', attributes: {}, timestampMs: Date.now() } as RumRawEvent),
+      true);
   }
 
   /**
@@ -273,7 +298,8 @@ export class DefaultRumMonitor implements RumMonitor {
    * persisted for it — belongs to a view of the session it happened in.
    */
   openLaunchView(): void {
-    this.dispatch('openLaunchView', () => this.raw('openLaunchView'));
+    // Immediate: the crash incident is persisted right after, and must see every view called before it.
+    this.dispatch('openLaunchView', () => this.raw('openLaunchView'), true);
   }
 
   private startKeepAlive(): void {
@@ -284,6 +310,12 @@ export class DefaultRumMonitor implements RumMonitor {
 
   /** Stop the keep-alive timer. Called on SDK stop so the timer doesn't leak. */
   stopKeepAlive(): void {
+    this.drainPending();
+    this.stopped = true;
+    if (this.turnTimerId !== -1) {
+      clearTimeout(this.turnTimerId);
+      this.turnTimerId = -1;
+    }
     if (this.keepAliveTimerId !== -1) {
       clearInterval(this.keepAliveTimerId);
       this.keepAliveTimerId = -1;
@@ -342,6 +374,7 @@ export class DefaultRumMonitor implements RumMonitor {
    */
   reportError(message: string, source: RumErrorSource, stack: string | undefined,
     isCrash: boolean, handling: string, attributes?: Record<string, Object>): void {
+    this.drainPending();
     const e: RumRawEvent = this.raw('addError', attributes);
     e.errorMessage = message;
     e.errorSource = source as string;
@@ -357,6 +390,7 @@ export class DefaultRumMonitor implements RumMonitor {
    * reportError, a failure propagates to the internal caller.
    */
   drawDetachedSession(roll: number): DetachedDraw | null {
+    this.drainPending();
     return this.applicationScope.drawDetachedSession(roll);
   }
 
@@ -389,6 +423,7 @@ export class DefaultRumMonitor implements RumMonitor {
   /** Whether the running session is one kept on error that has not been released yet. */
   isWithholding(): boolean {
     try {
+      this.drainPending();
       return this.applicationScope.isWithholding();
     } catch (error) {
       DefaultRumMonitor.logFailure('isWithholding', error);
@@ -401,6 +436,7 @@ export class DefaultRumMonitor implements RumMonitor {
     // released: an id handed out before then could never be looked up.
     let sessionId: string | undefined = undefined;
     try {
+      this.drainPending();
       sessionId = this.applicationScope.isWithholding() ? undefined : this.applicationScope.getCurrentSessionId();
     } catch (error) {
       DefaultRumMonitor.logFailure('getCurrentSessionId', error);
@@ -414,6 +450,7 @@ export class DefaultRumMonitor implements RumMonitor {
       return;
     }
     try {
+      this.drainPending();
       this.applicationScope.stopCurrentSession(Date.now());
     } catch (error) {
       DefaultRumMonitor.logFailure('stopSession', error);
@@ -426,15 +463,104 @@ export class DefaultRumMonitor implements RumMonitor {
    * attributes included — drops the event and is logged, never thrown into the
    * host (where an uncaught exception would crash the app).
    */
-  private dispatch(kind: string, build: () => RumRawEvent): void {
+  private dispatch(kind: string, build: () => RumRawEvent, immediate: boolean = false): void {
     if (DefaultRumMonitor.calledFromMapper(kind)) {
       return;
     }
+    let event: RumRawEvent;
     try {
-      this.applicationScope.handleEvent(build());
+      // Built now, whenever it is processed: the timestamp and the attributes
+      // (copied, global ones included) are those of the call.
+      event = build();
     } catch (error) {
       DefaultRumMonitor.logFailure(kind, error);
+      return;
     }
+    if (immediate) {
+      // The process may be about to exit or go to the background: everything
+      // called before this event is processed first, then the event itself.
+      this.drainPending();
+      this.process(event);
+      return;
+    }
+    if (this.stopped || (this.queueHead === this.queue.length && this.turnSpentMs < TURN_BUDGET_MS)) {
+      const startMs: number = Date.now();
+      this.process(event);
+      this.turnSpentMs += Date.now() - startMs;
+      this.scheduleTurnEnd();
+      return;
+    }
+    if (this.queue.length - this.queueHead >= MAX_QUEUED_EVENTS) {
+      this.drainSlice();
+    }
+    this.queue.push(event);
+    this.scheduleTurnEnd();
+  }
+
+  private process(event: RumRawEvent): void {
+    try {
+      this.applicationScope.handleEvent(event);
+    } catch (error) {
+      DefaultRumMonitor.logFailure(event.kind, error);
+    }
+  }
+
+  /** End the turn on the next one: its budget resets and a slice of the queue is processed. */
+  private scheduleTurnEnd(): void {
+    if (this.turnTimerId !== -1) {
+      return;
+    }
+    this.turnTimerId = setTimeout(() => {
+      this.turnTimerId = -1;
+      this.turnSpentMs = 0;
+      this.drainSlice();
+    }, 0);
+  }
+
+  /** Process queued events for at most one turn budget; a later turn takes the rest. */
+  private drainSlice(): void {
+    this.drain(TURN_BUDGET_MS);
+    if (this.queueHead < this.queue.length) {
+      this.scheduleTurnEnd();
+    }
+  }
+
+  /**
+   * Process every queued event now, on the caller's turn. Called before
+   * anything that reads or changes the scope tree outside the queue — a crash,
+   * a flush, a session query — so it sees every event called before it.
+   */
+  drainPending(): void {
+    this.drain(Number.POSITIVE_INFINITY);
+  }
+
+  private drain(budgetMs: number): void {
+    if (this.draining || this.queueHead === this.queue.length) {
+      return;
+    }
+    this.draining = true;
+    const startMs: number = Date.now();
+    try {
+      RumViewScope.deferActionViewWrites(true);
+      // abs: a wall clock set back ends the slice instead of running the whole queue.
+      while (this.queueHead < this.queue.length && Math.abs(Date.now() - startMs) < budgetMs) {
+        this.process(this.takeQueued());
+      }
+    } finally {
+      this.draining = false;
+      RumViewScope.deferActionViewWrites(false);
+    }
+    this.turnSpentMs += Date.now() - startMs;
+  }
+
+  private takeQueued(): RumRawEvent {
+    const event: RumRawEvent = this.queue[this.queueHead];
+    this.queueHead += 1;
+    if (this.queueHead === this.queue.length) {
+      this.queue = [];
+      this.queueHead = 0;
+    }
+    return event;
   }
 
   /**
