@@ -1,6 +1,6 @@
 import { FeatureScope, FlashcatContext, EventWriter, SdkCore, FlashcatLog } from '@flashcatcloud/core';
 import { util } from '@kit.ArkTS';
-import { RumScope, RumRawEvent } from './RumScope';
+import { RumScope, RumRawEvent, APPLICATION_LAUNCH_VIEW } from './RumScope';
 import { RumViewScope } from './RumViewScope';
 import { RumEventAssembler } from '../assembly/RumEventAssembler';
 import { writeMapped } from '../RumEventMapperHolder';
@@ -85,7 +85,15 @@ export class RumSessionScope implements RumScope {
   }
 
   handleEvent(event: RumRawEvent): RumScope | null {
+    if (event.kind === 'openLaunchView') {
+      this.openLaunchView(event);
+      return this;
+    }
     if (this.isExpired(event.timestampMs)) {
+      // A crash counts in this session only if it had a view to count it on; a
+      // session that never had one gave the crash up already (openLaunchView).
+      const crashIsOurs: boolean = event.kind === 'markCrash' &&
+        (this.activeView !== null || this.lastStoppedView !== null);
       // Close the open view before discarding the session, so its final state is
       // sent. Close it at the last observed-alive time, NOT at the detecting
       // event's time: after a background gap the detecting event can be hours
@@ -109,7 +117,7 @@ export class RumSessionScope implements RumScope {
         this.lastStoppedView.handleEvent(event);
       }
       if (this.withheld !== null) {
-        if (event.kind === 'markCrash') {
+        if (crashIsOurs) {
           this.withheld.releaseForCrash();
         } else {
           this.withheld.settle();
@@ -166,15 +174,6 @@ export class RumSessionScope implements RumScope {
     if (!this.sampled) {
       return this; // session dropped — track lifecycle but emit nothing
     }
-    if (event.kind === 'addError' && event.inherited === true && this.withheld !== null && this.withheld.isWithholding()) {
-      // A crash of a process that already died is not this session's error: it
-      // must not turn a session the backend has never seen into an error
-      // session, nor release its history. The caller reports it in a session
-      // of its own instead; this one is left exactly as it was.
-      FlashcatLog.d('rum.session: inherited crash turned away — the current session is withheld');
-      event.refusedBy = this.draw;
-      return this;
-    }
 
     // Late resource completions may belong to an already-closed view held in
     // the draining set — route by ownership, not blindly to the active view.
@@ -204,13 +203,11 @@ export class RumSessionScope implements RumScope {
       } else {
         FlashcatLog.d('rum.session: markCrash with no view — crash not counted in any view document');
       }
-    } else if (event.kind === 'addError' && event.isCrash === true && event.countInView !== false &&
-      event.inherited !== true && this.lastStoppedView !== null) {
+    } else if (event.kind === 'addError' && event.isCrash === true && this.lastStoppedView !== null) {
       // A crash the process survives, in the gap between stopView and the next
       // startView (e.g. a timer throwing while backgrounded): like markCrash,
       // it belongs to the most recently closed view, or it never reaches
-      // session_crash_count. An inherited crash (a previous launch's) never
-      // belongs to a view of this launch.
+      // session_crash_count.
       this.lastStoppedView.handleEvent(event);
     } else if (event.kind === 'addError') {
       this.writeViewlessError(event); // error before any view started
@@ -225,6 +222,44 @@ export class RumSessionScope implements RumScope {
       this.withheld.releaseForCrash();
     }
     return this;
+  }
+
+  /**
+   * A JS fault is about to be handled in a session that has never had a view:
+   * open the ApplicationLaunch view, the view that holds what a session records
+   * before its first one. Opened here, before the crash feature snapshots the
+   * RUM context for its incident, so the incident names this view; the crash
+   * is then counted on it, and the replayed error joins it. Without it the
+   * session would have no view document, and the backend builds a session only
+   * from view documents: the crash would belong to a session that never exists.
+   *
+   * A session that had a view and is between two keeps counting on the last
+   * one (see markCrash). A session that expired without ever having a view is
+   * no longer where the fault happens: its identity is withdrawn now, before
+   * the snapshot, so the crash is reported as one with no session of its own,
+   * and what the session held is discarded when the fault's own events expire
+   * it. Not a view of the app's: it is not remembered as the view to
+   * restore, so a later session never restarts it (the last-view snapshot does
+   * record it — it is where the session's crash happened), and the app's first
+   * view replaces it like any view replaces the one before.
+   */
+  private openLaunchView(event: RumRawEvent): void {
+    if (this.activeView !== null || this.lastStoppedView !== null) {
+      return;
+    }
+    if (this.isExpired(event.timestampMs)) {
+      const cleared: Record<string, Object> = {};
+      cleared['session.id'] = '';
+      this.core.updateFeatureContext('rum', cleared);
+      return;
+    }
+    if (!this.sampled) {
+      return;
+    }
+    this.activeView = new RumViewScope(
+      this.featureScope, this.core, this.applicationId, this.sessionId,
+      APPLICATION_LAUNCH_VIEW, APPLICATION_LAUNCH_VIEW, util.generateRandomUUID(true), event.timestampMs,
+      event.attributes, this.draw, this.sampledOnError);
   }
 
   /** Keep a closed view alive (bounded) while it still owns in-flight resources,
@@ -395,7 +430,8 @@ export class RumSessionScope implements RumScope {
       || (nowMs - this.startedAtMs) >= SESSION_MAX_DURATION_MS;
   }
 
-  private static decideSampling(sampleRate: number): boolean {
+  /** `roll` is uniform in [0, 100): random for a live session, fixed for one whose draw must repeat. */
+  static decideSampling(sampleRate: number, roll: number = Math.random() * 100): boolean {
     // Per-session coin flip (sampleRate is 0..100). Independent per session.
     if (sampleRate >= 100) {
       return true;
@@ -403,6 +439,6 @@ export class RumSessionScope implements RumScope {
     if (sampleRate <= 0) {
       return false;
     }
-    return (Math.random() * 100) < sampleRate;
+    return roll < sampleRate;
   }
 }

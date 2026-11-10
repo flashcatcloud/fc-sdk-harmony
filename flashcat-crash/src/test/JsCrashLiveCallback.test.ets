@@ -63,8 +63,22 @@ class FakeCore implements SdkCore {
 /** A core a persisting policy can snapshot (the keep-alive policies never ask). */
 class PersistingCore extends FakeCore {
   getContext(): FlashcatContext {
-    return { featureContext: {}, sdkVersion: '0.7.9' } as Object as FlashcatContext;
+    return { featureContext: {}, sdkVersion: '0.7.10' } as Object as FlashcatContext;
   }
+}
+
+/** A persisting core whose RUM context holds `rum`. */
+class RumContextCore extends FakeCore {
+  rum: Record<string, Object> = {};
+  getContext(): FlashcatContext {
+    return { featureContext: { 'rum': this.rum }, sdkVersion: '0.7.8' } as Object as FlashcatContext;
+  }
+}
+
+function persistedIncident(core: FakeCore): Record<string, Object> {
+  const writes: Array<Record<string, Object>> = core.crashScope.ofType('crash_storage_write');
+  expect(writes.length).assertEqual(1);
+  return JSON.parse(writes[0]['serialized'] as string) as Record<string, Object>;
 }
 
 function liveCallback(feature: CrashFeature, callback: string, atMs: number = Date.now()): Record<string, Object> {
@@ -195,6 +209,27 @@ export default function jsCrashLiveCallbackTests(): void {
         expect(control['should_exit']).assertEqual(true);
         expect(control['pending_written']).assertEqual(true);
         expect(core.crashScope.ofType('crash_storage_write').length).assertEqual(1);
+      });
+
+    it('aCrashWithNoSessionIsNotTakenForOneSampledOut',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        // An unsampled session ended (its id withdrawn) and left session.sampled behind.
+        const core: RumContextCore = new RumContextCore();
+        core.rum = { 'session.id': '', 'session.sampled': false };
+        liveCallback(featureWith(core, JsCrashPolicy.REPORT_THEN_EXIT), 'unhandled');
+        const incident: Record<string, Object> = persistedIncident(core);
+        expect(incident['session_id']).assertEqual('');
+        expect(incident['origin_sampled']).assertEqual(true);
+      });
+
+    it('aCrashInAnUnsampledSessionStaysSampledOut',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        const core: RumContextCore = new RumContextCore();
+        core.rum = { 'session.id': 'unsampled-session', 'session.sampled': false };
+        liveCallback(featureWith(core, JsCrashPolicy.REPORT_THEN_EXIT), 'unhandled');
+        const incident: Record<string, Object> = persistedIncident(core);
+        expect(incident['session_id']).assertEqual('');
+        expect(incident['origin_sampled']).assertEqual(false);
       });
 
     it('otherPoliciesKeepTheOnExceptionFallbackAsAnError',

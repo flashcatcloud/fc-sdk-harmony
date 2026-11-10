@@ -9,6 +9,13 @@ const FORCED_SAMPLE_RATE: number = 100;
 /** The console asking for a change to reach the session that is already running. */
 const ACTIVATION_IMMEDIATE: string = 'immediate';
 
+/** How a session that is not the current one was drawn (see drawDetachedSession). */
+export interface DetachedDraw {
+  draw: DrawnConfiguration;
+  /** Missed by the rate and kept only because `sessionOnError` keeps a session that errors. */
+  sampledForError: boolean;
+}
+
 /**
  * Root of the RUM scope tree. Creates and replaces sessions as they expire.
  * Equivalent to Android's RumApplicationScope.
@@ -88,6 +95,8 @@ export class RumApplicationScope implements RumScope {
       // - markCrash belongs to the PREVIOUS session (the persisted incident
       //   already snapshots its ids) — a fresh session here would count the
       //   crash in a phantom session the replayed error never joins.
+      // - openLaunchView, for the same reason: a fault with no session to
+      //   record it in is reported on its own at the next launch.
       // - stop-type events merely close out something from a dead session; a
       //   session minted for them emits zero view documents (invisible to the
       //   backend) yet publishes its session.id — a ghost that swallows
@@ -141,7 +150,7 @@ export class RumApplicationScope implements RumScope {
   }
 
   private static startsUserActivity(event: RumRawEvent): boolean {
-    return event.kind !== 'keepAlive' && event.kind !== 'markCrash'
+    return event.kind !== 'keepAlive' && event.kind !== 'markCrash' && event.kind !== 'openLaunchView'
       && event.kind !== 'stopView' && event.kind !== 'stopResource'
       && event.kind !== 'stopResourceWithError';
   }
@@ -255,26 +264,56 @@ export class RumApplicationScope implements RumScope {
    * rate would drop.
    */
   private startNewSession(nowMs: number): RumSessionScope {
-    const stored: RemoteConfigValues | null = this.remoteConfig !== null ? this.remoteConfig.read() : null;
-    const publishedRate: number | null = stored !== null ? stored.sessionSampleRate : null;
-    const resolved: DrawnConfiguration = this.resolve(publishedRate !== null ? publishedRate : this.sampleRate, stored);
+    const resolved: DrawnConfiguration = this.resolveNow();
     this.lastResolved = resolved;
-    // Carried on every session, whether or not the app opted into remote
-    // configuration: the backend weights a session by the rate it reports, and
-    // a session that reports none is counted once — the same as an SDK too old
-    // to say. The version is the part that is only meaningful when a
-    // configuration decided the rate, and it is omitted when none did.
-    //
-    // A forced session reports neither the rate that would have dropped it nor
-    // the version it ignored: it was not drawn by them. Reporting 3 there would
-    // have the console weight one debugging visitor as thirty-three sessions.
-    const draw: DrawnConfiguration = this.forced ? new DrawnConfiguration(0, FORCED_SAMPLE_RATE) : resolved;
     const session: RumSessionScope = new RumSessionScope(
-      this.featureScope, this.core, this.applicationId, resolved.sessionSampleRate, nowMs, this.forced, draw);
+      this.featureScope, this.core, this.applicationId, resolved.sessionSampleRate, nowMs, this.forced,
+      this.carried(resolved));
     if (this.onSessionStarted !== null) {
       this.onSessionStarted();
     }
     return session;
+  }
+
+  /**
+   * The draw of a session that is not the current one and never becomes it: a
+   * session holding one event that belongs to no session of this launch. Drawn
+   * exactly as startNewSession draws, and as independently of the current
+   * session as the next one would be; the current session is left untouched.
+   * `roll` is the coin (uniform in [0, 100)), fixed by the caller so a retry of
+   * the same event draws the same way. Null when such a session would not be
+   * collected at all.
+   */
+  drawDetachedSession(roll: number): DetachedDraw | null {
+    const resolved: DrawnConfiguration = this.resolveNow();
+    const drawn: boolean = this.forced || RumSessionScope.decideSampling(resolved.sessionSampleRate, roll);
+    if (drawn) {
+      return { draw: this.carried(resolved), sampledForError: false };
+    }
+    return resolved.sessionOnError ? { draw: resolved, sampledForError: true } : null;
+  }
+
+  /** The settings that apply right now (see resolve), with the console's rate where it published one. */
+  private resolveNow(): DrawnConfiguration {
+    const stored: RemoteConfigValues | null = this.remoteConfig !== null ? this.remoteConfig.read() : null;
+    const publishedRate: number | null = stored !== null ? stored.sessionSampleRate : null;
+    return this.resolve(publishedRate !== null ? publishedRate : this.sampleRate, stored);
+  }
+
+  /**
+   * What a session drawn under `resolved` reports. Carried on every session,
+   * whether or not the app opted into remote configuration: the backend
+   * weights a session by the rate it reports, and a session that reports none
+   * is counted once — the same as an SDK too old to say. The version is the
+   * part that is only meaningful when a configuration decided the rate, and it
+   * is omitted when none did.
+   *
+   * A forced session reports neither the rate that would have dropped it nor
+   * the version it ignored: it was not drawn by them. Reporting 3 there would
+   * have the console weight one debugging visitor as thirty-three sessions.
+   */
+  private carried(resolved: DrawnConfiguration): DrawnConfiguration {
+    return this.forced ? new DrawnConfiguration(0, FORCED_SAMPLE_RATE) : resolved;
   }
 
   /**
