@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Events carry `os.version_major` again. The OS version the SDK reports is the
+  system's full name (for example `OpenHarmony-6.1.1.125`), which has no
+  leading number, so the major version came out empty and was left off every
+  event; it is now the first number in the version (`6`).
 - A burst of RUM calls no longer holds the calling thread. Within one turn of
   the event loop the SDK processes events on the caller's turn for at most
   4 ms; calls past that budget are queued and processed in slices of the same
