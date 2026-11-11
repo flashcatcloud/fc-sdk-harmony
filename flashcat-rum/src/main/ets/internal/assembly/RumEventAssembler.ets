@@ -469,17 +469,24 @@ export class RumEventAssembler {
     return typeof value === 'string' ? value : '';
   }
 
-  /** "5.0.0.102" → "5"; '' when the version has no leading number. */
+  /**
+   * The first run of digits: "5.0.0.102" → "5", and "OpenHarmony-6.1.1.125" — the form
+   * deviceInfo.osFullName takes — → "6"; '' when the version has no number.
+   */
   static majorVersion(version: string): string {
-    let end: number = 0;
-    while (end < version.length) {
-      const code: number = version.charCodeAt(end);
-      if (code < 48 || code > 57) {
-        break;
-      }
+    let start: number = 0;
+    while (start < version.length && !RumEventAssembler.isDigit(version.charCodeAt(start))) {
+      start += 1;
+    }
+    let end: number = start;
+    while (end < version.length && RumEventAssembler.isDigit(version.charCodeAt(end))) {
       end += 1;
     }
-    return version.substring(0, end);
+    return version.substring(start, end);
+  }
+
+  private static isDigit(code: number): boolean {
+    return code >= 48 && code <= 57;
   }
 
   /** Maps HarmonyOS deviceInfo.deviceType to the RUM schema's device.type enum. */
