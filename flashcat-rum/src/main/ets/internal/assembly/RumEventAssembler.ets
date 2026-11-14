@@ -274,6 +274,8 @@ export class RumEventAssembler {
     durationNs: number | undefined,
     traceId: string | undefined,
     spanId: string | undefined,
+    firstPartyHost: string,
+    phases: Record<string, Object>,
     attributes: Record<string, Object>
   ): Record<string, Object> {
     const event: Record<string, Object> = {};
@@ -309,6 +311,17 @@ export class RumEventAssembler {
     resource['size'] = sizeBytes;
     if (durationNs !== undefined) {
       resource['duration'] = durationNs; // absent when not measurable (optional in the schema)
+    }
+    for (const name of Object.keys(phases)) {
+      resource[name] = phases[name]; // dns, connect, ssl, first_byte, download, redirect: see resourcePhases
+    }
+    if (firstPartyHost.length > 0) {
+      // Only the app's own hosts are named, as on Android; any other resource
+      // carries no provider. The schema spells the type with a space.
+      const provider: Record<string, Object> = {};
+      provider['domain'] = firstPartyHost;
+      provider['type'] = 'first party';
+      resource['provider'] = provider;
     }
     event['resource'] = resource;
 

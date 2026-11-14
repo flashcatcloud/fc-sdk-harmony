@@ -29,6 +29,7 @@ import { AppLaunchTracker } from './startup/AppLaunchTracker';
 import { ActiveDeviceBeacon, HttpActiveBeaconSender } from './ActiveDeviceBeacon';
 import { DetachedDraw } from './scope/RumApplicationScope';
 import { APPLICATION_LAUNCH_VIEW } from './scope/RumScope';
+import { FIRST_PARTY_HOST_ATTRIBUTE, TRANSFER_TIMING_ATTRIBUTE } from './scope/RumResourceScope';
 
 // Internal core receiver owning the crash sidecar files. MessageBus contract.
 const CRASH_STORAGE_TARGET: string = '__flashcat_crash_storage';
@@ -1051,6 +1052,10 @@ export class RumFeature implements Feature, FeatureEventReceiver {
     if (typeof spanId === 'string') {
       attributes['_dd.span_id'] = spanId;
     }
+    const firstPartyHost: Object | undefined = event['first_party_host'];
+    if (typeof firstPartyHost === 'string') {
+      attributes[FIRST_PARTY_HOST_ATTRIBUTE] = firstPartyHost;
+    }
     m.startResource(
       RumFeature.asString(event['key']),
       RumFeature.toMethod(RumFeature.asString(event['method'])),
@@ -1066,11 +1071,19 @@ export class RumFeature implements Feature, FeatureEventReceiver {
     const mimeType: string = RumFeature.asString(event['mime_type']);
     const kind: RumResourceKind =
       mimeType.length > 0 ? RumFeature.resourceKindFromMimeType(mimeType) : RumResourceKind.NATIVE;
+    // The network kit's timing rides along like the trace context does on start;
+    // RumResourceScope turns it into the resource's phases.
+    const attributes: Record<string, Object> = {};
+    const timing: Object | undefined = event['timing'];
+    if (typeof timing === 'object' && timing !== null) {
+      attributes[TRANSFER_TIMING_ATTRIBUTE] = timing;
+    }
     m.stopResource(
       RumFeature.asString(event['key']),
       RumFeature.asNumber(event['status_code']),
       RumFeature.asNumber(event['size']),
-      kind);
+      kind,
+      attributes);
   }
 
   private onNetworkRequestFailed(event: Record<string, Object>): void {

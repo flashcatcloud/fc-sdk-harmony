@@ -4,11 +4,16 @@ import { RumRawEvent } from './RumScope';
 import { RumEventAssembler } from '../assembly/RumEventAssembler';
 import { writeMapped } from '../RumEventMapperHolder';
 import { AppForegroundHistory } from '../AppForegroundHistory';
+import { resourcePhases } from '../assembly/ResourcePhases';
 
 const MS_TO_NS: number = 1e6;
 /** Internal attribute keys carrying the injected trace context (Android convention). */
 export const TRACE_ID_ATTRIBUTE: string = '_dd.trace_id';
 export const SPAN_ID_ATTRIBUTE: string = '_dd.span_id';
+/** Internal start attribute: the request's host, when it is a first-party host. */
+export const FIRST_PARTY_HOST_ATTRIBUTE: string = '_dd.first_party_host';
+/** Internal stop attribute: the network kit's transfer marks for the request. */
+export const TRANSFER_TIMING_ATTRIBUTE: string = '_dd.transfer_timing';
 
 /**
  * Tracks one in-flight network request inside a view. Created on startResource;
@@ -32,6 +37,7 @@ export class RumResourceScope {
   private readonly startedInBackground: boolean;
   private readonly traceId: string | undefined;
   private readonly spanId: string | undefined;
+  private readonly firstPartyHost: string;
   private readonly attributes: Record<string, Object>;
 
   constructor(
@@ -59,11 +65,13 @@ export class RumResourceScope {
     const src: Record<string, Object> = start.attributes;
     const traceVal: Object | undefined = src[TRACE_ID_ATTRIBUTE];
     const spanVal: Object | undefined = src[SPAN_ID_ATTRIBUTE];
+    const hostVal: Object | undefined = src[FIRST_PARTY_HOST_ATTRIBUTE];
     this.traceId = typeof traceVal === 'string' ? traceVal : undefined;
     this.spanId = typeof spanVal === 'string' ? spanVal : undefined;
+    this.firstPartyHost = typeof hostVal === 'string' ? hostVal : '';
     const attrs: Record<string, Object> = {};
     for (const k of Object.keys(src)) {
-      if (k === TRACE_ID_ATTRIBUTE || k === SPAN_ID_ATTRIBUTE) {
+      if (k === TRACE_ID_ATTRIBUTE || k === SPAN_ID_ATTRIBUTE || k === FIRST_PARTY_HOST_ATTRIBUTE) {
         continue;
       }
       attrs[k] = src[k];
@@ -75,19 +83,23 @@ export class RumResourceScope {
    * Request completed — emit the ResourceEvent. A request that was in flight
    * while the app was in the background is reported without a duration: its
    * process may have been frozen, so the wall-clock delta can span hours the
-   * request never ran.
+   * request never ran. Its phases go with it.
    */
   stop(raw: RumRawEvent): void {
     const durationNs: number | undefined = this.spannedBackground()
       ? undefined
       : Math.max(0, raw.timestampMs - this.startedAtMs) * MS_TO_NS;
+    const timing: Object | undefined = raw.attributes[TRANSFER_TIMING_ATTRIBUTE];
+    const phases: Record<string, Object> = durationNs !== undefined && typeof timing === 'object' && timing !== null
+      ? resourcePhases(timing as Record<string, Object>, durationNs)
+      : {};
     const attrs: Record<string, Object> = this.mergedAttributes(raw);
     this.featureScope.withWriteContext((context: FlashcatContext, writer: EventWriter) => {
       const event: Record<string, Object> = RumEventAssembler.resource(
         context, this.applicationId, this.sessionId, this.viewId, this.viewName,
         this.resourceId, this.url, this.method, raw.resourceKind ?? 'native',
         raw.statusCode ?? 0, raw.sizeBytes ?? 0, this.startedAtMs, durationNs,
-        this.traceId, this.spanId, this.withViewUrl(attrs));
+        this.traceId, this.spanId, this.firstPartyHost, phases, this.withViewUrl(attrs));
       writeMapped(writer, event, false);
     });
   }
@@ -124,7 +136,9 @@ export class RumResourceScope {
     }
     const stopAttrs: Record<string, Object> = stop.attributes;
     for (const k of Object.keys(stopAttrs)) {
-      attrs[k] = stopAttrs[k];
+      if (k !== TRANSFER_TIMING_ATTRIBUTE) {
+        attrs[k] = stopAttrs[k];
+      }
     }
     return attrs;
   }
