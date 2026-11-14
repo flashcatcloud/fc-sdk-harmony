@@ -112,7 +112,7 @@ export class RumResourceScope {
         context, this.applicationId, this.sessionId, this.viewId, this.viewName,
         raw.errorMessage ?? 'network request failed', 'network', undefined,
         false, 'handled', raw.timestampMs, this.withViewUrl(attrs),
-        this.method, raw.statusCode, this.url);
+        this.method, raw.statusCode, this.url, this.firstPartyHost);
       writeMapped(writer, event, true);
     });
   }

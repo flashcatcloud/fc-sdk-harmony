@@ -14,7 +14,8 @@
   neither does a request reported without a duration because it spanned a
   stay in the background.
 - A request to one of the trace configuration's `firstPartyHosts` reports
-  `resource.provider` as `{ type: 'first party', domain: <host> }`. Without it
+  `resource.provider` as `{ type: 'first party', domain: <host> }`, and so
+  does the network error of such a request that fails (`error.resource`). Without it
   the backend could not tell the app's own requests from third-party ones.
 - A burst of RUM calls no longer holds the calling thread. Within one turn of
   the event loop the SDK processes events on the caller's turn for at most

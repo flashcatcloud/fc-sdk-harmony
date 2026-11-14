@@ -118,6 +118,27 @@ function track(start: Record<string, Object>, stop: Record<string, Object>, dura
   return scope.resource();
 }
 
+/** One request that fails without a response: a network error event. */
+function failed(start: Record<string, Object>): Record<string, Object> {
+  AppForegroundHistory.reset();
+  const scope: CapturingScope = new CapturingScope();
+  const app: RumApplicationScope = new RumApplicationScope(scope, new FakeCore(), 'app-1', 100);
+  const t0: number = Date.now() - 1000;
+  const view: RumRawEvent = { kind: 'startView', key: 'home', name: 'Home', attributes: {}, timestampMs: t0 };
+  app.handleEvent(view);
+  const startEvent: RumRawEvent = {
+    kind: 'startResource', key: 'r1', attributes: start, timestampMs: t0 + 10,
+    url: 'https://api.example.com/items', method: 'GET'
+  };
+  app.handleEvent(startEvent);
+  const failEvent: RumRawEvent = {
+    kind: 'stopResourceWithError', key: 'r1', attributes: {}, timestampMs: t0 + 50,
+    errorMessage: 'request timed out'
+  };
+  app.handleEvent(failEvent);
+  return scope.written.filter((e: Record<string, Object>): boolean => e['type'] === 'error')[0];
+}
+
 export default function resourcePhasesTests(): void {
   describe('ResourcePhases', (): void => {
     it('aFreshHttpsRequestHasAllFivePhasesOnOneTimeline',
@@ -153,9 +174,10 @@ export default function resourcePhasesTests(): void {
 
     it('plainHttpHasNoSslAndConnectEndsWithTheTcpConnection',
       TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
-        // libcurl reports appconnect as 0 without TLS; the trace module drops it.
+        // libcurl reports appconnect (and redirect) as 0: stages never reached.
         const timing: Record<string, Object> = {
-          'namelookup': 0.176, 'connect': 1.616, 'pretransfer': 1.71, 'starttransfer': 161.015, 'total': 284.947
+          'namelookup': 0.176, 'connect': 1.616, 'appconnect': 0, 'pretransfer': 1.71, 'starttransfer': 161.015,
+          'total': 284.947, 'redirect': 0
         };
         const phases: Record<string, Object> = resourcePhases(timing, 286 * MS);
         expect(phases['ssl']).assertUndefined();
@@ -170,7 +192,8 @@ export default function resourcePhasesTests(): void {
       // As reported for the second request on a host: connect and appconnect 0,
       // namelookup only the time to find the open connection.
       const timing: Record<string, Object> = {
-        'namelookup': 0.024, 'pretransfer': 0.133, 'starttransfer': 323.385, 'total': 323.569
+        'namelookup': 0.024, 'connect': 0, 'appconnect': 0, 'pretransfer': 0.133, 'starttransfer': 323.385,
+        'total': 323.569, 'redirect': 0
       };
       const phases: Record<string, Object> = resourcePhases(timing, 327 * MS);
       expect(Object.keys(phases).sort().join(',')).assertEqual('download,first_byte');
@@ -182,7 +205,7 @@ export default function resourcePhasesTests(): void {
       // A 100 ms redirect: libcurl sums the marks over both requests, so
       // pretransfer (0.131) is no longer a point on the request's timeline.
       const timing: Record<string, Object> = {
-        'namelookup': 0.031, 'pretransfer': 0.131, 'starttransfer': 254.067, 'total': 374.292, 'redirect': 101.676
+        'namelookup': 0.031, 'connect': 0, 'appconnect': 0, 'pretransfer': 0.131, 'starttransfer': 254.067, 'total': 374.292, 'redirect': 101.676
       };
       const phases: Record<string, Object> = resourcePhases(timing, 376 * MS);
       expect(Object.keys(phases).join(',')).assertEqual('redirect');
@@ -267,6 +290,25 @@ export default function resourcePhasesTests(): void {
       expect(provider['type'] as string).assertEqual('first party');
       expect(provider['domain'] as string).assertEqual('api.example.com');
       expect(JSON.stringify(event).indexOf(FIRST_PARTY_HOST_ATTRIBUTE)).assertEqual(-1);
+    });
+
+    it('aFailedFirstPartyRequestNamesItsProvider', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+      const start: Record<string, Object> = {};
+      start[FIRST_PARTY_HOST_ATTRIBUTE] = 'api.example.com';
+      const error: Record<string, Object> = failed(start)['error'] as Record<string, Object>;
+      expect(error['source'] as string).assertEqual('network');
+      const resource: Record<string, Object> = error['resource'] as Record<string, Object>;
+      expect(resource['url'] as string).assertEqual('https://api.example.com/items');
+      const provider: Record<string, Object> = resource['provider'] as Record<string, Object>;
+      expect(provider['type'] as string).assertEqual('first party');
+      expect(provider['domain'] as string).assertEqual('api.example.com');
+    });
+
+    it('aFailedThirdPartyRequestHasNoProvider', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+      const error: Record<string, Object> = failed({})['error'] as Record<string, Object>;
+      const resource: Record<string, Object> = error['resource'] as Record<string, Object>;
+      expect(resource['url'] as string).assertEqual('https://api.example.com/items');
+      expect(resource['provider']).assertUndefined();
     });
 
     it('anyOtherRequestHasNoProvider', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {

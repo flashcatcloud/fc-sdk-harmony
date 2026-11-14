@@ -6,7 +6,8 @@ import { rcp } from '@kit.RemoteCommunicationKit';
  * `network_request_completed`. Every mark is in milliseconds, counted from the
  * start of the request: each one is the time at which a stage ENDED, not how
  * long the stage took. A mark the request never reached (TLS on plain http) is
- * absent.
+ * 0. The values are passed on as the kit reports them; the RUM feature, which
+ * builds the phases, is the one place that checks them.
  *
  * Both kits run the request on libcurl and hand its transfer times through
  * unchanged, so the marks carry libcurl's own names and meaning:
@@ -69,21 +70,14 @@ export function transferTimingOfRcp(timing: rcp.TimeInfo | undefined): TransferT
 }
 
 function marks(namelookup: number, connect: number, appconnect: number, pretransfer: number,
-  starttransfer: number, total: number, redirect: number): TransferTiming | undefined {
+  starttransfer: number, total: number, redirect: number): TransferTiming {
   const timing: TransferTiming = {};
-  put(timing, 'namelookup', namelookup);
-  put(timing, 'connect', connect);
-  put(timing, 'appconnect', appconnect);
-  put(timing, 'pretransfer', pretransfer);
-  put(timing, 'starttransfer', starttransfer);
-  put(timing, 'total', total);
-  put(timing, 'redirect', redirect);
-  return Object.keys(timing).length > 0 ? timing : undefined;
-}
-
-/** libcurl reports a stage the request never reached as 0. */
-function put(timing: TransferTiming, mark: string, value: number): void {
-  if (typeof value === 'number' && Number.isFinite(value) && value > 0) {
-    timing[mark] = value;
-  }
+  timing['namelookup'] = namelookup;
+  timing['connect'] = connect;
+  timing['appconnect'] = appconnect;
+  timing['pretransfer'] = pretransfer;
+  timing['starttransfer'] = starttransfer;
+  timing['total'] = total;
+  timing['redirect'] = redirect;
+  return timing;
 }

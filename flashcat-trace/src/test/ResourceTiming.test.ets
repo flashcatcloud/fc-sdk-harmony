@@ -80,9 +80,9 @@ export default function traceResourceTimingTests(): void {
       expect(timing['pretransfer']).assertEqual(520.62);
       expect(timing['starttransfer']).assertEqual(1118.865);
       expect(timing['total']).assertEqual(1120.23);
-      // No redirect: libcurl's 0 is a stage never reached, not a mark.
-      expect(timing['redirect']).assertUndefined();
-      expect(Object.keys(timing).length).assertEqual(6);
+      // Passed on as reported: the RUM feature reads a 0 as a stage never reached.
+      expect(timing['redirect']).assertEqual(0);
+      expect(Object.keys(timing).length).assertEqual(7);
     });
 
     it('timeInfoMapsToLibcurlMarks', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
@@ -92,14 +92,18 @@ export default function traceResourceTimingTests(): void {
         startTransferTimeMs: 339.354, totalTimeMs: 339.458, redirectTimeMs: 0
       } as rcp.TimeInfo;
       const timing: TransferTiming = transferTimingOfRcp(info) as TransferTiming;
-      expect(Object.keys(timing).sort().join(',')).assertEqual('namelookup,pretransfer,starttransfer,total');
+      expect(timing['namelookup']).assertEqual(0.05);
+      expect(timing['connect']).assertEqual(0);
+      expect(timing['appconnect']).assertEqual(0);
+      expect(timing['pretransfer']).assertEqual(0.261);
       expect(timing['starttransfer']).assertEqual(339.354);
+      expect(timing['total']).assertEqual(339.458);
+      expect(timing['redirect']).assertEqual(0);
     });
 
     it('noTimingFromTheKitIsNoTiming', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
       expect(transferTimingOfRcp(undefined)).assertUndefined();
       expect(transferTimingOfHttp(undefined)).assertUndefined();
-      expect(transferTimingOfRcp({} as rcp.TimeInfo)).assertUndefined();
     });
 
     it('flashcatHttpReportsTheKitsTimingAndTheFirstPartyHost',
