@@ -21,6 +21,7 @@ import { JsCrashPolicy } from '../CrashConfiguration';
  *   'freeze.dump_started_at'?: string, // freeze only: watchdog dump wall-clock time
  *   'jank.duration_ms'?: number, 'jank.sampled_at'?: number, // jank only
  *   'freeze.reason'?: string, // freeze only: the system's own text for the freeze
+ *   fault_address?: string,  // native crash only: the faulting address ("0x0"), kernel-raised signals only
  *   binary_images: Array<Record<string, Object>>, // native symbol metadata
  *   arch: string,            // normalized: arm64 / arm / x64 / x86, or ''
  *   build_id: string,        // first app native image build id, or ''
@@ -62,6 +63,8 @@ const ARKTS_LOCATION: RegExp = /^([^()\s]+):(\d+):(\d+)$/;
 // A native frame's trailing "(<build id>)".
 const SAMPLED_BUILD_ID: RegExp = /\(([0-9a-fA-F]{16,})\)$/;
 const SYMBOL_OFFSET: RegExp = /^(.*)\+(\d+)$/;
+// `exception.signal.address`: hex digits, with or without a "0x" prefix.
+const SIGNAL_ADDRESS: RegExp = /^(?:0[xX])?([0-9a-fA-F]+)$/;
 // One node of the sampled call tree in a jank's external log: indentation, sample count, frame.
 const SAMPLE_TREE_LINE: RegExp = /^( *)(\d+)\s+(#\d+\s+.*)$/;
 
@@ -409,6 +412,12 @@ export class CrashEventMapper {
     if (typeof pid === 'number' && pid > 0) {
       event['process_id'] = pid;
     }
+    // The faulting address differs between occurrences of one fault, so it is a
+    // field of its own, never part of the message.
+    const faultAddress: string = CrashEventMapper.faultAddress(signal);
+    if (faultAddress.length > 0) {
+      event['fault_address'] = faultAddress;
+    }
     const threads: Array<Record<string, Object>> = CrashEventMapper.threads(params, exception, kind);
     if (threads.length > 0) {
       event['threads'] = threads;
@@ -692,6 +701,25 @@ export class CrashEventMapper {
       default:
         return '';
     }
+  }
+
+  /**
+   * The faulting address of a signal the kernel raised for a fault (a signal-specific
+   * `si_code`, 1 to 0x7f), as "0x1f" with no leading zeros; '' otherwise. For a signal a
+   * process sent (SI_USER, SI_TKILL, ... — abort() among them) the system fills
+   * `address` with the sender's pid and uid, which is no address.
+   */
+  private static faultAddress(signal: Record<string, Object>): string {
+    const code: Object | undefined = signal['code'];
+    if (typeof code !== 'number' || code <= 0 || code >= 0x80) {
+      return '';
+    }
+    const digits: RegExpMatchArray | null = CrashEventMapper.asString(signal['address']).match(SIGNAL_ADDRESS);
+    if (digits === null) {
+      return '';
+    }
+    const trimmed: string = digits[1].replace(/^0+/, '').toLowerCase();
+    return `0x${trimmed.length > 0 ? trimmed : '0'}`;
   }
 
   /** Name of a fault signal (Linux numbering, shared by every HarmonyOS ABI). */

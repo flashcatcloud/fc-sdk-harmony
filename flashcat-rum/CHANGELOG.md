@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- A native crash carries its faulting address as the `crash.fault_address`
+  attribute when the crash module reports one.
 - A burst of RUM calls no longer holds the calling thread. Within one turn of
   the event loop the SDK processes events on the caller's turn for at most
   4 ms; calls past that budget are queued and processed in slices of the same
