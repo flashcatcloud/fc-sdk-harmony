@@ -219,6 +219,23 @@ const STATUS_TEXT: string =
 const STAT_LINE: string =
   '1234 (com.example.app (x) y) S 1 1234 0 0 -1 4194560 1200 0 3 0 4242 77 0 0 20 0 30 0 5000 0 0';
 
+/** A /proc text as the bytes the readers parse. */
+function bytesOf(text: string): Uint8Array {
+  const bytes: Uint8Array = new Uint8Array(text.length);
+  for (let i: number = 0; i < text.length; i++) {
+    bytes[i] = text.charCodeAt(i);
+  }
+  return bytes;
+}
+
+function vmRssKb(text: string): number | null {
+  return parseVmRssKb(bytesOf(text), text.length);
+}
+
+function utimeTicks(text: string): number | null {
+  return parseUtimeTicks(bytesOf(text), text.length);
+}
+
 class FakeFetcher implements RemoteConfigFetcher {
   fetch(_url: string, _ifNoneMatch: string | null): Promise<RemoteConfigResponse> {
     return Promise.reject(new Error('offline'));
@@ -288,16 +305,22 @@ export default function viewVitalsTests(): void {
     });
 
     it('vmRssIsReadInKilobytesFromTheStatusText', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
-      expect(parseVmRssKb(STATUS_TEXT)).assertEqual(1000);
-      expect(parseVmRssKb('VmHWM:\t 2000 kB\nVmSize:\t 3000 kB\n')).assertNull();
-      expect(parseVmRssKb('not a status file')).assertNull();
+      expect(vmRssKb(STATUS_TEXT)).assertEqual(1000);
+      expect(vmRssKb('VmHWM:\t 2000 kB\nVmSize:\t 3000 kB\n')).assertNull();
+      expect(vmRssKb('not a status file')).assertNull();
+      // Only the bytes read count, not what is left in the buffer past them.
+      expect(parseVmRssKb(bytesOf(STATUS_TEXT), STATUS_TEXT.indexOf('VmRSS'))).assertNull();
+      expect(vmRssKb('VmRSS:\t 1000 kB')).assertEqual(1000);
+      expect(vmRssKb('VmRSS:\t 1000 MB\n')).assertNull();
+      expect(vmRssKb('XVmRSS:\t 1000 kB\n')).assertNull();
     });
 
     it('utimeIsField14CountedAfterTheProcessName', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
-      expect(parseUtimeTicks(STAT_LINE)).assertEqual(4242);
-      expect(parseUtimeTicks('1234 (app) S 1 2 3')).assertNull();
-      expect(parseUtimeTicks('not a stat line')).assertNull();
-      expect(parseUtimeTicks('1 (a) S 1 1 0 0 -1 0 0 0 0 0 -5 0')).assertNull();
+      expect(utimeTicks(STAT_LINE)).assertEqual(4242);
+      expect(utimeTicks('1234 (app) S 1 2 3')).assertNull();
+      expect(utimeTicks('not a stat line')).assertNull();
+      expect(utimeTicks('1 (a) S 1 1 0 0 -1 0 0 0 0 0 -5 0')).assertNull();
+      expect(utimeTicks('1 (a) S 1 1 0 0 -1 0 0 0 0 0 4242')).assertEqual(4242);
     });
 
     it('cpuTimeIsReadFromAProcFileWhoseSizeIsZero', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
@@ -308,6 +331,20 @@ export default function viewVitalsTests(): void {
         expect(fileIo.readTextSync('/proc/self/stat')).assertEqual(''); // the trap the reader must avoid
         const read: (() => number | null) | null = systemResourceReaders().cpuTicks;
         expect(read === null ? null : read()).assertEqual(4242);
+      } finally {
+        pseudo.delete('/proc/self/stat');
+      }
+    });
+
+    it('aShortReadAfterALongOneSeesOnlyItsOwnBytes', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+      // The readers reuse one buffer: what a longer earlier read left in it is not part of the next file.
+      const pseudo: Map<string, string> = (fileIo as Object as Record<string, Object>)['pseudoFiles'] as Map<string, string>;
+      try {
+        const read: (() => number | null) | null = systemResourceReaders().cpuTicks;
+        pseudo.set('/proc/self/stat', STAT_LINE);
+        expect(read === null ? null : read()).assertEqual(4242);
+        pseudo.set('/proc/self/stat', '1234 (app) S 1 2 3');
+        expect(read === null ? null : read()).assertNull();
       } finally {
         pseudo.delete('/proc/self/stat');
       }
