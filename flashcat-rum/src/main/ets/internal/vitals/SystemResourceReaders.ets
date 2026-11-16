@@ -5,8 +5,9 @@ import { ResourceReaders } from './ResourceSampler';
 const BYTES_PER_KB: number = 1000;
 const STAT_PATH: string = '/proc/self/stat';
 const STATUS_PATH: string = '/proc/self/status';
-// stat is a few hundred bytes and status about 1.5 KB: one chunk and an empty
-// read at the end, as a rule.
+// stat is a few hundred bytes and status about 1.5 KB: the first read takes
+// either whole, as a rule. Reads after it, when a kernel returns less, go
+// through one chunk.
 const PROC_CHUNK_BYTES: number = 4096;
 const PROC_MAX_BYTES: number = 65536;
 // Field 14 of /proc/<pid>/stat; fields 3.. follow the ")" that closes field 2.
@@ -145,22 +146,48 @@ function kilobytesToBytes(kb: number | null): number | null {
   return kb !== null && Number.isFinite(kb) && kb >= 0 ? kb * BYTES_PER_KB : null;
 }
 
-/** The bytes of a /proc file, up to PROC_MAX_BYTES, into `image`; returns how
- * many. Read in chunks until the end, not with readTextSync: a /proc file's
- * size is 0, and readTextSync reads only as many bytes as the size says —
- * none. A read may also return less than the file holds (a long Groups line
- * puts VmRSS past the first chunk). */
-function readProcFile(path: string): number {
-  if (chunk === null || image === null) {
-    chunk = new Uint8Array(PROC_CHUNK_BYTES);
-    image = new Uint8Array(PROC_MAX_BYTES);
+/**
+ * A /proc file of this process, opened on the first read and kept open: each
+ * read starts at offset 0, where procfs builds the file's text afresh, so it
+ * sees current values. On a phone, opening and closing the file was about a
+ * third of a sample's CPU.
+ *
+ * Read in chunks rather than with readTextSync: a /proc file's size is 0, and
+ * readTextSync reads only as many bytes as the size says — none.
+ */
+class ProcFile {
+  private readonly path: string;
+  private fd: number = -1;
+
+  constructor(path: string) {
+    this.path = path;
   }
-  const file: fileIo.File = fileIo.openSync(path, fileIo.OpenMode.READ_ONLY);
-  try {
-    let total: number = 0;
-    while (total < PROC_MAX_BYTES) {
-      const read: number = fileIo.readSync(file.fd, chunk.buffer as ArrayBuffer,
-        { length: Math.min(PROC_CHUNK_BYTES, PROC_MAX_BYTES - total) });
+
+  /**
+   * `parse` of the file's bytes. A read returns the whole file as a rule, and
+   * reading stops at the first one that ends a line `parse` can read: every
+   * read makes the kernel build the text again, so the empty read that marks
+   * the end would double its cost. A kernel that returns less (a long Groups
+   * line puts VmRSS past 4 KB) is read on to the end.
+   */
+  read(parse: (bytes: Uint8Array, length: number) => number | null): number | null {
+    if (chunk === null || image === null) {
+      chunk = new Uint8Array(PROC_CHUNK_BYTES);
+      image = new Uint8Array(PROC_MAX_BYTES);
+    }
+    if (this.fd < 0) {
+      this.fd = fileIo.openSync(this.path, fileIo.OpenMode.READ_ONLY).fd;
+    }
+    let total: number = fileIo.readSync(this.fd, image.buffer as ArrayBuffer, { offset: 0, length: PROC_MAX_BYTES });
+    while (total > 0 && total < PROC_MAX_BYTES) {
+      if (image[total - 1] === NEWLINE) {
+        const value: number | null = parse(image, total);
+        if (value !== null) {
+          return value;
+        }
+      }
+      const read: number = fileIo.readSync(this.fd, chunk.buffer as ArrayBuffer,
+        { offset: total, length: Math.min(PROC_CHUNK_BYTES, PROC_MAX_BYTES - total) });
       if (read <= 0) {
         break;
       }
@@ -169,20 +196,19 @@ function readProcFile(path: string): number {
       }
       total += read;
     }
-    return total;
-  } finally {
-    fileIo.closeSync(file);
+    return parse(image, Math.max(0, total));
   }
 }
 
+const stat: ProcFile = new ProcFile(STAT_PATH);
+const status: ProcFile = new ProcFile(STATUS_PATH);
+
 function readCpuTicks(): number | null {
-  const length: number = readProcFile(STAT_PATH);
-  return parseUtimeTicks(image as Uint8Array, length);
+  return stat.read(parseUtimeTicks);
 }
 
 function readMemoryBytes(): Promise<number | null> {
-  const length: number = readProcFile(STATUS_PATH);
-  return Promise.resolve(kilobytesToBytes(parseVmRssKb(image as Uint8Array, length)));
+  return Promise.resolve(kilobytesToBytes(status.read(parseVmRssKb)));
 }
 
 /** The readers of this process. Each one's failures reach the sampler as a

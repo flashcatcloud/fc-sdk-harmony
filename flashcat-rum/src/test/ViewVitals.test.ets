@@ -350,6 +350,43 @@ export default function viewVitalsTests(): void {
       }
     });
 
+    it('aProcFileIsOpenedOnceAndEachReadSeesItsCurrentText', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+      // procfs builds the text afresh on a read from offset 0: a kept descriptor reads current values.
+      const io: Record<string, Object> = fileIo as Object as Record<string, Object>;
+      const pseudo: Map<string, string> = io['pseudoFiles'] as Map<string, string>;
+      const calls: Record<string, number> = io['calls'] as Record<string, number>;
+      try {
+        const read: (() => number | null) | null = systemResourceReaders().cpuTicks;
+        pseudo.set('/proc/self/stat', `${STAT_LINE}\n`);
+        expect(read === null ? null : read()).assertEqual(4242);
+        const opens: number = calls['openSync'];
+        const reads: number = calls['readSync'];
+        pseudo.set('/proc/self/stat', `${STAT_LINE.replace(' 4242 ', ' 5000 ')}\n`);
+        expect(read === null ? null : read()).assertEqual(5000);
+        expect(calls['openSync']).assertEqual(opens);
+        // A whole line in the first read is the whole file: no read on to the empty one at the end.
+        expect(calls['readSync'] - reads).assertEqual(1);
+      } finally {
+        pseudo.delete('/proc/self/stat');
+      }
+    });
+
+    it('aShortReadThatEndsALineIsReadOnUntilTheValueIsThere', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, async (): Promise<void> => {
+      // 24 bytes at a time: the first read ends on a whole line ("Umask"), and VmRSS is not there yet.
+      const io: Record<string, Object> = fileIo as Object as Record<string, Object>;
+      const pseudo: Map<string, string> = io['pseudoFiles'] as Map<string, string>;
+      const limit: Record<string, number> = io['pseudoRead'] as Record<string, number>;
+      pseudo.set('/proc/self/status', STATUS_TEXT);
+      limit['limit'] = 24;
+      try {
+        const read: (() => Promise<number | null>) | null = systemResourceReaders().memoryBytes;
+        expect(read === null ? null : await read()).assertEqual(1_000_000);
+      } finally {
+        limit['limit'] = 0;
+        pseudo.delete('/proc/self/status');
+      }
+    });
+
     it('memoryIsReadFromAProcFileWhoseSizeIsZeroWithoutHidebug', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, async (): Promise<void> => {
       // As on the device: /proc/self/status has content, and a size of 0.
       const pseudo: Map<string, string> = (fileIo as Object as Record<string, Object>)['pseudoFiles'] as Map<string, string>;
