@@ -17,17 +17,23 @@
     previous session's last view.
   - A crash in a session that is not collected (missed by the sample rate
     without `setSessionOnError(true)`, or kept on error and thrown away
-    without one) is not reported, like everything else of that session. It
-    used to be attributed to the last view of an earlier, collected session
-    of the same process, or reported in a separate session drawn again. A
-    session kept on error still reports its crash, in its own last view.
+    without one) is not reported, like everything else of that session,
+    however long ago the session started. It used to be attributed to the
+    last view of an earlier, collected session of the same process, or
+    reported in a separate session drawn again. A session kept on error still
+    reports its crash, in its own last view.
   - A crash after the recorded session ended (`stopSession`, expiry), or more
     than 15 minutes after a collected session last updated its view (it
     expired unnoticed), is reported in a session of its own. It used to be
     attributed to that session's last view.
   - A crash of a process that recorded no session (a crash before RUM started
-    or before the first session) is reported as before: in a session of its
-    own, drawn as a new session would be.
+    or before the first session), or dated before the recorded session started
+    (an earlier process with the same process id), is reported as before: in a
+    session of its own, drawn as a new session would be.
+  - A crash attributed to a view whose crash-counting update cannot be written
+    is no longer also reported in a session of its own.
+  The record is put back on file when tracking consent is granted again after
+  a refusal, and a write the storage fails is retried by the next one.
   A crash pending from an earlier version, whose file holds only the last
   view, is attributed as before. As before, a crash reported in a view of its
   own carries the replaying launch's version, OS, user and connectivity.

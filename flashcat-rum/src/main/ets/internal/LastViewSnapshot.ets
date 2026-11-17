@@ -59,6 +59,8 @@ export interface SessionRecord {
   rcVersion: number;
   sessionSampleRate: number;
   sessionOnError: boolean;
+  /** When the session started, 0 when the file does not say. */
+  startedAtMs: number;
   /** When the session ended (expiry noticed, stopSession), 0 while it runs. */
   endedAtMs: number;
 }
@@ -208,6 +210,7 @@ export class LastViewSnapshot {
         'rc_version': session.rcVersion,
         'session_sample_rate': session.sessionSampleRate,
         'session_on_error': session.sessionOnError,
+        'started_at': session.startedAtMs,
         'ended_at': session.endedAtMs
       } as Record<string, Object>;
     }
@@ -230,17 +233,23 @@ export class LastViewSnapshot {
     }
   }
 
-  /** Consent was granted: what a refused consent kept off the file goes on it now. */
+  /** Consent was granted: what a refused consent kept off (or took off) the file goes on it now. */
   static consentGranted(): void {
     if (LastViewSnapshot.unwritten && LastViewSnapshot.writer !== null) {
       LastViewSnapshot.writeNow();
     }
   }
 
-  /** Drop the queued view without writing it (consent refused). */
+  /**
+   * Consent refused: the queued view is dropped without being written, and the core
+   * deletes the file. The session record goes back on it when consent is granted.
+   */
   static discardPending(): void {
     LastViewSnapshot.cancelPending();
     LastViewSnapshot.latest = null;
+    LastViewSnapshot.onFile = false;
+    LastViewSnapshot.recordedSessionId = '';
+    LastViewSnapshot.unwritten = LastViewSnapshot.session !== null;
   }
 
   /**
@@ -355,6 +364,7 @@ export class LastViewSnapshot {
       rcVersion: LastViewSnapshot.numberOr(record['rc_version'], 0),
       sessionSampleRate: LastViewSnapshot.numberOr(record['session_sample_rate'], 100),
       sessionOnError: record['session_on_error'] === true,
+      startedAtMs: LastViewSnapshot.numberOr(record['started_at'], 0),
       endedAtMs: LastViewSnapshot.numberOr(record['ended_at'], 0)
     };
   }

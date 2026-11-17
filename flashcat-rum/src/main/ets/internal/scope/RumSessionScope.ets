@@ -103,6 +103,7 @@ export class RumSessionScope implements RumScope {
       rcVersion: draw.version,
       sessionSampleRate: draw.sessionSampleRate,
       sessionOnError: draw.sessionOnError,
+      startedAtMs: startedAtMs,
       endedAtMs: 0
     });
   }
