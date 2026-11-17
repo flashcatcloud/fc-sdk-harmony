@@ -2,12 +2,15 @@ import { FeatureScope, FlashcatContext, EventWriter, SdkCore, FlashcatLog } from
 import { util } from '@kit.ArkTS';
 import { RumScope, RumRawEvent, APPLICATION_LAUNCH_VIEW } from './RumScope';
 import { RumViewScope } from './RumViewScope';
-import { RumEventAssembler } from '../assembly/RumEventAssembler';
+import { RumEventAssembler, LaunchView, APP_LAUNCH_TTID, APP_LAUNCH_TTFD } from '../assembly/RumEventAssembler';
+import { StartupType } from '../startup/AppLaunchTracker';
 import { writeMapped } from '../RumEventMapperHolder';
 import { DrawnConfiguration } from '../remoteconfig/RemoteConfigStore';
 import { WithholdingFeatureScope } from './WithheldEvents';
+import { VitalsCollector } from '../vitals/VitalsCollector';
+import { LastViewSnapshot } from '../LastViewSnapshot';
 
-const SESSION_INACTIVITY_MS: number = 15 * 60 * 1000;     // 15 min
+export const SESSION_INACTIVITY_MS: number = 15 * 60 * 1000; // 15 min
 const SESSION_MAX_DURATION_MS: number = 4 * 60 * 60 * 1000; // 4 h
 // Closed views kept alive until their in-flight resources settle. Bounded so a
 // leak of never-settling requests can't pin unbounded view scopes.
@@ -51,6 +54,13 @@ export class RumSessionScope implements RumScope {
   // are routed here so the slow and failing requests (exactly the ones that
   // outlive a navigation) are not systematically lost.
   private readonly drainingViews: RumViewScope[] = [];
+  private readonly collector: VitalsCollector | null;
+  // Android parity: one cold / warm time to initial display per session, one
+  // time to full display per session. A hot start is reported every time.
+  // The cold or warm launch whose time to initial display this session
+  // reported: the only one whose time to full display it takes.
+  private reportedLaunch: string | null = null;
+  private launchFullDisplayReported: boolean = false;
 
   constructor(
     featureScope: FeatureScope,
@@ -59,8 +69,10 @@ export class RumSessionScope implements RumScope {
     sampleRate: number,
     startedAtMs: number,
     forced: boolean = false,
-    draw: DrawnConfiguration = new DrawnConfiguration(0, sampleRate)
+    draw: DrawnConfiguration = new DrawnConfiguration(0, sampleRate),
+    collector: VitalsCollector | null = null
   ) {
+    this.collector = collector;
     this.core = core;
     this.applicationId = applicationId;
     this.sessionId = util.generateRandomUUID(true);
@@ -82,6 +94,18 @@ export class RumSessionScope implements RumScope {
     // made it out before the process died.
     update['session.sampled'] = this.sampled;
     this.core.updateFeatureContext('rum', update);
+    // The same for a fault the next launch reports (native crash, freeze): it is this
+    // session's from now on, with this draw, even before the session has a view.
+    LastViewSnapshot.startSession({
+      id: this.sessionId,
+      sampled: this.sampled,
+      sampledForError: this.sampledOnError,
+      rcVersion: draw.version,
+      sessionSampleRate: draw.sessionSampleRate,
+      sessionOnError: draw.sessionOnError,
+      startedAtMs: startedAtMs,
+      endedAtMs: 0
+    });
   }
 
   handleEvent(event: RumRawEvent): RumScope | null {
@@ -116,6 +140,8 @@ export class RumSessionScope implements RumScope {
         // view so it still reaches session_crash_count.
         this.lastStoppedView.handleEvent(event);
       }
+      // Ended first: a session thrown away below is then never read as running.
+      LastViewSnapshot.endSession(this.sessionId, this.expiredAtMs(event.timestampMs));
       if (this.withheld !== null) {
         if (crashIsOurs) {
           this.withheld.releaseForCrash();
@@ -167,12 +193,16 @@ export class RumSessionScope implements RumScope {
       this.activeView = new RumViewScope(
         this.featureScope, this.core, this.applicationId, this.sessionId,
         event.key ?? '', event.name ?? '', viewId, event.timestampMs, event.attributes, this.draw,
-        this.sampledOnError);
+        this.sampledOnError, this.collector);
       return this;
     }
 
     if (!this.sampled) {
       return this; // session dropped — track lifecycle but emit nothing
+    }
+    if (event.kind === 'appLaunch') {
+      this.writeAppLaunch(event);
+      return this;
     }
 
     // Late resource completions may belong to an already-closed view held in
@@ -211,6 +241,8 @@ export class RumSessionScope implements RumScope {
       this.lastStoppedView.handleEvent(event);
     } else if (event.kind === 'addError') {
       this.writeViewlessError(event); // error before any view started
+    } else if (event.kind === 'addViewLoadingTime' && event.loadingTimeAuto !== true) {
+      FlashcatLog.usage('addViewLoadingTime ignored: no view is open');
     } else if (event.kind === 'addAction' || event.kind === 'startResource') {
       // Surfaced so integrators can see why their data is missing — previously
       // these were dropped with no trace at any log level.
@@ -251,6 +283,7 @@ export class RumSessionScope implements RumScope {
       const cleared: Record<string, Object> = {};
       cleared['session.id'] = '';
       this.core.updateFeatureContext('rum', cleared);
+      LastViewSnapshot.endSession(this.sessionId, this.expiredAtMs(event.timestampMs));
       return;
     }
     if (!this.sampled) {
@@ -259,7 +292,7 @@ export class RumSessionScope implements RumScope {
     this.activeView = new RumViewScope(
       this.featureScope, this.core, this.applicationId, this.sessionId,
       APPLICATION_LAUNCH_VIEW, APPLICATION_LAUNCH_VIEW, util.generateRandomUUID(true), event.timestampMs,
-      event.attributes, this.draw, this.sampledOnError);
+      event.attributes, this.draw, this.sampledOnError, this.collector);
   }
 
   /** Keep a closed view alive (bounded) while it still owns in-flight resources,
@@ -304,6 +337,8 @@ export class RumSessionScope implements RumScope {
       this.retireView(this.activeView); // keep in-flight resources drainable
       this.activeView = null;
     }
+    // Ended first: a session thrown away below is then never read as running.
+    LastViewSnapshot.endSession(this.sessionId, this.isExpired(nowMs) ? this.expiredAtMs(nowMs) : nowMs);
     if (this.withheld !== null) {
       this.withheld.settle();
     }
@@ -411,6 +446,55 @@ export class RumSessionScope implements RumScope {
     return this.draw.sessionSampleRate === sessionSampleRate && this.draw.sessionOnError === sessionOnError;
   }
 
+  private writeAppLaunch(raw: RumRawEvent): void {
+    if (raw.launchMetric === APP_LAUNCH_TTID) {
+      if (raw.startupType !== StartupType.HOT) {
+        if (this.reportedLaunch !== null) {
+          return;
+        }
+        this.reportedLaunch = RumSessionScope.launchOf(raw);
+      }
+      this.writeLaunchVital(raw, APP_LAUNCH_TTID);
+      // Fully displayed before its first frame: the same value, as on Android,
+      // and only along with a time to initial display this session reports.
+      if (raw.launchFullyDisplayed === true && !this.launchFullDisplayReported) {
+        this.launchFullDisplayReported = true;
+        this.writeLaunchVital(raw, APP_LAUNCH_TTFD);
+      }
+      return;
+    }
+    // A full display completes the launch whose initial display this session
+    // reported. Another launch's - a later one whose initial display was
+    // dropped as the session's second, or one reported in an earlier session -
+    // would sit beside an initial display it does not belong to, of another
+    // startup type and possibly longer than its own full display.
+    if (this.launchFullDisplayReported || this.reportedLaunch !== RumSessionScope.launchOf(raw)) {
+      FlashcatLog.d('rum.launch: time to full display not reported: its launch is not the one this session reported');
+      return;
+    }
+    this.launchFullDisplayReported = true;
+    this.writeLaunchVital(raw, APP_LAUNCH_TTFD);
+  }
+
+  /** Which launch a launch vital measures: its startup type and start. */
+  private static launchOf(raw: RumRawEvent): string {
+    return `${raw.startupType ?? ''}@${raw.launchStartMs ?? raw.timestampMs}`;
+  }
+
+  private writeLaunchVital(raw: RumRawEvent, metric: string): void {
+    const open: RumViewScope | null = this.activeView;
+    let view: LaunchView | null = null;
+    if (open !== null) {
+      view = { id: open.getViewId(), name: open.getViewName(), url: open.resolvedViewUrl() };
+    }
+    this.featureScope.withWriteContext((context: FlashcatContext, writer: EventWriter) => {
+      const event: Record<string, Object> = RumEventAssembler.appLaunch(
+        context, this.applicationId, this.sessionId, view, metric, raw.startupType ?? '', raw.launchStartMs ?? raw.timestampMs, raw.launchDurationNs ?? 0,
+        raw.attributes, this.draw, this.sampledOnError);
+      writeMapped(writer, event, false);
+    });
+  }
+
   private writeViewlessError(raw: RumRawEvent): void {
     this.featureScope.withWriteContext((context: FlashcatContext, writer: EventWriter) => {
       const event: Record<string, Object> = RumEventAssembler.error(
@@ -423,6 +507,11 @@ export class RumSessionScope implements RumScope {
 
   private lastAliveMs(): number {
     return Math.max(this.lastActivityMs, this.lastKeepAliveMs);
+  }
+
+  /** When an expired session stopped being the one events go to: its inactivity or lifetime limit. */
+  private expiredAtMs(nowMs: number): number {
+    return Math.min(nowMs, this.lastActivityMs + SESSION_INACTIVITY_MS, this.startedAtMs + SESSION_MAX_DURATION_MS);
   }
 
   private isExpired(nowMs: number): boolean {

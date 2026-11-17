@@ -8,5 +8,16 @@ class ProcessManager {
   exit() { processShim.exitRequests += 1; }
   kill() {}
 }
-const processShim = { ProcessManager, exitRequests: 0, pid: process.pid };
-module.exports = { util, process: processShim };
+// uptimeSeconds / startRealtimeMs: what the process clock answers; tests set them.
+const processShim = {
+  ProcessManager, exitRequests: 0, pid: process.pid,
+  uptimeSeconds: 0, startRealtimeMs: 0,
+  uptime() { return processShim.uptimeSeconds; },
+  getStartRealtime() { return processShim.startRealtimeMs; }
+};
+// Runs the task in-thread; counts executions so tests can tell the path.
+const taskpool = {
+  executed: 0,
+  execute(fn, ...args) { taskpool.executed += 1; return Promise.resolve().then(() => fn(...args)); }
+};
+module.exports = { util, process: processShim, taskpool };

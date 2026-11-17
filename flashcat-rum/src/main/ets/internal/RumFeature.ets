@@ -22,11 +22,16 @@ import { RumAutoInstrumentation } from './RumAutoInstrumentation';
 import { RumEventAssembler } from './assembly/RumEventAssembler';
 import { RumNavigationTracker } from './RumNavigationTracker';
 import { RumEventMapperHolder } from './RumEventMapperHolder';
-import { LastView, LastViewSnapshot } from './LastViewSnapshot';
+import { LastView, LastViewSnapshot, SessionRecord } from './LastViewSnapshot';
 import { AppForegroundHistory } from './AppForegroundHistory';
+import { VitalsCollector } from './vitals/VitalsCollector';
+import { AppLaunchTracker } from './startup/AppLaunchTracker';
 import { ActiveDeviceBeacon, HttpActiveBeaconSender } from './ActiveDeviceBeacon';
 import { DetachedDraw } from './scope/RumApplicationScope';
-import { APPLICATION_LAUNCH_VIEW } from './scope/RumScope';
+import { APPLICATION_LAUNCH_VIEW, BACKGROUND_VIEW } from './scope/RumScope';
+import { DrawnConfiguration } from './remoteconfig/RemoteConfigStore';
+import { SESSION_INACTIVITY_MS } from './scope/RumSessionScope';
+import { FIRST_PARTY_HOST_ATTRIBUTE, TRANSFER_TIMING_ATTRIBUTE } from './scope/RumResourceScope';
 
 // Internal core receiver owning the crash sidecar files. MessageBus contract.
 const CRASH_STORAGE_TARGET: string = '__flashcat_crash_storage';
@@ -36,13 +41,12 @@ const CRASH_STORAGE_TARGET: string = '__flashcat_crash_storage';
 const LAST_VIEW_MAX_AGE_MS: number = 4 * 60 * 60 * 1000;
 // Event fields that belong to the run a replayed crash happened in, not the launch replaying it.
 const CRASHED_RUN_FIELDS: string[] = ['version', 'os', 'usr', 'connectivity'];
-// OpenHarmony runtime banner substituted for the translated stack when the
-// module's sourcemap cannot be loaded. Never a meaningful error message.
-const SOURCEMAP_BANNER: string = 'Cannot get SourceMap info';
+// OpenHarmony runtime banners written before the stack when the module's
+// sourcemap cannot be loaded, or is not loaded yet (a fault during launch).
+// Neither is a frame nor a meaningful error message.
+const SOURCEMAP_BANNERS: string[] = ['Cannot get SourceMap info', 'SourceMap is not initialized yet'];
 // Cap for a JSON-serialized rejection reason used as message/stack text.
 const MAX_REJECTION_REASON_CHARS: number = 500;
-// Name and url of the view holding a crash reported in a session of its own:
-// the convention for events before the first view.
 
 /**
  * The RUM feature. Installs the unhandled-exception hook (auto Error capture) and
@@ -68,8 +72,15 @@ export class RumFeature implements Feature, FeatureEventReceiver {
   // The last view the PREVIOUS process wrote, loaded once at init. Held for the
   // whole run because a hiAppEvent replay can arrive well after startup.
   private previousRunView: Record<string, Object> | null = null;
+  // Memory/CPU sampling and frame observation for the open view; foreground only.
+  private collector: VitalsCollector | null = null;
+  // Times app launches and router page loads; fed the app's lifecycle from here.
+  private launch: AppLaunchTracker | null = null;
   /** The process that wrote previousRunView, -1 when unknown. */
   private previousRunPid: number = -1;
+  /** The session that process was in (null in a file of an earlier version), and when the file was written. */
+  private previousRunSession: SessionRecord | null = null;
+  private previousRunWrittenAtMs: number = 0;
   private activeBeacon: ActiveDeviceBeacon | null = null;
 
   constructor(core: SdkCore, configuration: RumConfiguration) {
@@ -78,9 +89,23 @@ export class RumFeature implements Feature, FeatureEventReceiver {
   }
 
   /** Set by FlashcatRum.enable once the monitor is built (after registration). */
-  attachMonitor(monitor: DefaultRumMonitor): void {
+  attachMonitor(monitor: DefaultRumMonitor, collector: VitalsCollector | null = null,
+    launch: AppLaunchTracker | null = null): void {
     this.monitor = monitor;
+    this.collector = collector;
+    this.launch = launch;
     FlashcatLog.d('rum: monitor attached');
+    // RUM enabled after the core already learned it is in the foreground: no
+    // foreground message is coming. Sampling starts now, and an ability created
+    // from here on is opened in front of the user, not launched.
+    if (this.core.isAppInForeground()) {
+      if (collector !== null) {
+        collector.setForeground(true);
+      }
+      if (launch !== null) {
+        launch.onForegroundDetected();
+      }
+    }
     // If the crash feature was enabled BEFORE RUM, its startup replay found no
     // RUM receiver and retained the pending incidents — ask it to replay now.
     // Without this, a crash-before-RUM enable order strands every pending
@@ -107,12 +132,20 @@ export class RumFeature implements Feature, FeatureEventReceiver {
     // modules get no HarmonyOS Context of their own, so file access goes over
     // the same synchronous bus the crash sidecars already use.
     LastViewSnapshot.configure(
-      (serialized: string): void => {
-        this.sendStorageCommand({
+      (serialized: string): boolean => {
+        // A refused consent allows no crash data on disk: the session record names
+        // the session as much as a view does.
+        if (this.core.getTrackingConsent() === TrackingConsent.NOT_GRANTED) {
+          return false;
+        }
+        const command: Record<string, Object> = {
           'type': 'crash_storage_write_last_view',
           'target': CRASH_STORAGE_TARGET,
-          'serialized': serialized
-        });
+          'serialized': serialized,
+          'success': false
+        };
+        this.sendStorageCommand(command);
+        return command['success'] === true; // not on disk otherwise: the next write retries at once
       },
       (): string => {
         const command: Record<string, Object> = {
@@ -137,7 +170,9 @@ export class RumFeature implements Feature, FeatureEventReceiver {
     const lastView: LastView | null = LastViewSnapshot.read();
     this.previousRunView = lastView !== null ? lastView.view : null;
     this.previousRunPid = lastView !== null ? lastView.pid : -1;
-    if (this.previousRunView !== null) {
+    this.previousRunSession = lastView !== null ? lastView.session : null;
+    this.previousRunWrittenAtMs = lastView !== null ? lastView.writtenAtMs : 0;
+    if (lastView !== null) {
       // Consume it: the file describes the run that just ended, and it must not
       // outlive this load. Otherwise a launch that crashes BEFORE writing a view
       // of its own leaves the old file in place, and the launch after that
@@ -186,12 +221,13 @@ export class RumFeature implements Feature, FeatureEventReceiver {
         onUnhandledException: (errMsg: string) => {
           try {
             FlashcatLog.d(`rum.error: onUnhandledException len=${errMsg.length}`);
-            this.reportObservedError(errMsg, 'unhandled', RumFeature.errorMessageFromText(errMsg));
+            this.reportObservedError(errMsg, 'unhandled', RumFeature.errorMessageFromText(errMsg),
+              RumFeature.errorTypeFromText(errMsg));
           } catch (e) {
             FlashcatLog.e(`rum.error: onUnhandledException handling failed: ${RumFeature.errorText(e)}`);
             // Still let the crash policy act (exit / restart): an uncaught exception
             // must not survive just because its text could not be read.
-            this.reportObservedError('', 'unhandled', 'Unknown error');
+            this.reportObservedError('', 'unhandled', 'Unknown error', 'Error');
           }
         },
         onException: (errObject: Error) => {
@@ -205,7 +241,8 @@ export class RumFeature implements Feature, FeatureEventReceiver {
           try {
             const text: string = RumFeature.labeledErrorText(errObject);
             FlashcatLog.d(`rum.error: onException len=${text.length}`);
-            this.reportObservedError(text, 'exception', RumFeature.messageFromError(errObject));
+            this.reportObservedError(text, 'exception', RumFeature.messageFromError(errObject),
+              RumFeature.errorName(errObject));
           } catch (e) {
             FlashcatLog.e(`rum.error: onException handling failed: ${RumFeature.errorText(e)}`);
           }
@@ -276,6 +313,16 @@ export class RumFeature implements Feature, FeatureEventReceiver {
       this.rejectionObserver = null;
     }
     this.activeJsCrashPolicy = null;
+    // The core's stop wrote the final view documents (with what was sampled)
+    // just before this; nothing samples after it.
+    if (this.collector !== null) {
+      this.collector.stop();
+      this.collector = null;
+    }
+    if (this.launch !== null) {
+      this.launch.stop(); // unhook every frame source
+      this.launch = null;
+    }
     if (this.activeBeacon !== null) {
       this.activeBeacon.stop();
       this.activeBeacon = null;
@@ -286,6 +333,7 @@ export class RumFeature implements Feature, FeatureEventReceiver {
       this.monitor.stopWithheld(); // and any withheld release still waiting on its jitter
     }
     RumNavigationTracker.detach(); // remove the router observer
+    RumNavigationTracker.configureLaunch(null); // launch timing ends with RUM
     RumAutoInstrumentation.reset(); // make tap/nav trackers inert after stop
     RumEventMapperHolder.reset(); // clear the event mapper
     LastViewSnapshot.reset(); // stop snapshotting through a torn-down core
@@ -293,6 +341,8 @@ export class RumFeature implements Feature, FeatureEventReceiver {
     AppForegroundHistory.reset();
     this.previousRunView = null;
     this.previousRunPid = -1;
+    this.previousRunSession = null;
+    this.previousRunWrittenAtMs = 0;
     this.monitor = null;
     // Reset the global so post-stop GlobalRumMonitor.get() returns the no-op, not a
     // monitor wired to a torn-down core.
@@ -303,10 +353,10 @@ export class RumFeature implements Feature, FeatureEventReceiver {
    * events from the Crash feature (hiAppEvent → CrashEventMapper). */
   onReceive(event: Record<string, Object>): void {
     const type: Object | undefined = event['type'];
-    // Recorded before anything else reacts to the same message.
+    // Recorded before anything else reacts to the same message; the launch
+    // tracker and the vitals sampler below act on it too.
     if (type === 'app_background') {
       AppForegroundHistory.enteredBackground();
-      return;
     }
     if (type === 'app_foreground' || type === 'app_foreground_detected') {
       AppForegroundHistory.enteredForeground();
@@ -349,14 +399,42 @@ export class RumFeature implements Feature, FeatureEventReceiver {
       if (m !== null) {
         m.refreshRemoteConfig();
       }
+      this.setForeground(true);
+      if (this.launch !== null) {
+        this.launch.onForeground();
+      }
       this.triggerActiveBeacon();
+    } else if (type === 'app_foreground_detected') {
+      // Already in the foreground when the SDK started: no return from the
+      // background, so no hot start.
+      if (this.launch !== null) {
+        this.launch.onForegroundDetected();
+      }
+      this.setForeground(true);
+      this.triggerActiveBeacon();
+    } else if (type === 'app_background') {
+      this.setForeground(false);
+      if (this.launch !== null) {
+        this.launch.onBackground();
+      }
+    } else if (type === 'ability_created') {
+      if (this.launch !== null) {
+        this.launch.onAbilityCreated();
+      }
+    } else if (type === 'ability_destroyed') {
+      if (this.launch !== null) {
+        this.launch.onAbilityDestroyed();
+      }
     } else if (type === 'drain_pending') {
       // The user or the consent is about to change: queued events go out under the current ones.
       const m: DefaultRumMonitor | null = this.monitor;
       if (m !== null) {
         m.drainPending();
       }
-    } else if (type === 'app_foreground_detected' || type === 'consent_granted' || type === 'user_changed') {
+    } else if (type === 'consent_granted' || type === 'user_changed') {
+      if (type === 'consent_granted') {
+        LastViewSnapshot.consentGranted();
+      }
       this.triggerActiveBeacon();
     } else if (type === 'keep_alive') {
       // App backgrounded — refresh the active view so its final time_spent is sent
@@ -391,12 +469,22 @@ export class RumFeature implements Feature, FeatureEventReceiver {
     }
   }
 
+  private setForeground(foreground: boolean): void {
+    if (this.collector !== null) {
+      this.collector.setForeground(foreground);
+    }
+  }
+
   /**
    * Crash/freeze event published by the Crash feature. Reported as an unhandled
    * `is_crash` error. Native symbolication metadata is carried as internal
    * attributes that RumEventAssembler lifts into backend-consumed error fields.
    */
   private onCrashReport(event: Record<string, Object>): void {
+    if (event['crash_kind'] === 'jank') {
+      this.onJankReport(event);
+      return;
+    }
     // A replayed pending incident carries the crashed run's session/view ids.
     // Write the crash directly into THAT session instead of routing it through
     // the live scope tree: the live tree would mint a fresh session at the old
@@ -410,18 +498,14 @@ export class RumFeature implements Feature, FeatureEventReceiver {
       return;
     }
     // No in-process snapshot — this is a fault the SDK could not observe as it
-    // happened (native signal, freeze, watcher-only JsError). Fall back to the
-    // last ViewEvent persisted before the process died, which still identifies
-    // the session and view the user was actually in — provided that process is
-    // the one that faulted. A launch that died before RUM started wrote no view,
-    // so the file still holds the run before it; its session, user and version
+    // happened (native signal, freeze, watcher-only JsError). The file the faulting
+    // process left says which session it was in, and the last view it wrote — provided
+    // that process is the one that faulted. A launch that died before RUM started wrote
+    // nothing, so the file still holds the run before it; its session, user and version
     // are not the crash's.
     if (originalSessionId.length === 0 && !RumFeature.isReplayTooOld(event)) {
-      const snapshot: Record<string, Object> | null = this.previousRunView;
       const faultPid: number | undefined = RumFeature.optionalPositiveNumber(event['process_id']);
-      if (snapshot !== null && faultPid !== undefined && faultPid === this.previousRunPid &&
-        this.writeCrashFromLastView(event, snapshot)) {
-        event['delivered'] = true;
+      if (faultPid !== undefined && faultPid === this.previousRunPid && this.reportInPreviousRun(event)) {
         return;
       }
     }
@@ -462,23 +546,144 @@ export class RumFeature implements Feature, FeatureEventReceiver {
     // was never counted anywhere — it MUST count here or crash-free rate reads
     // those sessions as clean.
     const alreadyCounted: boolean = RumFeature.asString(event['original_view_id']).length > 0;
-    event['delivered'] = this.writeStandaloneCrash(event, attributes, alreadyCounted, drawn, m.getAttributes());
+    event['delivered'] = this.writeCrashInViewOfItsOwn(event, attributes, alreadyCounted, drawn, m.getAttributes(),
+      RumFeature.derivedUuid(`${RumFeature.incidentIdentity(event)}#session`), APPLICATION_LAUNCH_VIEW);
   }
 
   /**
-   * A replayed crash that nothing attributes to the session it happened in,
-   * reported in a session of its own: one `ApplicationLaunch` view holding
-   * exactly this crash — the convention for events before the first view. The
-   * session carries its own draw: an ordinary session when the rate drew it,
-   * one marked as kept on error (`session.sampled_for_error`, rate 0) when only
+   * A fault of the process that wrote the last-view file, reported in the session that
+   * file records. Returns whether the fault was handled (`event.delivered` set); false
+   * leaves it to a session of its own.
+   *
+   * - The fault predates the recorded session: it is an earlier process's that had
+   *   the same process id — a session of its own.
+   * - The recorded session ended before the fault: the fault happened in no session —
+   *   a session of its own.
+   * - Not collected (not sampled, or kept on error and thrown away without one): the
+   *   fault is dropped, as everything else of that session was, however old the
+   *   record. No new draw.
+   * - The file is older than a session's inactivity limit (its lifetime, for a
+   *   session without a view, which writes the file only when it starts): the
+   *   process never noticed the session expire — a session of its own.
+   * - Its view, when the fault happened in it: the crash joins that view.
+   * - No view of it yet (a fault during launch, right after a renewal, in the
+   *   background before any page): the crash is reported in that session, in an
+   *   `ApplicationLaunch` view — `Background` when the system says the app was in the
+   *   background — drawn as the session was. No new draw.
+   *
+   * A file of an earlier version records no session: its view is used as before. A fault
+   * the system reports without a time cannot be placed in the process's run at all: a
+   * session of its own.
+   *
+   * Once the fault is attributed it is never handed on to a session of its own: a
+   * partial write (the error landed, its view did not) would count it twice. Such a
+   * fault is not retried either — the system reports it once, and the file it would
+   * be retried against is consumed when it is read — so after a partial write the
+   * error is visible while the session's crash count misses it.
+   */
+  private reportInPreviousRun(event: Record<string, Object>): boolean {
+    const faultAt: number | undefined = RumFeature.optionalPositiveNumber(event['timestamp_ms']);
+    if (faultAt === undefined) {
+      // When the fault happened is unknown, so is whether it is this process's: an
+      // earlier process with the same id (ids are reused) cannot be told apart.
+      FlashcatLog.d('rum.crash: fault time unknown; reporting in a session of its own');
+      return false;
+    }
+    const faultAtMs: number = faultAt;
+    const snapshot: Record<string, Object> | null = this.previousRunView;
+    const session: SessionRecord | null = this.previousRunSession;
+    if (session === null) {
+      if (snapshot === null || !RumFeature.lastViewTakes(event, snapshot)) {
+        return false;
+      }
+      // Attributed: whatever the write does, the fault is not reported a second time
+      // elsewhere (an error that landed without its view would be counted twice).
+      event['delivered'] = this.writeCrashFromLastView(event, snapshot);
+      return true;
+    }
+    if (session.startedAtMs > 0 && faultAtMs < session.startedAtMs) {
+      // Older than the session: an earlier process with the same id (ids are reused)
+      // faulted, not the one that wrote this file.
+      FlashcatLog.d('rum.crash: fault predates the recorded session; reporting in a session of its own');
+      return false;
+    }
+    if (session.endedAtMs > 0 && faultAtMs >= session.endedAtMs) {
+      FlashcatLog.d('rum.crash: the recorded session had ended; reporting in a session of its own');
+      return false;
+    }
+    if (!session.sampled) {
+      // However long ago it started: such a session writes its record only then.
+      FlashcatLog.d(`rum.crash: not reported — its session=${session.id} is not collected`);
+      event['delivered'] = true;
+      return true;
+    }
+    const ownView: boolean = snapshot !== null &&
+      RumFeature.asString(RumFeature.recordValue(snapshot['session'])['id']) === session.id;
+    // A session with a view rewrites the file as that view changes, so a file this old
+    // means a session that went idle. A session without a view yet writes its record
+    // only when it starts: only its lifetime bounds it.
+    const staleAfterMs: number = ownView ? SESSION_INACTIVITY_MS : LAST_VIEW_MAX_AGE_MS;
+    if (this.previousRunWrittenAtMs > 0 && faultAtMs - this.previousRunWrittenAtMs >= staleAfterMs) {
+      FlashcatLog.d('rum.crash: the recorded session went idle; reporting in a session of its own');
+      return false;
+    }
+    if (snapshot !== null && ownView) {
+      if (!RumFeature.lastViewTakes(event, snapshot)) {
+        return false;
+      }
+      event['delivered'] = this.writeCrashFromLastView(event, snapshot);
+      return true;
+    }
+    const m: DefaultRumMonitor | null = this.monitor;
+    const drawn: DetachedDraw = {
+      draw: new DrawnConfiguration(session.rcVersion, session.sessionSampleRate, session.sessionOnError),
+      sampledForError: session.sampledForError
+    };
+    const viewName: string = event['in_background'] === true ? BACKGROUND_VIEW : APPLICATION_LAUNCH_VIEW;
+    const attributes: Record<string, Object> = RumFeature.crashAttributes(event);
+    event['delivered'] = this.writeCrashInViewOfItsOwn(event, attributes, false, drawn,
+      m !== null ? m.getAttributes() : {}, session.id, viewName);
+    return true;
+  }
+
+  /**
+   * A main-thread jank is delivered while the process that janked is still
+   * running, so it belongs to the current session and view — never to a replayed
+   * original session or to the previous launch's last view. It is a handled,
+   * non-crash error: counted in the view's error count, not its crash count.
+   */
+  private onJankReport(event: Record<string, Object>): void {
+    const m: DefaultRumMonitor | null = this.monitor;
+    if (m === null) {
+      FlashcatLog.d('rum.crash: jank dropped because monitor is null');
+      return;
+    }
+    m.reportError(
+      RumFeature.asString(event['message']),
+      RumErrorSource.SOURCE,
+      RumFeature.asString(event['stack']),
+      false,
+      'handled',
+      RumFeature.crashAttributes(event));
+  }
+
+  /**
+   * A replayed crash written in one view holding exactly this crash, `viewName`
+   * (`ApplicationLaunch`, the convention for events before the first view, or
+   * `Background`), of session `sessionId`: either a session of its own, for a
+   * crash nothing attributes to the session it happened in, or the recorded
+   * session of the faulting process when that session had no view. `drawn` is
+   * how that session was drawn: an ordinary session when the rate drew it, one
+   * marked as kept on error (`session.sampled_for_error`, rate 0) when only
    * `sessionOnError` kept it.
    *
    * Context: this launch's (version, OS, user, connectivity, global
    * attributes). Nothing in such an incident says what the crashed run's were.
    *
-   * Timestamps: the real crash time. The session is complete the moment it is
-   * written and never receives another event, so a time in the past cannot
-   * expire it. An incident past the intake's 24 h window (see isReplayTooOld)
+   * Timestamps: the real crash time. A session of its own is complete the
+   * moment it is written and never receives another event, so a time in the
+   * past cannot expire it; the recorded session receives nothing after the
+   * crash either. An incident past the intake's 24 h window (see isReplayTooOld)
    * is stamped now and keeps its real time in `crash.crashed_at_ms`.
    *
    * `alreadyCounted`: the crash was counted in a view of its own run when it
@@ -486,7 +691,7 @@ export class RumFeature implements Feature, FeatureEventReceiver {
    * written — the backend builds a session only from view documents — but
    * counts neither the crash nor its error a second time.
    *
-   * Session, view and error ids are derived from the incident, so a retry after
+   * View and error ids (and a session of its own's id) are derived from the incident, so a retry after
    * a partial write rewrites the same documents and the intake's id dedup
    * absorbs what had already landed. The view goes first: an error without its
    * view is the one partial result that would leave the crash unreachable.
@@ -494,8 +699,9 @@ export class RumFeature implements Feature, FeatureEventReceiver {
    * Returns whether everything landed (or was dropped on purpose — mapper,
    * consent), so a failed write leaves the incident for the next launch.
    */
-  private writeStandaloneCrash(event: Record<string, Object>, crashAttributes: Record<string, Object>,
-    alreadyCounted: boolean, drawn: DetachedDraw, globalAttributes: Record<string, Object>): boolean {
+  private writeCrashInViewOfItsOwn(event: Record<string, Object>, crashAttributes: Record<string, Object>,
+    alreadyCounted: boolean, drawn: DetachedDraw, globalAttributes: Record<string, Object>,
+    sessionId: string, viewName: string): boolean {
     const scope: FeatureScope | null = this.core.getFeature(RUM_FEATURE_NAME);
     if (scope === null) {
       return false;
@@ -505,13 +711,12 @@ export class RumFeature implements Feature, FeatureEventReceiver {
     const dateMs: number = crashedAtMs !== undefined && !RumFeature.isReplayTooOld(event) ?
       Math.min(crashedAtMs, nowMs) : nowMs;
     const identity: string = RumFeature.incidentIdentity(event);
-    const sessionId: string = RumFeature.derivedUuid(`${identity}#session`);
     const viewId: string = RumFeature.derivedUuid(`${identity}#view`);
     const viewAttributes: Record<string, Object> = {};
     for (const key of Object.keys(globalAttributes)) {
       viewAttributes[key] = globalAttributes[key];
     }
-    viewAttributes['view.url'] = APPLICATION_LAUNCH_VIEW;
+    viewAttributes['view.url'] = viewName;
     const errorAttributes: Record<string, Object> = {};
     for (const key of Object.keys(viewAttributes)) {
       errorAttributes[key] = viewAttributes[key];
@@ -524,7 +729,7 @@ export class RumFeature implements Feature, FeatureEventReceiver {
     let delivered: boolean = false;
     scope.withWriteContext((context: FlashcatContext, writer: EventWriter) => {
       const errorEvent: Record<string, Object> = RumEventAssembler.error(
-        context, applicationId, sessionId, viewId, APPLICATION_LAUNCH_VIEW,
+        context, applicationId, sessionId, viewId, viewName,
         RumFeature.asString(event['message']),
         RumErrorSource.SOURCE as string,
         RumFeature.asString(event['stack']),
@@ -538,7 +743,7 @@ export class RumFeature implements Feature, FeatureEventReceiver {
       // Not through writeMapped: this view is not the current one, and recording
       // it as the last view would attribute this launch's own crash to it.
       const view: Record<string, Object> | null = RumEventMapperHolder.apply(RumEventAssembler.view(
-        context, applicationId, sessionId, viewId, APPLICATION_LAUNCH_VIEW, dateMs, 0,
+        context, applicationId, sessionId, viewId, viewName, dateMs, 0,
         0, counted, 0, counted, 1, false, viewAttributes, drawn.draw, drawn.sampledForError));
       // A mapper that drops a view it has never heard of still keeps the crash:
       // losing the crash would be worse than a session without its view.
@@ -550,7 +755,7 @@ export class RumFeature implements Feature, FeatureEventReceiver {
     if (!delivered && this.core.getTrackingConsent() === TrackingConsent.NOT_GRANTED) {
       delivered = true;
     }
-    FlashcatLog.d(`rum.crash: reported crash in a standalone session=${sessionId} delivered=${delivered}`);
+    FlashcatLog.d(`rum.crash: reported crash in view=${viewName} of session=${sessionId} delivered=${delivered}`);
     return delivered;
   }
 
@@ -684,6 +889,33 @@ export class RumFeature implements Feature, FeatureEventReceiver {
   }
 
   /**
+   * Whether `snapshot` is the view `event` happened in: it names a session and view,
+   * it is younger than the maximum session lifetime (past it the view is certainly
+   * closed on the backend, and re-emitting it would resurrect a document that has
+   * long since settled), and it started before the fault (a view started after it is
+   * not the one the fault happened in, and its run's user, version and attributes
+   * are not the crashed run's either).
+   */
+  private static lastViewTakes(event: Record<string, Object>, snapshot: Record<string, Object>): boolean {
+    const sessionId: string = RumFeature.asString(RumFeature.recordValue(snapshot['session'])['id']);
+    const viewId: string = RumFeature.asString(RumFeature.recordValue(snapshot['view'])['id']);
+    if (sessionId.length === 0 || viewId.length === 0) {
+      return false;
+    }
+    const viewStartedAtMs: number = RumFeature.optionalPositiveNumber(snapshot['date']) ?? 0;
+    if (viewStartedAtMs <= 0 || (Date.now() - viewStartedAtMs) >= LAST_VIEW_MAX_AGE_MS) {
+      FlashcatLog.d('rum.crash: last-view snapshot too old; reporting in a session of its own');
+      return false;
+    }
+    const faultAtMs: number | undefined = RumFeature.optionalPositiveNumber(event['timestamp_ms']);
+    if (faultAtMs !== undefined && faultAtMs < viewStartedAtMs) {
+      FlashcatLog.d('rum.crash: fault predates the last-view snapshot; reporting in a session of its own');
+      return false;
+    }
+    return true;
+  }
+
+  /**
    * Replay a crash the SDK never saw in-process against the last persisted
    * ViewEvent: the error is stamped with that view's session/view identity and
    * the REAL fault time, and the view document is re-emitted with its crash
@@ -693,37 +925,21 @@ export class RumFeature implements Feature, FeatureEventReceiver {
    * timestamp safe here — the live scope tree would instead mint a session at
    * that past instant and expire it on the next event.
    *
-   * Returns false when the snapshot is unusable, so the caller can fall back to
-   * current-session reporting rather than lose the crash.
+   * Call only when lastViewTakes(event, snapshot). Returns whether both writes
+   * landed (or the mapper or consent dropped the crash on purpose). The error id
+   * is derived from the fault, so writing it again rewrites the same document.
    */
   private writeCrashFromLastView(
     event: Record<string, Object>, snapshot: Record<string, Object>): boolean {
-    const session: Record<string, Object> = RumFeature.recordValue(snapshot['session']);
-    const view: Record<string, Object> = RumFeature.recordValue(snapshot['view']);
-    const sessionId: string = RumFeature.asString(session['id']);
-    const viewId: string = RumFeature.asString(view['id']);
-    if (sessionId.length === 0 || viewId.length === 0) {
-      return false;
-    }
-    // Bound how far back a snapshot may reach. Beyond the max session lifetime
-    // the view is certainly closed on the backend, and re-emitting it would
-    // resurrect a document that has long since settled.
-    const viewStartedAtMs: number = RumFeature.optionalPositiveNumber(snapshot['date']) ?? 0;
-    if (viewStartedAtMs <= 0 || (Date.now() - viewStartedAtMs) >= LAST_VIEW_MAX_AGE_MS) {
-      FlashcatLog.d('rum.crash: last-view snapshot too old; reporting in a session of its own');
-      return false;
-    }
     const scope: FeatureScope | null = this.core.getFeature(RUM_FEATURE_NAME);
     if (scope === null) {
       return false;
     }
+    const session: Record<string, Object> = RumFeature.recordValue(snapshot['session']);
+    const view: Record<string, Object> = RumFeature.recordValue(snapshot['view']);
+    const sessionId: string = RumFeature.asString(session['id']);
+    const viewId: string = RumFeature.asString(view['id']);
     const faultAtMs: number | undefined = RumFeature.optionalPositiveNumber(event['timestamp_ms']);
-    if (faultAtMs !== undefined && faultAtMs < viewStartedAtMs) {
-      // The view started after the fault, so it is not the view the fault happened in, and its
-      // session and run (user, app version, attributes) are not the crashed run's either.
-      FlashcatLog.d('rum.crash: fault predates the last-view snapshot; reporting in a session of its own');
-      return false;
-    }
     const viewName: string = RumFeature.asString(view['name']);
     const crashedAtMs: number = faultAtMs ?? Date.now();
     const attributes: Record<string, Object> = RumFeature.crashAttributes(event);
@@ -740,6 +956,8 @@ export class RumFeature implements Feature, FeatureEventReceiver {
         RumErrorSource.SOURCE as string,
         RumFeature.asString(event['stack']),
         true, 'unhandled', crashedAtMs, attributes), snapshot);
+      RumFeature.recordValue(errorEvent['error'])['id'] =
+        RumFeature.derivedUuid(`${RumFeature.incidentIdentity(event)}#error`);
       const mapped: Record<string, Object> | null = RumEventMapperHolder.apply(errorEvent);
       if (mapped === null) {
         delivered = true; // the app's mapper dropped it on purpose — handled
@@ -882,6 +1100,7 @@ export class RumFeature implements Feature, FeatureEventReceiver {
   /** Pure: extract native-symbolication metadata from a crash_report bus event. */
   static crashAttributes(event: Record<string, Object>): Record<string, Object> {
     const attributes: Record<string, Object> = {};
+    RumFeature.copyNonEmptyString(event, attributes, 'error_type', 'error.type');
     const images: Object | undefined = event['binary_images'];
     if (Array.isArray(images) && images.length > 0) {
       attributes['error.binary_images'] = images;
@@ -902,11 +1121,21 @@ export class RumFeature implements Feature, FeatureEventReceiver {
         attributes[`crash.memory.${key}`] = memory[key];
       }
     }
+    RumFeature.copyNonEmptyString(event, attributes, 'fault_address', 'crash.fault_address');
     const kind: Object | undefined = event['crash_kind'];
     // APP_FREEZE is the system watchdog's application-not-responding verdict
     // (delivered on next launch, like Android ANRs) — not a self-sampled hang,
-    // so it is categorized as ANR rather than App Hang.
-    attributes['error.category'] = kind === 'freeze' ? 'ANR' : 'Exception';
+    // so it is categorized as ANR rather than App Hang. A MAIN_THREAD_JANK is a
+    // slow main-thread task the process survived. The backend groups both by
+    // these category values, so they change together with it.
+    if (kind === 'freeze') {
+      attributes['error.category'] = 'ANR';
+    } else if (kind === 'jank') {
+      attributes['error.category'] = 'Jank';
+      attributes['error.type'] = 'MAIN_THREAD_JANK';
+    } else {
+      attributes['error.category'] = 'Exception';
+    }
     const buildId: Object | undefined = event['build_id'];
     if (typeof buildId === 'string' && buildId.length > 0) {
       attributes['build_id'] = buildId;
@@ -925,6 +1154,13 @@ export class RumFeature implements Feature, FeatureEventReceiver {
       attributes['crash.recovered'] = true;
     }
     RumFeature.copyNonEmptyString(event, attributes, 'freeze.dump_started_at', 'freeze.dump_started_at');
+    for (const key of ['jank.duration_ms', 'jank.sampled_at']) {
+      const value: Object | undefined = event[key];
+      if (typeof value === 'number') {
+        attributes[key] = value;
+      }
+    }
+    RumFeature.copyNonEmptyString(event, attributes, 'freeze.reason', 'freeze.reason');
     return attributes;
   }
 
@@ -944,6 +1180,10 @@ export class RumFeature implements Feature, FeatureEventReceiver {
     if (typeof spanId === 'string') {
       attributes['_dd.span_id'] = spanId;
     }
+    const firstPartyHost: Object | undefined = event['first_party_host'];
+    if (typeof firstPartyHost === 'string') {
+      attributes[FIRST_PARTY_HOST_ATTRIBUTE] = firstPartyHost;
+    }
     m.startResource(
       RumFeature.asString(event['key']),
       RumFeature.toMethod(RumFeature.asString(event['method'])),
@@ -959,11 +1199,19 @@ export class RumFeature implements Feature, FeatureEventReceiver {
     const mimeType: string = RumFeature.asString(event['mime_type']);
     const kind: RumResourceKind =
       mimeType.length > 0 ? RumFeature.resourceKindFromMimeType(mimeType) : RumResourceKind.NATIVE;
+    // The network kit's timing rides along like the trace context does on start;
+    // RumResourceScope turns it into the resource's phases.
+    const attributes: Record<string, Object> = {};
+    const timing: Object | undefined = event['timing'];
+    if (typeof timing === 'object' && timing !== null) {
+      attributes[TRANSFER_TIMING_ATTRIBUTE] = timing;
+    }
     m.stopResource(
       RumFeature.asString(event['key']),
       RumFeature.asNumber(event['status_code']),
       RumFeature.asNumber(event['size']),
-      kind);
+      kind,
+      attributes);
   }
 
   private onNetworkRequestFailed(event: Record<string, Object>): void {
@@ -976,7 +1224,7 @@ export class RumFeature implements Feature, FeatureEventReceiver {
       RumFeature.asString(event['message']));
   }
 
-  private reportObservedError(stackText: string, callback: string, message: string): void {
+  private reportObservedError(stackText: string, callback: string, message: string, type: string): void {
     if (this.handlingError) {
       FlashcatLog.d('rum.error: skipped re-entrant unhandled error');
       return;
@@ -1042,7 +1290,7 @@ export class RumFeature implements Feature, FeatureEventReceiver {
           if (control['report_async'] === true) {
             asyncReportAttempted = true;
             try {
-              this.reportUnhandledToMonitor(stackText, message);
+              this.reportUnhandledToMonitor(stackText, message, type);
             } catch (reportError) {
               // Reporting failure must never bypass policy-driven termination.
               FlashcatLog.e(
@@ -1052,7 +1300,7 @@ export class RumFeature implements Feature, FeatureEventReceiver {
           if (control['report_crash'] === true) {
             asyncReportAttempted = true;
             try {
-              this.reportLiveCrash(stackText, message);
+              this.reportLiveCrash(stackText, message, type);
             } catch (reportError) {
               FlashcatLog.e(`rum.crash: live crash report failed: ${RumFeature.errorText(reportError)}`);
             }
@@ -1068,7 +1316,7 @@ export class RumFeature implements Feature, FeatureEventReceiver {
         // The crash module is there but its policy never reached RUM: its
         // policy, not RUM's default, decides about exiting — report only.
         asyncReportAttempted = true;
-        this.reportUnhandledToMonitor(stackText, message);
+        this.reportUnhandledToMonitor(stackText, message, type);
         return;
       }
       // No crash module. Keeping the process alive here would change the host's
@@ -1084,7 +1332,7 @@ export class RumFeature implements Feature, FeatureEventReceiver {
       }
       this.terminatingAtMs = nowMs;
       try {
-        this.reportLiveCrash(stackText, message);
+        this.reportLiveCrash(stackText, message, type);
       } catch (reportError) {
         // Reporting failure must never bypass the exit.
         FlashcatLog.e(`rum.error: crash report failed: ${RumFeature.errorText(reportError)}`);
@@ -1094,7 +1342,7 @@ export class RumFeature implements Feature, FeatureEventReceiver {
       FlashcatLog.e(`rum.error: policy path failed: ${RumFeature.errorText(e)}`);
       if (!asyncReportAttempted) {
         try {
-          this.reportUnhandledToMonitor(stackText, message);
+          this.reportUnhandledToMonitor(stackText, message, type);
         } catch (fallbackError) {
           FlashcatLog.e(`rum.error: fallback report failed: ${RumFeature.errorText(fallbackError)}`);
         }
@@ -1104,7 +1352,7 @@ export class RumFeature implements Feature, FeatureEventReceiver {
     }
   }
 
-  private reportUnhandledToMonitor(stackText: string, message: string): void {
+  private reportUnhandledToMonitor(stackText: string, message: string, type: string): void {
     if (!this.configuration.trackErrors) {
       // trackErrors=false: suppress the non-crash live copy. The crash-flagged
       // paths (markCrash + durable replay, reportLiveCrash) do not come through here.
@@ -1116,7 +1364,9 @@ export class RumFeature implements Feature, FeatureEventReceiver {
       FlashcatLog.d(`rum.error: report unhandled message="${message}"`);
       // Frames only: the labeled callback text is for fingerprinting; sending
       // it as error.stack made the backend title issues "Error name".
-      m.reportError(message, RumErrorSource.SOURCE, RumFeature.stackFramesOnly(stackText), false, 'unhandled');
+      const attributes: Record<string, Object> = { 'error.type': type };
+      m.reportError(message, RumErrorSource.SOURCE, RumFeature.stackFramesOnly(stackText), false, 'unhandled',
+        attributes);
       // An uncaught exception may be the last thing this process does: what the
       // session held for it leaves now, not after a jitter it may not live out.
       m.releaseScheduledWithheld();
@@ -1130,7 +1380,7 @@ export class RumFeature implements Feature, FeatureEventReceiver {
    * is_crash error of the live session, counted in the active view. It is a
    * crash, not an automatic error capture, so trackErrors does not gate it.
    */
-  private reportLiveCrash(stackText: string, message: string): void {
+  private reportLiveCrash(stackText: string, message: string, type: string): void {
     const m: DefaultRumMonitor | null = this.monitor;
     if (m === null) {
       FlashcatLog.d('rum.crash: live crash dropped because monitor is null');
@@ -1138,7 +1388,7 @@ export class RumFeature implements Feature, FeatureEventReceiver {
     }
     FlashcatLog.d(`rum.crash: report live crash message="${message}"`);
     m.reportError(message, RumErrorSource.SOURCE, RumFeature.stackFramesOnly(stackText), true, 'unhandled',
-      RumFeature.crashAttributes({}));
+      RumFeature.crashAttributes({ 'error_type': type }));
     // The policy keeps the process alive, but another observer of the same
     // exception may still end it (e.g. a crash reporter exiting from its own
     // onException): what the session held leaves now, not after a jitter.
@@ -1163,7 +1413,7 @@ export class RumFeature implements Feature, FeatureEventReceiver {
           text,
           false,
           'unhandled',
-          RumFeature.rejectionAttributes());
+          RumFeature.rejectionAttributes(reason));
       } else {
         FlashcatLog.d('rum.error: rejection dropped because monitor is null');
       }
@@ -1356,11 +1606,16 @@ export class RumFeature implements Feature, FeatureEventReceiver {
     return `${reason}`; // null/undefined/number/boolean — readable primitives
   }
 
-  static rejectionAttributes(): Record<string, Object> {
-    return {
+  /** A rejection with an Error is typed by its name; any other reason has no type, as in the browser SDK. */
+  static rejectionAttributes(reason: Object): Record<string, Object> {
+    const attributes: Record<string, Object> = {
       'error.category': 'Unhandled Promise Rejection',
       'error.source_type': 'promise'
     };
+    if (reason instanceof Error) {
+      attributes['error.type'] = RumFeature.errorName(reason);
+    }
+    return attributes;
   }
 
   private static firstLine(text: string): string {
@@ -1374,7 +1629,7 @@ export class RumFeature implements Feature, FeatureEventReceiver {
     for (const line of text.split('\n')) {
       const trimmed: string = line.trim();
       if (trimmed.startsWith('Error name:') || trimmed.startsWith('Error message:')
-        || trimmed === 'Stacktrace:' || trimmed.startsWith(SOURCEMAP_BANNER)) {
+        || trimmed === 'Stacktrace:' || RumFeature.isSourceMapBanner(trimmed)) {
         continue;
       }
       kept.push(line);
@@ -1385,13 +1640,45 @@ export class RumFeature implements Feature, FeatureEventReceiver {
     return kept.join('\n');
   }
 
+  private static isSourceMapBanner(line: string): boolean {
+    return SOURCEMAP_BANNERS.some((banner: string): boolean => line.startsWith(banner));
+  }
+
   /** "Name: message" from an Error object, independent of its stack text.
    *  Name alone when the message is empty — no dangling "Error: ". */
   static messageFromError(errObject: Error): string {
-    const rawName: string = RumFeature.errorField(errObject, 'name');
-    const name: string = rawName.length > 0 ? rawName : 'Error';
+    const name: string = RumFeature.errorName(errObject);
     const message: string = RumFeature.errorField(errObject, 'message');
     return message.length > 0 ? `${name}: ${message}` : name;
+  }
+
+  /** The exception name (error.type) of whatever the runtime handed the error callback; 'Error' without one. */
+  static errorName(errObject: Error): string {
+    const name: string = RumFeature.errorField(errObject, 'name');
+    return name.length > 0 ? name : 'Error';
+  }
+
+  /**
+   * Derives error.type from unhandled-exception callback text: the labeled
+   * "Error name:" field, else the "Name: message" header when the name reads
+   * as an exception name (…Error / …Exception), else 'Error'. The crash
+   * module's CrashFingerprint.partsFromText names the replayed crash the same way.
+   */
+  static errorTypeFromText(text: string): string {
+    const lines: string[] = text.split('\n');
+    if (lines.length >= 2 && lines[0].startsWith('Error name:') && lines[1].startsWith('Error message:')) {
+      const name: string = lines[0].substring('Error name:'.length).trim();
+      return name.length > 0 ? name : 'Error';
+    }
+    const header: string = RumFeature.errorMessageFromText(text);
+    const separator: number = header.indexOf(':');
+    if (separator > 0) {
+      const candidate: string = header.substring(0, separator).trim();
+      if (candidate.endsWith('Error') || candidate.endsWith('Exception')) {
+        return candidate;
+      }
+    }
+    return 'Error';
   }
 
   /**
@@ -1414,7 +1701,7 @@ export class RumFeature implements Feature, FeatureEventReceiver {
     }
     for (let i: number = 0; i < lines.length; i++) {
       const line: string = lines[i].trim();
-      if (line.length === 0 || line.startsWith(SOURCEMAP_BANNER)) {
+      if (line.length === 0 || RumFeature.isSourceMapBanner(line)) {
         continue;
       }
       if (line.startsWith('at ') || line.startsWith('#')) {

@@ -46,7 +46,7 @@ export default function crashIncidentTests(): void {
     it('roundTripsViewUrlThroughSerialization', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
       const record: CrashIncidentRecord = new CrashIncidentRecord(
         'inc-1', 1000, 'Error', 'boom', 'Error: boom\n    at f (a.ets:1:1)', 'fp-1',
-        JsCrashPolicy.REPORT_THEN_EXIT, '0.7.11', 's-1', 'v-1', 'Home', 'pages/Home');
+        JsCrashPolicy.REPORT_THEN_EXIT, '0.8.0', 's-1', 'v-1', 'Home', 'pages/Home');
 
       const parsed: CrashIncidentRecord | null = CrashIncidentRecord.parse(record.serialize());
 
@@ -76,6 +76,24 @@ export default function crashIncidentTests(): void {
       // backend's parsed frames); the real frames survive.
       expect(parts.stack.indexOf('Cannot get SourceMap info')).assertEqual(-1);
       expect(parts.stack.indexOf('at anonymous') >= 0).assertTrue();
+    });
+
+    it('ignoresTheNotYetInitializedSourceMapBanner', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+      // A fault during launch, before the runtime has loaded the sourcemap.
+      const launchStack: string = 'SourceMap is not initialized yet \n' +
+        '    at onCreate (entry|entry|1.0.0|src/main/ets/entryability/EntryAbility.ts:19:19)\n' +
+        'HybridStack:\n#00 pc 00000000004b1990 /system/lib64/platformsdk/libark_jsruntime.so';
+      const labeled: CrashExceptionParts = CrashFingerprint.partsFromText(
+        'Error name:Error\nError message:launch failed\nStacktrace:\n' + launchStack);
+      expect(labeled.stack.indexOf('    at onCreate')).assertEqual(0);
+      expect(labeled.message).assertEqual('launch failed');
+      // Unlabeled: the banner is neither the stack's first line nor taken for the message.
+      const unlabeled: CrashExceptionParts = CrashFingerprint.partsFromText(launchStack);
+      expect(unlabeled.stack.indexOf('    at onCreate')).assertEqual(0);
+      expect(unlabeled.message).assertEqual('');
+      // Negative control: a stack without a banner is left as it is.
+      expect(CrashFingerprint.framesOnly('    at onCreate (a.ets:1:1)\nHybridStack:'))
+        .assertEqual('    at onCreate (a.ets:1:1)\nHybridStack:');
     });
 
     it('changesWhenMessageChanges', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
@@ -183,7 +201,7 @@ export default function crashIncidentTests(): void {
         'TypeError: boom\n    at run (Index.ets:1:2)',
         'fp-1',
         JsCrashPolicy.REPORT_THEN_EXIT,
-        '0.7.11',
+        '0.8.0',
         'session-1',
         'view-1',
         'Home');
@@ -199,7 +217,7 @@ export default function crashIncidentTests(): void {
         expect(parsed.stack.indexOf('Index.ets')).assertLarger(-1);
         expect(parsed.fingerprint).assertEqual('fp-1');
         expect(parsed.policy).assertEqual(JsCrashPolicy.REPORT_THEN_EXIT);
-        expect(parsed.sdkVersion).assertEqual('0.7.11');
+        expect(parsed.sdkVersion).assertEqual('0.8.0');
         expect(parsed.sessionId).assertEqual('session-1');
         expect(parsed.viewId).assertEqual('view-1');
         expect(parsed.viewName).assertEqual('Home');

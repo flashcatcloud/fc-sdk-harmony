@@ -184,6 +184,8 @@ struct Index {
       this.axiosRequest('GET', `${endpoint}/e2e/echo`);
       this.axiosRequest('GET', `${endpoint}/e2e/status/404`);
       this.append('e2e: axios scenario emitted');
+    } else if (name === 'restiming') {
+      this.runResourceTimingScenario();
     } else if (name === 'netbench') {
       const endpoint: string = AppStorage.get<string>('e2eEndpoint') ?? '';
       this.append('e2e: netbench started');
@@ -210,6 +212,57 @@ struct Index {
         throw new Error('E2E secret crash');
       }, 800);
     }
+  }
+
+  /**
+   * Resource phase timing, through every network stack the SDK instruments.
+   * Each request is sent one after the other (so the second one on a host can
+   * reuse the connection) and the kit's raw timing is logged under RESTIMING,
+   * to line up against netstack's own `*_time` log and the resource event the
+   * intake received for the same url.
+   */
+  private async runResourceTimingScenario(): Promise<void> {
+    const endpoint: string = AppStorage.get<string>('e2eEndpoint') ?? '';
+    const urls: string[] = [
+      `${endpoint}/e2e/slow?n=1`, `${endpoint}/e2e/slow?n=2`, `${endpoint}/e2e/redirect`,
+      'https://httpbingo.org/get?n=1', 'https://httpbingo.org/get?n=2'
+    ];
+    for (const url of urls) {
+      try {
+        const resp: http.HttpResponse = await FlashcatHttp.request(url, { method: http.RequestMethod.GET });
+        hilog.info(0x0000, 'RESTIMING', 'http %{public}s %{public}d %{public}s', url, resp.responseCode,
+          JSON.stringify(resp.performanceTiming));
+      } catch (e) {
+        hilog.error(0x0000, 'RESTIMING', 'http %{public}s failed %{public}s', url, JSON.stringify(e));
+      }
+    }
+    const timed: rcp.Session = rcp.createSession({
+      interceptors: [FlashcatTrace.interceptor()],
+      requestConfiguration: { tracing: { collectTimeInfo: true } }
+    });
+    for (const url of urls) {
+      try {
+        const resp: rcp.Response = await timed.get(`${url}${url.indexOf('?') >= 0 ? '&' : '?'}rcp=1`);
+        hilog.info(0x0000, 'RESTIMING', 'rcp %{public}s %{public}d %{public}s', url, resp.statusCode,
+          JSON.stringify(resp.timeInfo));
+      } catch (e) {
+        hilog.error(0x0000, 'RESTIMING', 'rcp %{public}s failed %{public}s', url, JSON.stringify(e));
+      }
+    }
+    timed.close();
+    // The host's session does not collect timing: the resource has no phases.
+    const untimed: rcp.Session = rcp.createSession({ interceptors: [FlashcatTrace.interceptor()] });
+    try {
+      const resp: rcp.Response = await untimed.get(`${endpoint}/e2e/slow?rcp=untimed`);
+      hilog.info(0x0000, 'RESTIMING', 'rcp untimed %{public}d %{public}s', resp.statusCode,
+        JSON.stringify(resp.timeInfo));
+    } catch (e) {
+      hilog.error(0x0000, 'RESTIMING', 'rcp untimed failed %{public}s', JSON.stringify(e));
+    }
+    untimed.close();
+    this.axiosRequest('GET', `${endpoint}/e2e/slow?axios=1`);
+    hilog.info(0x0000, 'RESTIMING', 'done');
+    this.append('e2e: restiming scenario emitted');
   }
 
   /**

@@ -9,6 +9,9 @@ const MAX_STACK_CHARS: number = 16000;
 // the same prefix and still deduplicate.
 const MAX_MESSAGE_CHARS: number = 4096;
 const MAX_TEXT_CHARS: number = MAX_STACK_CHARS + 2 * MAX_MESSAGE_CHARS;
+// OpenHarmony runtime banners written before the stack when the module's
+// sourcemap cannot be loaded, or is not loaded yet (a fault during launch).
+const SOURCEMAP_BANNERS: string[] = ['Cannot get SourceMap info', 'SourceMap is not initialized yet'];
 
 /** Parsed exception fields shared by live callbacks and hiAppEvent replay. */
 export class CrashExceptionParts {
@@ -39,6 +42,10 @@ export class CrashFingerprint {
     return CrashFingerprint.fnv1a(`${normalizedName}\n${normalizedMessage}\n${frame}`);
   }
 
+  private static isSourceMapBanner(line: string): boolean {
+    return SOURCEMAP_BANNERS.some((banner: string): boolean => line.startsWith(banner));
+  }
+
   /**
    * Strips the errorManager label lines ("Error name:", "Error message:",
    * "Stacktrace:") and the sourcemap banner from a callback text, leaving the
@@ -51,7 +58,7 @@ export class CrashFingerprint {
     for (const line of text.split('\n')) {
       const trimmed: string = line.trim();
       if (trimmed.startsWith('Error name:') || trimmed.startsWith('Error message:')
-        || trimmed === 'Stacktrace:' || trimmed.startsWith('Cannot get SourceMap info')) {
+        || trimmed === 'Stacktrace:' || CrashFingerprint.isSourceMapBanner(trimmed)) {
         continue;
       }
       kept.push(line);
@@ -89,13 +96,13 @@ export class CrashFingerprint {
         CrashFingerprint.truncate(CrashFingerprint.labeledMessage(text, lines[0], stackAt), MAX_MESSAGE_CHARS),
         stack);
     }
-    // Header = first line that is neither the runtime's "Cannot get SourceMap
-    // info" banner (substituted when sourcemap translation fails — never a
+    // Header = first line that is neither a runtime sourcemap banner ("Cannot
+    // get SourceMap info", "SourceMap is not initialized yet" — never a
     // message) nor a stack frame.
     let header: string = '';
     for (let i: number = 0; i < lines.length; i++) {
       const line: string = lines[i].trim();
-      if (line.length === 0 || line.startsWith('Cannot get SourceMap info')) {
+      if (line.length === 0 || CrashFingerprint.isSourceMapBanner(line)) {
         continue;
       }
       if (line.startsWith('at ') || line.startsWith('#')) {

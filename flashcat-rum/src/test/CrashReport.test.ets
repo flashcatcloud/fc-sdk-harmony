@@ -46,6 +46,44 @@ export default function crashReportTests(): void {
       expect(attrs['freeze.dump_started_at']).assertEqual('2026-10-27 23:51:37.517');
     });
 
+    it('categorizesFaultsByKind', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+      const jank: Record<string, Object> = RumFeature.crashAttributes({
+        'type': 'crash_report', 'crash_kind': 'jank', 'jank.duration_ms': 1001, 'jank.sampled_at': 1793317690154
+      });
+      expect(jank['error.category']).assertEqual('Jank');
+      expect(jank['error.type']).assertEqual('MAIN_THREAD_JANK');
+      expect(jank['jank.duration_ms']).assertEqual(1001);
+      expect(jank['jank.sampled_at']).assertEqual(1793317690154);
+      const freeze: Record<string, Object> = RumFeature.crashAttributes({ 'crash_kind': 'freeze' });
+      expect(freeze['error.category']).assertEqual('ANR');
+      expect(freeze['error.type'] === undefined).assertTrue();
+      const crash: Record<string, Object> = RumFeature.crashAttributes({ 'crash_kind': 'crash' });
+      expect(crash['error.category']).assertEqual('Exception');
+      expect(crash['error.type'] === undefined).assertTrue();
+      expect(crash['jank.duration_ms'] === undefined).assertTrue();
+    });
+
+    it('carriesTheSystemFreezeTextAsAttribute', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+      const event: Record<string, Object> = {
+        'type': 'crash_report',
+        'crash_kind': 'freeze',
+        'freeze.reason': 'User input does not respond!FREEZE_HALF_HIVIEW_LOG write success'
+      };
+      expect(RumFeature.crashAttributes(event)['freeze.reason'])
+        .assertEqual('User input does not respond!FREEZE_HALF_HIVIEW_LOG write success');
+      // Negative control: a crash carries none.
+      expect(RumFeature.crashAttributes({ 'crash_kind': 'crash' } as Record<string, Object>)['freeze.reason'])
+        .assertUndefined();
+    });
+
+    it('carriesTheFaultAddressAsAttribute', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+      const event: Record<string, Object> = { 'type': 'crash_report', 'crash_kind': 'crash', 'fault_address': '0x0' };
+      expect(RumFeature.crashAttributes(event)['crash.fault_address']).assertEqual('0x0');
+      // Negative control: a crash without one carries none.
+      expect(RumFeature.crashAttributes({ 'crash_kind': 'crash' } as Record<string, Object>)['crash.fault_address'])
+        .assertUndefined();
+    });
+
     it('carriesThreadsAndMemoryAtFault', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
       const threads: Array<Record<string, Object>> = [
         { 'name': 'example.app', 'crashed': true, 'stack': '#0 pc 0000000000001e10 /data/libentry.so' }
@@ -92,12 +130,39 @@ export default function crashReportTests(): void {
         err.stack = 'Error: rejected\n    at request (Api.ets:1:2)';
 
         const text: string = RumFeature.rejectionErrorText(err);
-        const attrs: Record<string, Object> = RumFeature.rejectionAttributes();
+        const attrs: Record<string, Object> = RumFeature.rejectionAttributes(err);
 
         expect(text.indexOf('Error: rejected')).assertEqual(0);
         expect(attrs['error.category']).assertEqual('Unhandled Promise Rejection');
         expect(attrs['error.source_type']).assertEqual('promise');
       });
+
+    it('typesRejectionsWithAnErrorByItsName',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        expect(RumFeature.rejectionAttributes(new TypeError('x'))['error.type']).assertEqual('TypeError');
+        // Negative control: a BusinessError-shaped object or a string names no exception.
+        const business: Record<string, Object> = { 'code': 201, 'message': 'Permission denied' };
+        expect(RumFeature.rejectionAttributes(business)['error.type']).assertUndefined();
+        expect(RumFeature.rejectionAttributes('plain refusal')['error.type']).assertUndefined();
+      });
+
+    it('derivesErrorTypeFromCallbackText',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        expect(RumFeature.errorTypeFromText('Error name:SyntaxError\nError message:bad\nStacktrace:\nat f (a.ets:1:1)'))
+          .assertEqual('SyntaxError');
+        expect(RumFeature.errorTypeFromText('Error name:\nError message:bad\nStacktrace:')).assertEqual('Error');
+        expect(RumFeature.errorTypeFromText('RangeError: out of bounds\nat f (a.ets:1:1)')).assertEqual('RangeError');
+        // Negative controls: a header that does not name an exception, or no header at all.
+        expect(RumFeature.errorTypeFromText('Fatal: out of bounds\nat f (a.ets:1:1)')).assertEqual('Error');
+        expect(RumFeature.errorTypeFromText('at f (a.ets:1:1)')).assertEqual('Error');
+      });
+
+    it('carriesTheCrashTypeAsAnAttribute', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+      const event: Record<string, Object> = { 'type': 'crash_report', 'crash_kind': 'crash', 'error_type': 'SIGSEGV' };
+      expect(RumFeature.crashAttributes(event)['error.type']).assertEqual('SIGSEGV');
+      expect(RumFeature.crashAttributes({ 'crash_kind': 'crash' } as Record<string, Object>)['error.type'])
+        .assertUndefined();
+    });
 
     it('unwrapsBusinessErrorShapedRejectionReasons',
       TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
@@ -155,6 +220,20 @@ export default function crashReportTests(): void {
 
         expect(RumFeature.errorMessageFromText(bannerOnly)).assertEqual('Uncaught exception');
         expect(RumFeature.errorMessageFromText(bannerWithFrames)).assertEqual('Uncaught exception');
+      });
+
+    it('dropsTheNotYetInitializedSourceMapBanner',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        // A fault during launch, before the runtime has loaded the sourcemap.
+        const launchStack: string = 'SourceMap is not initialized yet \n' +
+        '    at onCreate (entry|entry|1.0.0|src/main/ets/entryability/EntryAbility.ts:19:19)\n' +
+        'HybridStack:\n#00 pc 00000000004b1990 /system/lib64/platformsdk/libark_jsruntime.so';
+        const text: string = 'Error name:Error\nError message:launch failed\nStacktrace:\n' + launchStack;
+        expect(RumFeature.stackFramesOnly(text).indexOf('    at onCreate')).assertEqual(0);
+        expect(RumFeature.errorMessageFromText(launchStack)).assertEqual('Uncaught exception');
+        // Negative control: the text after the banner still yields its header.
+        expect(RumFeature.errorMessageFromText('SourceMap is not initialized yet \nTypeError: x\nat f (a.ets:1:1)'))
+          .assertEqual('TypeError: x');
       });
 
     it('emptyMessagesProduceNameAloneNotDanglingColon',

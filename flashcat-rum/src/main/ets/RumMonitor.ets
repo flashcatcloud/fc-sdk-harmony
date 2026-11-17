@@ -9,6 +9,32 @@ export interface RumMonitor {
   startView(key: string, name: string, attributes?: Record<string, Object>): void;
   stopView(key: string, attributes?: Record<string, Object>): void;
 
+  /**
+   * Mark the open view as loaded now: its `view.loading_time` becomes the time
+   * since the view started. Without `overwrite`, a value an earlier call set is
+   * kept. For `router` pages tracked by `startViewTracking`, the SDK measures
+   * the first frame after the page is shown; a value set here replaces that
+   * measurement. Ignored when no view is open. Same as Android's
+   * `addViewLoadingTime(overwrite)`.
+   */
+  addViewLoadingTime(overwrite: boolean): void;
+
+  /**
+   * Call when the app has finished loading what its first screen shows (data
+   * included). Reports the time to full display of the last cold or warm
+   * launch: from the launch's start to now, if that is within 90 s. Called
+   * before the launch's first frame, it is remembered and reported when that
+   * frame is measured, with the time to initial display as its value (as on
+   * Android). Counted once per session; calls before any launch was detected
+   * are ignored and logged.
+   *
+   * Launch timing needs `Flashcat.initialize` and `FlashcatRum.enable` in
+   * `AbilityStage.onCreate`, and `FlashcatRum.startViewTracking(this.getUIContext())`
+   * in the first page's `aboutToAppear`. A launch whose first frame the SDK
+   * did not see is not reported.
+   */
+  reportAppFullyDisplayed(): void;
+
   addAction(type: RumActionType, name: string, attributes?: Record<string, Object>): void;
   startAction(type: RumActionType, name: string, attributes?: Record<string, Object>): void;
   stopAction(type: RumActionType, name: string, attributes?: Record<string, Object>): void;
@@ -76,6 +102,8 @@ export interface RumMonitor {
 class NoOpRumMonitor implements RumMonitor {
   startView(key: string, name: string, attributes?: Record<string, Object>): void {}
   stopView(key: string, attributes?: Record<string, Object>): void {}
+  addViewLoadingTime(overwrite: boolean): void {}
+  reportAppFullyDisplayed(): void {}
   addAction(type: RumActionType, name: string, attributes?: Record<string, Object>): void {}
   startAction(type: RumActionType, name: string, attributes?: Record<string, Object>): void {}
   stopAction(type: RumActionType, name: string, attributes?: Record<string, Object>): void {}

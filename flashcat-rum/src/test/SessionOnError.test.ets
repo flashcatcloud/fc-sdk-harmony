@@ -14,13 +14,15 @@ import { RemoteConfigStore, RemoteConfigValues } from '../main/ets/internal/remo
 import { RemoteConfigController, RemoteConfigChangeListener } from '../main/ets/internal/remoteconfig/RemoteConfigController';
 import { RemoteConfigFetcher, RemoteConfigResponse } from '../main/ets/internal/remoteconfig/RemoteConfigFetcher';
 import { RumEventMapperHolder } from '../main/ets/internal/RumEventMapperHolder';
-import { LastView, LastViewSnapshot } from '../main/ets/internal/LastViewSnapshot';
+import { LastView, LastViewSnapshot, SessionRecord } from '../main/ets/internal/LastViewSnapshot';
 import { RumFeature } from '../main/ets/internal/RumFeature';
 import { BeforeSamplingContext } from '../main/ets/RumTypes';
 import { RumConfiguration, RumConfigurationBuilder } from '../main/ets/RumConfiguration';
 import { FlashcatRum } from '../main/ets/FlashcatRum';
 import { DefaultRumMonitor } from '../main/ets/internal/monitor/DefaultRumMonitor';
 import { RumActionType, RumErrorSource, RumResourceMethod, RumResourceKind } from '../main/ets/RumTypes';
+import { StartupType } from '../main/ets/internal/startup/AppLaunchTracker';
+import { APP_LAUNCH_TTID } from '../main/ets/internal/assembly/RumEventAssembler';
 import { errorManager } from '@kit.AbilityKit';
 import { process } from '@kit.ArkTS';
 
@@ -38,7 +40,7 @@ function testContext(): FlashcatContext {
     version: '1.0.0',
     bundleId: 'com.example.demo',
     source: 'harmony',
-    sdkVersion: '0.7.11',
+    sdkVersion: '0.8.0',
     device: {
       brand: 'HUAWEI', model: 'Pura', osName: 'HarmonyOS', osVersion: 'NEXT',
       apiVersion: 18, deviceType: 'phone'
@@ -121,6 +123,8 @@ class CapturingScope implements FeatureScope {
   rejectAbove: number = Number.MAX_SAFE_INTEGER;
   /** Events of this type are refused, as a storage failure on that one write would. */
   refuseType: string = '';
+  /** View documents of this view id are refused. */
+  refuseViewId: string = '';
 
   withWriteContext(callback: (context: FlashcatContext, writer: EventWriter) => void): void {
     callback(this.core !== null ? this.core.getContext() : testContext(), new CapturingWriter(this));
@@ -129,13 +133,23 @@ class CapturingScope implements FeatureScope {
   /** The last-view snapshot file the crash storage would hold. */
   lastView: string = '';
   lastViewDeletes: number = 0;
+  /** The crash storage fails every last-view write (a full disk). */
+  refuseLastView: boolean = false;
+  /** Last-view writes asked of the crash storage, refused ones included. */
+  lastViewAttempts: number = 0;
   /** The core whose context events are written with (the default test context when unset). */
   core: FakeCore | null = null;
 
   sendEvent(event: Record<string, Object>): void {
     const type: Object | undefined = event['type'];
     if (type === 'crash_storage_write_last_view') {
+      this.lastViewAttempts += 1;
+      if (this.refuseLastView) {
+        event['success'] = false;
+        return;
+      }
       this.lastView = event['serialized'] as string;
+      event['success'] = true;
     } else if (type === 'crash_storage_read_last_view') {
       event['serialized'] = this.lastView;
     } else if (type === 'crash_storage_delete_last_view') {
@@ -158,7 +172,9 @@ class CapturingWriter implements EventWriter {
 
   write(event: Record<string, Object>, forceFlush?: boolean): boolean {
     // Storage stores a line: the newline counts toward its limit.
-    if (JSON.stringify(event).length + 1 > this.scope.rejectAbove || event['type'] === this.scope.refuseType) {
+    if (JSON.stringify(event).length + 1 > this.scope.rejectAbove || event['type'] === this.scope.refuseType ||
+      (this.scope.refuseViewId.length > 0 && event['type'] === 'view' &&
+        (event['view'] as Record<string, Object>)['id'] === this.scope.refuseViewId)) {
       return false;
     }
     this.scope.written.push(event);
@@ -254,6 +270,11 @@ function fireUnhandledException(text: string): void {
   (observers['error'] as errorManager.ErrorObserver).onUnhandledException(text);
 }
 
+function fireException(error: Error): void {
+  const observers: Record<string, Object> = (errorManager as Object as Record<string, Object>)['lastObservers'] as Record<string, Object>;
+  (observers['error'] as errorManager.ErrorObserver).onException?.(error);
+}
+
 function fireUnhandledRejection(reason: Object): void {
   const observers: Record<string, Object> = (errorManager as Object as Record<string, Object>)['lastObservers'] as Record<string, Object>;
   (observers['unhandledRejection'] as errorManager.UnhandledRejectionObserver)(reason, Promise.resolve());
@@ -316,6 +337,13 @@ const CRASH_TEXT: string = 'Error name:Error\nError message:fatal\nStacktrace:\n
 class SilentFetcher implements RemoteConfigFetcher {
   fetch(_url: string, _ifNoneMatch: string | null): Promise<RemoteConfigResponse> {
     return Promise.resolve({ code: 304, body: '', etag: null } as RemoteConfigResponse);
+  }
+}
+
+/** Busy-waits until the clock has moved past `ms`, so what follows is stamped later. */
+function waitPast(ms: number): void {
+  while (Date.now() <= ms) {
+    // spin
   }
 }
 
@@ -418,6 +446,60 @@ function released(buffer: WithheldEventBuffer, nowMs: number): Array<Record<stri
     buffer.release(writer, nowMs);
   });
   return scope.written;
+}
+
+/** A native crash of process `pid` reported on the next launch: no session or view ids of its own. */
+function nativeCrash(atMs: number, pid: number = process.pid, extra: Record<string, Object> = {}): Record<string, Object> {
+  const event: Record<string, Object> = {
+    'type': 'crash_report', 'message': 'NativeCrash', 'stack': '#00 pc', 'crash_kind': 'crash',
+    'crash_type': 'NativeCrash', 'timestamp_ms': atMs, 'process_id': pid
+  };
+  for (const key of Object.keys(extra)) {
+    event[key] = extra[key];
+  }
+  return event;
+}
+
+/**
+ * The next launch: a RUM feature starting on the crash storage `lastView` run 1 left, under
+ * `rate` / `onError`, receives `crash`. Returns what it wrote.
+ */
+function nextLaunch(core: FakeCore, lastView: string, rate: number, onError: boolean,
+  crash: Record<string, Object>): CapturingScope {
+  const next: CapturingScope = new CapturingScope();
+  next.lastView = lastView;
+  next.core = core;
+  core.rumScope = next;
+  const configuration: RumConfiguration =
+    new RumConfigurationBuilder('app-1').setSessionSampleRate(rate).setSessionOnError(onError).build();
+  const feature: RumFeature = new RumFeature(core, configuration);
+  feature.onInitialize();
+  const monitor: DefaultRumMonitor = new DefaultRumMonitor(core, next, configuration);
+  monitor.stopKeepAlive();
+  feature.attachMonitor(monitor);
+  feature.onReceive(crash);
+  return next;
+}
+
+/** A session that has no view: a launch vital is the first thing it records. */
+function launchVital(monitor: DefaultRumMonitor): void {
+  const nowMs: number = Date.now();
+  monitor.reportAppLaunch(APP_LAUNCH_TTID, StartupType.COLD, nowMs, 1000000, nowMs);
+}
+
+/** Rewrites the file's write time, as if the process had written it `agoMs` ago. */
+function writtenAgo(lastView: string, agoMs: number): string {
+  const file: Record<string, Object> = JSON.parse(lastView) as Record<string, Object>;
+  file['written_at'] = Date.now() - agoMs;
+  return JSON.stringify(file);
+}
+
+function viewNameOf(event: Record<string, Object>): string {
+  return (event['view'] as Record<string, Object>)['name'] as string;
+}
+
+function crashCountOf(event: Record<string, Object>): number {
+  return ((event['view'] as Record<string, Object>)['crash'] as Record<string, Object>)['count'] as number;
 }
 
 export default function sessionOnErrorTests(): void {
@@ -622,6 +704,26 @@ export default function sessionOnErrorTests(): void {
         app.handleEvent(failed);
         app.releaseScheduledWithheld();
         expect(scope.ofType('error').length).assertEqual(1);
+      });
+
+    it('anHttpErrorStatusIsNotAnErrorAndReleasesNothing',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        // A 500 is the server answering: a completed request, not an error of
+        // the app, so the session stays withheld. A request that got no answer
+        // at all is an error and releases it (aFailedRequestIsAnErrorThatReleases).
+        const scope: CapturingScope = new CapturingScope();
+        const app: RumApplicationScope = onErrorApp(scope);
+        const now: number = Date.now();
+        startView(app, now);
+        for (const status of [500, 503, 404]) {
+          const key: string = `r${status}`;
+          app.handleEvent(raw('startResource', now, key));
+          const done: RumRawEvent = raw('stopResource', now + 5, key);
+          done.statusCode = status;
+          app.handleEvent(done);
+        }
+        app.releaseScheduledWithheld();
+        expect(scope.written.length).assertEqual(0);
       });
 
     it('aCrashReleasesAtOnceWithTheCountingDocument',
@@ -2043,8 +2145,9 @@ export default function sessionOnErrorTests(): void {
     it('snapshotsTheWithheldViewSoANextLaunchCrashStillReportsIt',
       TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
         let stored: string = '';
-        LastViewSnapshot.configure((serialized: string): void => {
+        LastViewSnapshot.configure((serialized: string): boolean => {
           stored = serialized;
+          return true;
         }, (): string => stored, (): void => {
           stored = '';
         });
@@ -2072,8 +2175,9 @@ export default function sessionOnErrorTests(): void {
       TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
         let stored: string = '';
         let deletes: number = 0;
-        LastViewSnapshot.configure((serialized: string): void => {
+        LastViewSnapshot.configure((serialized: string): boolean => {
           stored = serialized;
+          return true;
         }, (): string => stored, (): void => {
           stored = '';
           deletes += 1;
@@ -2082,40 +2186,35 @@ export default function sessionOnErrorTests(): void {
           const scope: CapturingScope = new CapturingScope();
           const app: RumApplicationScope = onErrorApp(scope);
           startView(app, Date.now());
-          LastViewSnapshot.flush(); // writes are coalesced; a flush puts the latest on file
-          expect(stored.length > 0).assertTrue();
+          const kept: LastView = LastViewSnapshot.read() as LastView;
+          expect(kept.view !== null).assertTrue();
+          expect((kept.session as SessionRecord).sampled).assertTrue();
+          expect((kept.session as SessionRecord).sampledForError).assertTrue();
           app.stopCurrentSession(Date.now()); // ended without an error: discarded
-          expect(stored).assertEqual('');
-          expect(deletes).assertEqual(1);
+          // The record stays and says the session is not collected; its view is gone.
+          const discarded: LastView = LastViewSnapshot.read() as LastView;
+          expect(discarded.view === null).assertTrue();
+          expect((discarded.session as SessionRecord).id).assertEqual((kept.session as SessionRecord).id);
+          expect((discarded.session as SessionRecord).sampled).assertFalse();
+          expect(deletes).assertEqual(0);
 
-          // Negative control: a released session keeps its snapshot...
-          const kept: CapturingScope = new CapturingScope();
-          const app2: RumApplicationScope = onErrorApp(kept);
+          // Negative control: a released session keeps its view and stays collected.
+          const released: CapturingScope = new CapturingScope();
+          const app2: RumApplicationScope = onErrorApp(released);
           startView(app2, Date.now());
           addError(app2, Date.now());
           app2.stopCurrentSession(Date.now());
-          LastViewSnapshot.flush();
-          expect(stored.length > 0).assertTrue();
-          expect(deletes).assertEqual(1);
-          // ...and a discard never touches another session's snapshot: app4 is
-          // thrown away by an SDK stop (no final view write) while app3's view
-          // is the one on file.
+          const after: LastView = LastViewSnapshot.read() as LastView;
+          expect(after.view !== null).assertTrue();
+          expect((after.session as SessionRecord).sampled).assertTrue();
+          // ...and the discard of a session that is not the recorded one leaves the file alone.
           const other: CapturingScope = new CapturingScope();
           const app3: RumApplicationScope = onErrorApp(other);
           startView(app3, Date.now());
-          LastViewSnapshot.flush();
-          const otherView: string = stored;
-          const stale: CapturingScope = new CapturingScope();
-          const app4: RumApplicationScope = onErrorApp(stale);
-          startView(app4, Date.now());
-          LastViewSnapshot.record(JSON.parse(otherView) as Record<string, Object>); // app3's view is the newest again
-          app4.stopWithheld();
-          expect(stored).assertEqual(otherView);
-          expect(deletes).assertEqual(1);
-          // The owner's discard takes it, final document included.
-          app3.stopCurrentSession(Date.now());
-          expect(stored).assertEqual('');
-          expect(deletes).assertEqual(2);
+          const before: string = stored;
+          LastViewSnapshot.invalidateFor('another-session');
+          expect(stored).assertEqual(before);
+          expect(deletes).assertEqual(0);
         } finally {
           LastViewSnapshot.reset();
         }
@@ -2155,6 +2254,8 @@ export default function sessionOnErrorTests(): void {
         monitor3.startView('home', 'home');
         const released: string = core2.featureContext['session.id'] as string;
         monitor3.addError('boom', RumErrorSource.SOURCE);
+        const faultAtMs: number = Date.now();
+        waitPast(faultAtMs); // the session ends after the fault
         monitor3.stopSession();
         LastViewSnapshot.flush();
         const snapshot: string = scope2.lastView;
@@ -2166,7 +2267,7 @@ export default function sessionOnErrorTests(): void {
         core2.rumScope = next2;
         feature2.onInitialize();
         feature2.onReceive({ 'type': 'crash_report', 'message': 'NativeCrash', 'stack': '#00 pc', 'process_id': process.pid, 'crash_kind': 'crash',
-          'timestamp_ms': Date.now() } as Record<string, Object>);
+          'timestamp_ms': faultAtMs } as Record<string, Object>);
         expect(next2.ofType('error').length).assertEqual(1);
         expect(sessionOf(next2.ofType('error')[0])['id']).assertEqual(released);
       });
@@ -2302,8 +2403,9 @@ export default function sessionOnErrorTests(): void {
       TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
         // A file in the earlier format (the bare view) cannot say which process wrote it.
         let stored: string = JSON.stringify({ 'type': 'view', 'session': { 'id': 's-1' } } as Record<string, Object>);
-        LastViewSnapshot.configure((serialized: string): void => {
+        LastViewSnapshot.configure((serialized: string): boolean => {
           stored = serialized;
+          return true;
         }, (): string => stored, (): void => {
           stored = '';
         });
@@ -2416,6 +2518,66 @@ export default function sessionOnErrorTests(): void {
         expect(kept.ofType('view').length >= 1).assertTrue();
         expect(kept.ofType('action').length).assertEqual(1);
         expect(core2.crashScope.controls[0]['suppressed'] === true).assertFalse();
+      });
+
+    it('typesAnUncaughtErrorByItsExceptionName',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        // The one error the scenario writes, with the crash feature answering in `policy` ('' = no crash feature).
+        const reported = (policy: string, fire: () => void): Record<string, Object> => {
+          const core: FakeCore = new FakeCore();
+          if (policy.length > 0) {
+            core.crashScope = new FakeCrashScope(core);
+            core.crashScope.policy = policy;
+          }
+          const scope: CapturingScope = new CapturingScope();
+          const monitor: DefaultRumMonitor = featureWith(core, scope, 100, false);
+          monitor.startView('home', 'home');
+          fire();
+          const errors: Array<Record<string, Object>> = scope.ofType('error');
+          expect(errors.length).assertEqual(1);
+          return errors[0];
+        };
+        const typeOf = (policy: string, fire: () => void): Object | undefined =>
+          (reported(policy, fire)['error'] as Record<string, Object>)['type'];
+        const typeError = (): void =>
+          fireUnhandledException('Error name:TypeError\nError message:x is undefined\nStacktrace:\nat a (b.ets:1:1)');
+        // Every live path: RUM's own crash report, the crash feature's live crash, the plain error.
+        expect(typeOf('', typeError)).assertEqual('TypeError');
+        expect(typeOf('report_and_continue', typeError)).assertEqual('TypeError');
+        expect(typeOf('observe_only', typeError)).assertEqual('TypeError');
+        expect(typeOf('observe_only', (): void => fireException(new RangeError('out of range'))))
+          .assertEqual('RangeError');
+        expect(typeOf('', (): void => fireUnhandledRejection(new SyntaxError('bad json')))).assertEqual('SyntaxError');
+        // The type is the error's, not a custom attribute.
+        const event: Record<string, Object> = reported('', typeError);
+        expect((event['context'] as Record<string, Object>)['error.type']).assertUndefined();
+        // Negative control: a rejection with a reason that is not an Error has no type, as in the browser SDK.
+        expect(typeOf('', (): void => fireUnhandledRejection('plain refusal'))).assertUndefined();
+      });
+
+    it('typesAReportedCrashWithTheTypeTheCrashFeatureGaveIt',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        const typeOf = (crash: Record<string, Object>): Object | undefined => {
+          const core: FakeCore = new FakeCore();
+          const scope: CapturingScope = new CapturingScope();
+          core.rumScope = scope;
+          const configuration: RumConfiguration = new RumConfigurationBuilder('app-1').setSessionSampleRate(100).build();
+          const feature: RumFeature = new RumFeature(core, configuration);
+          feature.onInitialize();
+          const monitor: DefaultRumMonitor = new DefaultRumMonitor(core, scope, configuration);
+          monitor.stopKeepAlive();
+          feature.attachMonitor(monitor);
+          monitor.startView('home', 'home');
+          feature.onReceive(crash);
+          const errors: Array<Record<string, Object>> = scope.ofType('error');
+          expect(errors.length).assertEqual(1);
+          return (errors[0]['error'] as Record<string, Object>)['type'];
+        };
+        expect(typeOf({ 'type': 'crash_report', 'message': 'SIGSEGV(SEGV_MAPERR)', 'error_type': 'SIGSEGV',
+          'stack': '#00 pc', 'crash_kind': 'crash' } as Record<string, Object>)).assertEqual('SIGSEGV');
+        // Negative control: a report without a type (an older crash module) leaves the type unset.
+        expect(typeOf({ 'type': 'crash_report', 'message': 'NativeCrash', 'stack': '#00 pc',
+          'crash_kind': 'crash' } as Record<string, Object>)).assertUndefined();
       });
 
     it('anUncaughtExceptionWithoutTheCrashFeatureReleasesAtOnce',
@@ -2929,9 +3091,10 @@ export default function sessionOnErrorTests(): void {
       TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
         let writes: number = 0;
         let stored: string = '';
-        LastViewSnapshot.configure((serialized: string): void => {
+        LastViewSnapshot.configure((serialized: string): boolean => {
           writes += 1;
           stored = serialized;
+          return true;
         }, (): string => stored, (): void => {
           stored = '';
         });
@@ -2954,8 +3117,9 @@ export default function sessionOnErrorTests(): void {
     it('throwingASessionAwayCancelsItsPendingSnapshot',
       TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
         let writes: number = 0;
-        LastViewSnapshot.configure((_serialized: string): void => {
+        LastViewSnapshot.configure((_serialized: string): boolean => {
           writes += 1;
+          return true;
         }, (): string => '', (): void => {});
         try {
           LastViewSnapshot.record({ 'type': 'view', 'session': { 'id': 's-gone' } } as Record<string, Object>);
@@ -2980,10 +3144,15 @@ export default function sessionOnErrorTests(): void {
         const feature: RumFeature = new RumFeature(core, new RumConfigurationBuilder('app-1').build());
         feature.onInitialize();
         feature.attachMonitor(monitor);
-        scope.lastView = '';
-        monitor.startView('home', 'home'); // queued, not yet written
+        monitor.startView('home', 'home'); // a session's first view is on file at once
+        monitor.addAction(RumActionType.TAP, 'tap'); // this update is queued, not yet written
         feature.onReceive({ 'type': 'consent_revoked' } as Record<string, Object>);
+        scope.lastView = ''; // what the core's revocation deletes
         LastViewSnapshot.flush(); // a later flush point must find nothing to write
+        expect(scope.lastView).assertEqual('');
+        // Nor does a session that ends under the refused consent write its record.
+        core.consent = TrackingConsent.NOT_GRANTED;
+        monitor.stopSession();
         expect(scope.lastView).assertEqual('');
       });
 
@@ -3002,6 +3171,115 @@ export default function sessionOnErrorTests(): void {
         feature.onReceive({ 'type': 'keep_alive' } as Record<string, Object>);
         expect(scope.lastView.length > 0).assertTrue();
       });
+  });
+  describe('rum-main-thread-jank', (): void => {
+    const jank = (extra: Record<string, Object> = {}): Record<string, Object> => {
+      const event: Record<string, Object> = {
+        'type': 'crash_report', 'message': 'Main thread jank', 'stack': '#0 pc 00000000000160ec libuv.so (uv_run+180)',
+        'source': 'source', 'is_crash': false, 'crash_kind': 'jank', 'source_type': 'harmony',
+        'binary_images': [], 'arch': '', 'build_id': '', 'jank.duration_ms': 1001, 'jank.sampled_at': 1793317690154
+      };
+      for (const k of Object.keys(extra)) {
+        event[k] = extra[k];
+      }
+      return event;
+    };
+
+    it('aJankIsAHandledErrorOfTheCurrentView', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+      const core: FakeCore = new FakeCore();
+      const scope: CapturingScope = new CapturingScope();
+      const configuration: RumConfiguration = new RumConfigurationBuilder('app-1').setSessionSampleRate(100).build();
+      core.rumScope = scope;
+      const feature: RumFeature = new RumFeature(core, configuration);
+      feature.onInitialize();
+      const monitor: DefaultRumMonitor = new DefaultRumMonitor(core, scope, configuration);
+      monitor.stopKeepAlive();
+      feature.attachMonitor(monitor);
+      monitor.startView('home', 'home');
+      const sessionId: string = core.featureContext['session.id'] as string;
+      const viewId: string = core.featureContext['view.id'] as string;
+
+      feature.onReceive(jank());
+
+      const errors: Array<Record<string, Object>> = scope.ofType('error');
+      expect(errors.length).assertEqual(1);
+      const error: Record<string, Object> = errors[0]['error'] as Record<string, Object>;
+      expect(error['is_crash']).assertEqual(false);
+      expect(error['handling']).assertEqual('handled');
+      expect(error['category']).assertEqual('Jank');
+      expect(error['type']).assertEqual('MAIN_THREAD_JANK');
+      expect(error['source']).assertEqual('source');
+      expect(error['source_type']).assertEqual('harmony');
+      expect(error['message']).assertEqual('Main thread jank');
+      expect(error['stack']).assertEqual('#0 pc 00000000000160ec libuv.so (uv_run+180)');
+      expect(sessionOf(errors[0])['id']).assertEqual(sessionId);
+      expect((errors[0]['view'] as Record<string, Object>)['id']).assertEqual(viewId);
+      const context: Record<string, Object> = errors[0]['context'] as Record<string, Object>;
+      expect(context['jank.duration_ms']).assertEqual(1001);
+      expect(context['jank.sampled_at']).assertEqual(1793317690154);
+      expect(context['error.type'] === undefined).assertTrue();
+      // Counted as an error of the view, never as a crash.
+      const views: Array<Record<string, Object>> = scope.ofType('view');
+      const last: Record<string, Object> = views[views.length - 1]['view'] as Record<string, Object>;
+      expect((last['error'] as Record<string, Object>)['count']).assertEqual(1);
+      expect((last['crash'] as Record<string, Object>)['count']).assertEqual(0);
+      // Negative control: a native crash on the same path has no error.type.
+      feature.onReceive({ 'type': 'crash_report', 'message': 'NativeCrash', 'stack': '#00 pc', 'crash_kind': 'crash',
+        'timestamp_ms': Date.now() - 1000 } as Record<string, Object>);
+      const crash: Record<string, Object> = scope.ofType('error')[1]['error'] as Record<string, Object>;
+      expect(crash['type'] === undefined).assertTrue();
+      expect(crash['is_crash']).assertEqual(true);
+    });
+
+    it('aJankIsNeverWrittenIntoAnotherSession', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+      // A previous launch left a last-view snapshot; a replay would land there.
+      const core: FakeCore = new FakeCore();
+      const scope: CapturingScope = new CapturingScope();
+      const monitor: DefaultRumMonitor = featureWith(core, scope, 100, false);
+      monitor.startView('home', 'home');
+      const previous: string = core.featureContext['session.id'] as string;
+      monitor.stopSession();
+      LastViewSnapshot.flush();
+      expect(scope.lastView.length > 0).assertTrue();
+
+      const next: CapturingScope = new CapturingScope();
+      next.lastView = scope.lastView;
+      core.rumScope = next;
+      const configuration: RumConfiguration = new RumConfigurationBuilder('app-1').setSessionSampleRate(100).build();
+      const feature: RumFeature = new RumFeature(core, configuration);
+      feature.onInitialize();
+      const monitor2: DefaultRumMonitor = new DefaultRumMonitor(core, next, configuration);
+      monitor2.stopKeepAlive();
+      feature.attachMonitor(monitor2);
+      monitor2.startView('feed', 'feed');
+      const current: string = core.featureContext['session.id'] as string;
+      expect(current === previous).assertFalse();
+
+      const event: Record<string, Object> = jank({ 'original_session_id': previous, 'timestamp_ms': Date.now() - 1000 });
+      feature.onReceive(event);
+
+      const errors: Array<Record<string, Object>> = next.ofType('error');
+      expect(errors.length).assertEqual(1);
+      expect(sessionOf(errors[0])['id']).assertEqual(current);
+      expect(((errors[0]['view'] as Record<string, Object>)['name'])).assertEqual('feed');
+      expect((errors[0]['error'] as Record<string, Object>)['is_crash']).assertEqual(false);
+      // Negative control: a crash carrying the same ids is replayed into the old session.
+      feature.onReceive({ 'type': 'crash_report', 'message': 'NativeCrash', 'stack': '#00 pc', 'crash_kind': 'crash',
+        'original_session_id': previous, 'timestamp_ms': Date.now() - 1000 } as Record<string, Object>);
+      const replayed: Array<Record<string, Object>> = next.ofType('error');
+      expect(sessionOf(replayed[replayed.length - 1])['id']).assertEqual(previous);
+    });
+
+    it('aJankWithoutAMonitorIsDropped', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+      const core: FakeCore = new FakeCore();
+      const scope: CapturingScope = new CapturingScope();
+      core.rumScope = scope;
+      const feature: RumFeature = new RumFeature(core,
+        new RumConfigurationBuilder('app-1').setSessionSampleRate(100).build());
+      feature.onInitialize();
+      feature.onReceive(jank());
+      expect(scope.ofType('error').length).assertEqual(0);
+    });
   });
 
   describe('rum-crash-before-first-view', (): void => {
@@ -3199,6 +3477,515 @@ export default function sessionOnErrorTests(): void {
         fireUnhandledException(CRASH_TEXT);
         expect(scope.ofType('view').length).assertEqual(0);
         expect((core.featureContext['view.id'] ?? '') as string).assertEqual('');
+      });
+  });
+  describe('rum-crash-session-record', (): void => {
+    it('aNativeCrashAfterARenewalBeforeTheFirstViewIsTheNewSessions',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        // Session A had a view; it ended and B started with no view yet. The fault is B's.
+        const core: FakeCore = new FakeCore();
+        const scope: CapturingScope = new CapturingScope();
+        const monitor: DefaultRumMonitor = featureWith(core, scope, 100, false);
+        monitor.startView('home', 'home');
+        const a: string = core.featureContext['session.id'] as string;
+        monitor.stopSession();
+        launchVital(monitor);
+        const b: string = core.featureContext['session.id'] as string;
+        expect(b === a).assertFalse();
+        const next: CapturingScope = nextLaunch(core, scope.lastView, 100, false, nativeCrash(Date.now()));
+        const errors: Array<Record<string, Object>> = next.ofType('error');
+        expect(errors.length).assertEqual(1);
+        expect(sessionOf(errors[0])['id']).assertEqual(b);
+        expect(viewNameOf(errors[0])).assertEqual('ApplicationLaunch');
+        const views: Array<Record<string, Object>> = next.ofType('view');
+        expect(views.length).assertEqual(1);
+        expect(sessionOf(views[0])['id']).assertEqual(b);
+        expect(crashCountOf(views[0])).assertEqual(1);
+        for (const e of next.written) {
+          expect(sessionOf(e)['id'] === a).assertFalse();
+        }
+        // Negative control: once B has a view, the fault joins that view.
+        const core2: FakeCore = new FakeCore();
+        const scope2: CapturingScope = new CapturingScope();
+        const monitor2: DefaultRumMonitor = featureWith(core2, scope2, 100, false);
+        monitor2.startView('home', 'home');
+        monitor2.stopSession();
+        launchVital(monitor2);
+        const b2: string = core2.featureContext['session.id'] as string;
+        monitor2.startView('cart', 'cart');
+        const joined: CapturingScope = nextLaunch(core2, scope2.lastView, 100, false, nativeCrash(Date.now()));
+        expect(sessionOf(joined.ofType('error')[0])['id']).assertEqual(b2);
+        expect(viewNameOf(joined.ofType('error')[0])).assertEqual('cart');
+      });
+
+    it('aRenewedSessionsFirstViewIsOnFileAtOnce',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        // The view a renewed session restarts is the one a fault right after it belongs to:
+        // it is on file without the snapshot's write delay.
+        const core: FakeCore = new FakeCore();
+        const scope: CapturingScope = new CapturingScope();
+        const monitor: DefaultRumMonitor = featureWith(core, scope, 100, false);
+        monitor.startView('home', 'home');
+        monitor.stopSession();
+        monitor.addAction(RumActionType.TAP, 'tap'); // a new session, restarting 'home'
+        const b: string = core.featureContext['session.id'] as string;
+        const onFile: Record<string, Object> = (JSON.parse(scope.lastView) as Record<string, Object>)['view'] as Record<string, Object>;
+        expect(sessionOf(onFile)['id']).assertEqual(b);
+        // Negative control: a later update of that view waits for the write delay.
+        const before: string = scope.lastView;
+        monitor.addAction(RumActionType.TAP, 'again');
+        expect(scope.lastView).assertEqual(before);
+        LastViewSnapshot.flush();
+        expect(scope.lastView === before).assertFalse();
+      });
+
+    it('aSampledSessionWithoutAViewKeepsItsCrashWithoutANewDraw',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        // Run 1 is collected (rate 100) and has no view yet. Run 2 would draw nothing (rate 0):
+        // the crash still lands in run 1's session, drawn as that session was.
+        const core: FakeCore = new FakeCore();
+        const scope: CapturingScope = new CapturingScope();
+        const monitor: DefaultRumMonitor = featureWith(core, scope, 100, false);
+        launchVital(monitor);
+        const crashed: string = core.featureContext['session.id'] as string;
+        const crashedAtMs: number = Date.now();
+        const next: CapturingScope = nextLaunch(core, scope.lastView, 0, false, nativeCrash(crashedAtMs));
+        const errors: Array<Record<string, Object>> = next.ofType('error');
+        expect(errors.length).assertEqual(1);
+        expect(sessionOf(errors[0])['id']).assertEqual(crashed);
+        expect(errors[0]['date']).assertEqual(crashedAtMs);
+        const view: Record<string, Object> = next.ofType('view')[0];
+        expect(viewNameOf(view)).assertEqual('ApplicationLaunch');
+        expect(sessionOf(view)['id']).assertEqual(crashed);
+        expect(sampleRateOf(view)).assertEqual(100);
+        expect(sessionOf(view)['sampled_for_error'] === undefined).assertTrue();
+        expect((errors[0]['view'] as Record<string, Object>)['id']).assertEqual((view['view'] as Record<string, Object>)['id']);
+        // A retry rewrites the same documents.
+        const retried: CapturingScope = nextLaunch(core, scope.lastView, 0, false, nativeCrash(crashedAtMs));
+        expect((retried.ofType('view')[0]['view'] as Record<string, Object>)['id'])
+          .assertEqual((view['view'] as Record<string, Object>)['id']);
+        // Negative control: a fault of another process has no session on file; drawn again at
+        // rate 0, it is not reported.
+        const other: CapturingScope = nextLaunch(core, scope.lastView, 0, false, nativeCrash(crashedAtMs, process.pid + 1));
+        expect(other.written.length).assertEqual(0);
+      });
+
+    it('aCrashOfASessionKeptOnErrorWithoutAViewKeepsItsMarkers',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        const core: FakeCore = new FakeCore();
+        const scope: CapturingScope = new CapturingScope();
+        const monitor: DefaultRumMonitor = featureWith(core, scope, 0, true);
+        launchVital(monitor);
+        const crashed: string = core.featureContext['session.id'] as string;
+        const next: CapturingScope = nextLaunch(core, scope.lastView, 100, false, nativeCrash(Date.now()));
+        const view: Record<string, Object> = next.ofType('view')[0];
+        expect(sessionOf(view)['id']).assertEqual(crashed);
+        expect(sessionOf(view)['sampled_for_error']).assertEqual(true);
+        expect(sampleRateOf(view)).assertEqual(0);
+        // Negative control: a session drawn by the rate carries no on-error marker.
+        const core2: FakeCore = new FakeCore();
+        const scope2: CapturingScope = new CapturingScope();
+        launchVital(featureWith(core2, scope2, 100, true));
+        const drawn: CapturingScope = nextLaunch(core2, scope2.lastView, 0, true, nativeCrash(Date.now()));
+        expect(sessionOf(drawn.ofType('view')[0])['sampled_for_error'] === undefined).assertTrue();
+      });
+
+    it('aBackgroundCrashOfASessionWithoutAViewIsInItsBackgroundView',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        const core: FakeCore = new FakeCore();
+        const scope: CapturingScope = new CapturingScope();
+        launchVital(featureWith(core, scope, 100, false));
+        const crashed: string = core.featureContext['session.id'] as string;
+        const background: CapturingScope = nextLaunch(core, scope.lastView, 100, false,
+          nativeCrash(Date.now(), process.pid, { 'in_background': true }));
+        const error: Record<string, Object> = background.ofType('error')[0];
+        expect(sessionOf(error)['id']).assertEqual(crashed);
+        expect(viewNameOf(error)).assertEqual('Background');
+        const view: Record<string, Object> = background.ofType('view')[0];
+        expect(viewNameOf(view)).assertEqual('Background');
+        expect((view['view'] as Record<string, Object>)['url']).assertEqual('Background');
+        // Negative control: in the foreground, the ApplicationLaunch view.
+        const foreground: CapturingScope = nextLaunch(core, scope.lastView, 100, false, nativeCrash(Date.now()));
+        expect(viewNameOf(foreground.ofType('error')[0])).assertEqual('ApplicationLaunch');
+      });
+
+    it('aCrashOfAnUnsampledSessionIsNotReported',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        // Missed by the rate, no switch: nothing of the session is collected, its crash neither.
+        // The next launch would collect everything — the crash is not drawn again.
+        for (const kind of ['crash', 'freeze']) {
+          const core: FakeCore = new FakeCore();
+          const scope: CapturingScope = new CapturingScope();
+          const monitor: DefaultRumMonitor = featureWith(core, scope, 0, false);
+          monitor.startView('home', 'home');
+          const crash: Record<string, Object> = nativeCrash(Date.now());
+          crash['crash_kind'] = kind;
+          const next: CapturingScope = nextLaunch(core, scope.lastView, 100, false, crash);
+          expect(next.written.length).assertEqual(0);
+          expect(crash['delivered']).assertEqual(true); // handled: not retried
+        }
+        // Negative control: the same session collected reports it.
+        const core2: FakeCore = new FakeCore();
+        const scope2: CapturingScope = new CapturingScope();
+        featureWith(core2, scope2, 100, false).startView('home', 'home');
+        expect(nextLaunch(core2, scope2.lastView, 100, false, nativeCrash(Date.now())).ofType('error').length)
+          .assertEqual(1);
+      });
+
+    it('aCrashOfAnUnsampledSessionAfterASampledOneStaysOffTheSampledOne',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        // A collected session A, then an unsampled B in the same process. The view on file was
+        // A's; the fault is B's, which is not collected.
+        const run = (rates: number[]): CapturingScope => {
+          let draws: number = 0;
+          const core: FakeCore = new FakeCore();
+          const scope: CapturingScope = new CapturingScope();
+          core.rumScope = scope;
+          scope.core = core;
+          const configuration: RumConfiguration = new RumConfigurationBuilder('app-1').setSessionSampleRate(100)
+            .setBeforeSampling((_context: BeforeSamplingContext): number | undefined => rates[draws++]).build();
+          const feature: RumFeature = new RumFeature(core, configuration);
+          feature.onInitialize();
+          const monitor: DefaultRumMonitor = new DefaultRumMonitor(core, scope, configuration);
+          monitor.stopKeepAlive();
+          feature.attachMonitor(monitor);
+          monitor.startView('home', 'home');
+          monitor.stopSession();
+          monitor.startView('cart', 'cart');
+          return nextLaunch(core, scope.lastView, 100, false, nativeCrash(Date.now()));
+        };
+        expect(run([100, 0]).written.length).assertEqual(0);
+        // Negative control: B collected, the fault lands in B's view.
+        const sampled: CapturingScope = run([100, 100]);
+        expect(viewNameOf(sampled.ofType('error')[0])).assertEqual('cart');
+      });
+
+    it('aSessionKeptOnErrorKeepsANativeCrashWhileAThrownAwayOneDoesNot',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        // Kept on error (rate 0 + switch), the session's native crash is its error: reported in it.
+        const core: FakeCore = new FakeCore();
+        const scope: CapturingScope = new CapturingScope();
+        const monitor: DefaultRumMonitor = featureWith(core, scope, 0, true);
+        monitor.startView('home', 'home');
+        const kept: string = core.featureContext['session.id'] as string;
+        const crashedAtMs: number = Date.now();
+        const next: CapturingScope = nextLaunch(core, scope.lastView, 0, true, nativeCrash(crashedAtMs));
+        expect(sessionOf(next.ofType('error')[0])['id']).assertEqual(kept);
+        expect(sessionOf(next.ofType('view')[0])['sampled_for_error']).assertEqual(true);
+        // Thrown away without an error: nothing of it is collected, and a fault recorded in it
+        // (dated before it ended) is not reported, nor drawn again.
+        const core2: FakeCore = new FakeCore();
+        const scope2: CapturingScope = new CapturingScope();
+        const monitor2: DefaultRumMonitor = featureWith(core2, scope2, 0, true);
+        monitor2.startView('home', 'home');
+        const faultAtMs: number = Date.now();
+        waitPast(faultAtMs);
+        monitor2.stopSession();
+        const dropped: Record<string, Object> = nativeCrash(faultAtMs);
+        const after: CapturingScope = nextLaunch(core2, scope2.lastView, 0, true, dropped);
+        expect(after.written.length).assertEqual(0);
+        expect(dropped['delivered']).assertEqual(true);
+      });
+
+    it('aFaultAfterTheRecordedSessionEndedIsReportedInASessionOfItsOwn',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        const core: FakeCore = new FakeCore();
+        const scope: CapturingScope = new CapturingScope();
+        const monitor: DefaultRumMonitor = featureWith(core, scope, 100, false);
+        monitor.startView('home', 'home');
+        const ended: string = core.featureContext['session.id'] as string;
+        const insideMs: number = Date.now();
+        waitPast(insideMs);
+        monitor.stopSession();
+        const afterMs: number = Date.now() + 1;
+        const own: CapturingScope = nextLaunch(core, scope.lastView, 100, false, nativeCrash(afterMs));
+        const error: Record<string, Object> = own.ofType('error')[0];
+        expect(sessionOf(error)['id'] === ended).assertFalse();
+        expect(viewNameOf(error)).assertEqual('ApplicationLaunch');
+        // Negative control: a fault dated inside the session joins its last view.
+        const inside: CapturingScope = nextLaunch(core, scope.lastView, 100, false, nativeCrash(insideMs));
+        expect(sessionOf(inside.ofType('error')[0])['id']).assertEqual(ended);
+        expect(viewNameOf(inside.ofType('error')[0])).assertEqual('home');
+      });
+
+    it('aFaultLongAfterTheLastWriteIsNotTheIdleSessionsOwn',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        // The session went idle and expired without its process noticing: a file 20 minutes
+        // old describes a session that no longer runs.
+        const core: FakeCore = new FakeCore();
+        const scope: CapturingScope = new CapturingScope();
+        featureWith(core, scope, 100, false).startView('home', 'home');
+        const idle: string = core.featureContext['session.id'] as string;
+        const stale: CapturingScope = nextLaunch(core, writtenAgo(scope.lastView, MIN_15 + 5 * 60 * 1000), 100, false,
+          nativeCrash(Date.now()));
+        expect(sessionOf(stale.ofType('error')[0])['id'] === idle).assertFalse();
+        // Negative control: written five minutes before the fault, the session is still the one.
+        const fresh: CapturingScope = nextLaunch(core, writtenAgo(scope.lastView, 5 * 60 * 1000), 100, false,
+          nativeCrash(Date.now()));
+        expect(sessionOf(fresh.ofType('error')[0])['id']).assertEqual(idle);
+      });
+
+    it('anUnsampledSessionsCrashIsDroppedHoweverOldItsRecord',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        // Not collected, the session writes its record only when it starts: hours later its
+        // crash is still its own, and still not reported — never drawn again.
+        for (const agoMs of [60 * 60 * 1000, 5 * 60 * 60 * 1000]) {
+          const core: FakeCore = new FakeCore();
+          const scope: CapturingScope = new CapturingScope();
+          featureWith(core, scope, 0, false).startView('home', 'home');
+          const crash: Record<string, Object> = nativeCrash(Date.now());
+          const next: CapturingScope = nextLaunch(core, writtenAgo(scope.lastView, agoMs), 100, false, crash);
+          expect(next.written.length).assertEqual(0);
+          expect(crash['delivered']).assertEqual(true);
+        }
+        // Negative control: a collected session without a view, past its lifetime, is no
+        // session's any more — the crash goes to a session of its own, drawn at rate 100.
+        const core2: FakeCore = new FakeCore();
+        const scope2: CapturingScope = new CapturingScope();
+        launchVital(featureWith(core2, scope2, 100, false));
+        const old: string = core2.featureContext['session.id'] as string;
+        const expired: CapturingScope = nextLaunch(core2, writtenAgo(scope2.lastView, 5 * 60 * 60 * 1000), 100, false,
+          nativeCrash(Date.now()));
+        expect(expired.ofType('error').length).assertEqual(1);
+        expect(sessionOf(expired.ofType('error')[0])['id'] === old).assertFalse();
+      });
+
+    it('aFileOfTheEarlierFormatIsStillUsed',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        // A crash pending at the upgrade: the file holds the process and its last view only.
+        const core: FakeCore = new FakeCore();
+        const scope: CapturingScope = new CapturingScope();
+        featureWith(core, scope, 100, false).startView('home', 'home');
+        const crashed: string = core.featureContext['session.id'] as string;
+        const file: Record<string, Object> = JSON.parse(scope.lastView) as Record<string, Object>;
+        const earlier: string = JSON.stringify({ 'pid': file['pid'], 'view': file['view'] } as Record<string, Object>);
+        const next: CapturingScope = nextLaunch(core, earlier, 100, false, nativeCrash(Date.now()));
+        expect(sessionOf(next.ofType('error')[0])['id']).assertEqual(crashed);
+        expect(viewNameOf(next.ofType('error')[0])).assertEqual('home');
+        // Negative control: another process's fault is not attributed to it.
+        const other: CapturingScope = nextLaunch(core, earlier, 100, false, nativeCrash(Date.now(), process.pid + 1));
+        expect(sessionOf(other.ofType('error')[0])['id'] === crashed).assertFalse();
+      });
+
+    it('aSessionRecordARefusedConsentKeptOffTheFileGoesOnItWhenGranted',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        const core: FakeCore = new FakeCore();
+        const scope: CapturingScope = new CapturingScope();
+        core.consent = TrackingConsent.NOT_GRANTED;
+        const monitor: DefaultRumMonitor = featureWith(core, scope, 100, false);
+        launchVital(monitor);
+        expect(scope.lastView).assertEqual(''); // refused: nothing on file
+        core.consent = TrackingConsent.GRANTED;
+        LastViewSnapshot.consentGranted();
+        const granted: Record<string, Object> = (JSON.parse(scope.lastView) as Record<string, Object>)['session'] as Record<string, Object>;
+        expect(granted['id']).assertEqual(core.featureContext['session.id'] as string);
+        // Negative control: a grant with nothing kept off the file writes nothing.
+        scope.lastView = '';
+        LastViewSnapshot.consentGranted();
+        expect(scope.lastView).assertEqual('');
+      });
+
+    it('anExpiredSessionEndsAtItsInactivityLimitNotWhenTheExpiryIsNoticed',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        let stored: string = '';
+        LastViewSnapshot.configure((serialized: string): boolean => {
+          stored = serialized;
+          return true;
+        }, (): string => stored, (): void => {
+          stored = '';
+        });
+        const endedAt = (): number => ((LastViewSnapshot.read() as LastView).session as SessionRecord).endedAtMs;
+        try {
+          // Idle since its start and stopped 45 minutes later: it had ended 15 minutes in.
+          const idle: RumApplicationScope = new RumApplicationScope(new CapturingScope(), new FakeCore(), 'app-1', 100);
+          const t0: number = Date.now();
+          startView(idle, t0);
+          idle.stopCurrentSession(t0 + 3 * MIN_15);
+          const idleEnd: number = endedAt();
+          expect(idleEnd >= t0 + MIN_15 && idleEnd < t0 + MIN_15 + 1000).assertTrue();
+          // Negative control: stopped while running, it ends when it is stopped.
+          const live: RumApplicationScope = new RumApplicationScope(new CapturingScope(), new FakeCore(), 'app-1', 100);
+          const t1: number = Date.now();
+          startView(live, t1);
+          live.stopCurrentSession(t1 + 60 * 1000);
+          expect(endedAt()).assertEqual(t1 + 60 * 1000);
+        } finally {
+          LastViewSnapshot.reset();
+        }
+      });
+
+    it('aCorruptSessionRecordIsNotUsed',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        let stored: string = JSON.stringify({ 'pid': 1, 'session': { 'id': 's-1' } } as Record<string, Object>);
+        LastViewSnapshot.configure((serialized: string): boolean => {
+          stored = serialized;
+          return true;
+        }, (): string => stored, (): void => {
+          stored = '';
+        });
+        try {
+          expect(LastViewSnapshot.read() === null).assertTrue(); // no `sampled`: neither session nor view
+          stored = '{"pid":1,"session":{"id":"s-1","sampl'; // a truncated file
+          expect(LastViewSnapshot.read() === null).assertTrue();
+          // Negative control: with `sampled` the record reads back.
+          stored = JSON.stringify({ 'pid': 1, 'session': { 'id': 's-1', 'sampled': false } } as Record<string, Object>);
+          const read: LastView = LastViewSnapshot.read() as LastView;
+          expect((read.session as SessionRecord).sampled).assertFalse();
+          expect(read.view === null).assertTrue();
+        } finally {
+          LastViewSnapshot.reset();
+        }
+      });
+
+    it('aRevokeThenGrantPutsTheSessionRecordBackOnFile',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        // The session was on file; revoking consent deletes the file; granting it again
+        // must put the running session back, or a crash before its next view is drawn again.
+        const run = (grant: boolean): CapturingScope => {
+          const core: FakeCore = new FakeCore();
+          const scope: CapturingScope = new CapturingScope();
+          const monitor: DefaultRumMonitor = crashFeature(core, scope, 100, false);
+          const feature: RumFeature = (core.crashScope as FakeCrashScope).rum as RumFeature;
+          launchVital(monitor);
+          expect(scope.lastView.length > 0).assertTrue(); // the prior file
+          core.consent = TrackingConsent.NOT_GRANTED;
+          feature.onReceive({ 'type': 'consent_revoked' } as Record<string, Object>);
+          scope.lastView = ''; // what the core's revocation deletes
+          if (grant) {
+            core.consent = TrackingConsent.GRANTED;
+            feature.onReceive({ 'type': 'consent_granted' } as Record<string, Object>);
+          }
+          const crashed: string = core.featureContext['session.id'] as string;
+          const next: CapturingScope = nextLaunch(core, scope.lastView, 0, false, nativeCrash(Date.now()));
+          if (grant) {
+            expect(sessionOf(next.ofType('error')[0])['id']).assertEqual(crashed);
+          }
+          return next;
+        };
+        expect(run(true).ofType('error').length).assertEqual(1);
+        // Negative control: still refused, nothing is on file — a session of its own, drawn
+        // at rate 0: not reported.
+        expect(run(false).written.length).assertEqual(0);
+      });
+
+    it('aRefusedSnapshotWriteIsRetriedAtTheBatchedCadence',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        const core: FakeCore = new FakeCore();
+        const scope: CapturingScope = new CapturingScope();
+        const monitor: DefaultRumMonitor = featureWith(core, scope, 100, false);
+        monitor.startView('home', 'home');
+        const actionsOnFile = (): number => {
+          const file: Record<string, Object> = JSON.parse(scope.lastView) as Record<string, Object>;
+          const body: Record<string, Object> = (file['view'] as Record<string, Object>)['view'] as Record<string, Object>;
+          return (body['action'] as Record<string, Object>)['count'] as number;
+        };
+        scope.refuseLastView = true; // the storage keeps failing the write (success=false)
+        monitor.addAction(RumActionType.TAP, 'one');
+        LastViewSnapshot.flush();
+        expect(actionsOnFile()).assertEqual(0); // the earlier file stays
+        const attempts: number = scope.lastViewAttempts;
+        for (let i: number = 0; i < 5; i++) {
+          monitor.addAction(RumActionType.TAP, `again-${i}`);
+        }
+        // A failing storage is not asked again on every update: once per batched write.
+        expect(scope.lastViewAttempts).assertEqual(attempts);
+        LastViewSnapshot.flush();
+        expect(scope.lastViewAttempts).assertEqual(attempts + 1);
+        // Negative control: once the storage works, that batched write puts it on disk.
+        scope.refuseLastView = false;
+        monitor.addAction(RumActionType.TAP, 'two');
+        LastViewSnapshot.flush();
+        expect(actionsOnFile()).assertEqual(7);
+      });
+
+    it('aFaultWithoutATimeIsNotTakenForTheRecordedSessions',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        // Without a time the fault cannot be told apart from an earlier process's with the
+        // same id: it goes to a session of its own, not into the recorded session.
+        const core: FakeCore = new FakeCore();
+        const scope: CapturingScope = new CapturingScope();
+        launchVital(featureWith(core, scope, 100, false));
+        const recorded: string = core.featureContext['session.id'] as string;
+        const undated: Record<string, Object> = {};
+        const dated0: Record<string, Object> = nativeCrash(Date.now());
+        for (const key of Object.keys(dated0)) {
+          if (key !== 'timestamp_ms') {
+            undated[key] = dated0[key];
+          }
+        }
+        const own: CapturingScope = nextLaunch(core, scope.lastView, 100, false, undated);
+        expect(own.ofType('error').length).assertEqual(1);
+        expect(sessionOf(own.ofType('error')[0])['id'] === recorded).assertFalse();
+        // Negative control: the same fault, dated, is the recorded session's.
+        const dated: CapturingScope = nextLaunch(core, scope.lastView, 100, false, nativeCrash(Date.now()));
+        expect(sessionOf(dated.ofType('error')[0])['id']).assertEqual(recorded);
+      });
+
+    it('aFaultOlderThanTheRecordedSessionIsAnEarlierProcesssWithTheSameId',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        // Process ids are reused: A crashed and its fault is still undelivered; B got the same
+        // id, started a session with no view and died. The file is B's; A's fault is not.
+        const core: FakeCore = new FakeCore();
+        const scope: CapturingScope = new CapturingScope();
+        launchVital(featureWith(core, scope, 100, false));
+        const b: string = core.featureContext['session.id'] as string;
+        const startedAt: number = ((JSON.parse(scope.lastView) as Record<string, Object>)['session'] as Record<string, Object>)['started_at'] as number;
+        const older: CapturingScope = nextLaunch(core, scope.lastView, 100, false, nativeCrash(startedAt - 60 * 1000));
+        expect(older.ofType('error').length).assertEqual(1);
+        expect(sessionOf(older.ofType('error')[0])['id'] === b).assertFalse();
+        // Negative control: a fault after B's session started is B's.
+        const own: CapturingScope = nextLaunch(core, scope.lastView, 100, false, nativeCrash(startedAt + 1000));
+        expect(sessionOf(own.ofType('error')[0])['id']).assertEqual(b);
+      });
+
+    it('aCrashWhoseViewWriteFailsIsNotReportedASecondTime',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        // The error lands in the session's view, its crash-counting view document does not:
+        // the fault stays attributed, it is not also reported in a session of its own.
+        const core: FakeCore = new FakeCore();
+        const scope: CapturingScope = new CapturingScope();
+        featureWith(core, scope, 100, false).startView('home', 'home');
+        const crashed: string = core.featureContext['session.id'] as string;
+        const next: CapturingScope = new CapturingScope();
+        next.lastView = scope.lastView;
+        next.core = core;
+        // Only the document that counts the crash on the snapshot's view is refused.
+        next.refuseViewId = (((JSON.parse(scope.lastView) as Record<string, Object>)['view'] as Record<string, Object>)['view'] as
+          Record<string, Object>)['id'] as string;
+        core.rumScope = next;
+        const feature: RumFeature = new RumFeature(core, new RumConfigurationBuilder('app-1').build());
+        feature.onInitialize();
+        const live: DefaultRumMonitor = new DefaultRumMonitor(core, next, new RumConfigurationBuilder('app-1').build());
+        live.stopKeepAlive();
+        feature.attachMonitor(live);
+        const crash: Record<string, Object> = nativeCrash(Date.now());
+        feature.onReceive(crash);
+        const errors: Array<Record<string, Object>> = next.ofType('error');
+        expect(errors.length).assertEqual(1);
+        expect(sessionOf(errors[0])['id']).assertEqual(crashed);
+        expect(next.ofType('view').length).assertEqual(0); // no view of a session of its own either
+        expect(crash['delivered'] === true).assertFalse();
+        // Negative control: when both land, one error and its view document.
+        const whole: CapturingScope = nextLaunch(core, scope.lastView, 100, false, nativeCrash(Date.now()));
+        expect(whole.ofType('error').length).assertEqual(1);
+        expect(whole.ofType('view').length).assertEqual(1);
+      });
+
+    it('theSessionRecordIsWrittenAtOnceWhenASessionStartsAndEnds',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        const core: FakeCore = new FakeCore();
+        const scope: CapturingScope = new CapturingScope();
+        const monitor: DefaultRumMonitor = featureWith(core, scope, 100, false);
+        expect(scope.lastView).assertEqual(''); // no session yet: nothing on file
+        launchVital(monitor);
+        const started: Record<string, Object> = (JSON.parse(scope.lastView) as Record<string, Object>)['session'] as Record<string, Object>;
+        expect(started['id']).assertEqual(core.featureContext['session.id'] as string);
+        expect(started['sampled']).assertEqual(true);
+        expect(started['ended_at']).assertEqual(0);
+        monitor.stopSession();
+        const ended: Record<string, Object> = (JSON.parse(scope.lastView) as Record<string, Object>)['session'] as Record<string, Object>;
+        expect(ended['id']).assertEqual(started['id'] as string);
+        expect((ended['ended_at'] as number) > 0).assertTrue();
       });
   });
 }

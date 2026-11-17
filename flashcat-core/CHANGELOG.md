@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.8.0
+
+- The RUM last-view file is written to a temporary file and renamed into
+  place, so a process killed during the write leaves the previous file whole
+  instead of a truncated one the next launch cannot read. Its write reports
+  failure to RUM, which retries it.
+
 ## 0.7.11
 
 - Released together with `@flashcatcloud/rum` 0.7.11, which cuts main-thread

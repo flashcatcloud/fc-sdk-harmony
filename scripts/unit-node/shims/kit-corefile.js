@@ -28,23 +28,80 @@ function flagsFor(mode) {
 }
 
 // Call counters, so tests can pin how much file-system work a path does.
-const calls = { accessSync: 0, listFileSync: 0, statSync: 0 };
+const calls = { openSync: 0, readSync: 0, accessSync: 0, listFileSync: 0, statSync: 0, readTextSync: 0, stat: 0, readText: 0 };
+
+// Kernel pseudo files (/proc/...): content on read, but a size of 0 — and the
+// device's readTextSync reads only as many bytes as the size says. Tests put
+// path -> content here. A read continues where the previous one stopped, or
+// starts at options.offset, and returns at most pseudoRead.limit bytes (0 = no
+// limit), as a short read may. As procfs does, a read from offset 0 sees the
+// file's content as it is now, not as it was when the file was opened. Every
+// /proc path is one of these, whether a test has set it or not (then it reads
+// empty): a descriptor the SDK keeps open across tests must not be the host's
+// own /proc, which exists on Linux and not on macOS.
+const pseudoFiles = new Map();
+const pseudoFds = new Map();
+const pseudoRead = { limit: 0 };
+// Far above the descriptors node hands out, and not negative: a descriptor is >= 0.
+let nextPseudoFd = 1 << 20;
 
 const fileIo = {
   OpenMode,
   calls,
+  pseudoFiles,
+  pseudoRead,
   accessSync: (p) => { calls.accessSync += 1; return nodeFs.existsSync(p); },
   mkdirSync: (p, recursive) => nodeFs.mkdirSync(p, { recursive: recursive === true }),
-  openSync: (p, mode) => ({ fd: nodeFs.openSync(p, flagsFor(mode)) }),
+  openSync: (p, mode) => {
+    calls.openSync += 1;
+    if (pseudoFiles.has(p) || p.startsWith('/proc/')) {
+      const fd = nextPseudoFd++;
+      pseudoFds.set(fd, { path: p, bytes: Buffer.from(pseudoFiles.get(p) ?? '', 'utf8'), pos: 0 });
+      return { fd };
+    }
+    return { fd: nodeFs.openSync(p, flagsFor(mode)) };
+  },
+  readSync: (fd, buf, options) => {
+    calls.readSync += 1;
+    const o = options ?? {};
+    if (pseudoFds.has(fd)) {
+      const open = pseudoFds.get(fd);
+      if (o.offset !== undefined) {
+        if (o.offset === 0) {
+          open.bytes = Buffer.from(pseudoFiles.get(open.path) ?? '', 'utf8');
+        }
+        open.pos = o.offset;
+      }
+      let n = Math.max(0, Math.min(open.bytes.length - open.pos, buf.byteLength, o.length ?? buf.byteLength));
+      if (pseudoRead.limit > 0) {
+        n = Math.min(n, pseudoRead.limit);
+      }
+      open.bytes.copy(Buffer.from(buf), 0, open.pos, open.pos + n);
+      open.pos += n;
+      return n;
+    }
+    return nodeFs.readSync(fd, new Uint8Array(buf), 0, o.length ?? buf.byteLength, o.offset ?? null);
+  },
   writeSync: (fd, content) => nodeFs.writeSync(fd, content),
   fsyncSync: (fd) => nodeFs.fsyncSync(fd),
-  closeSync: (file) => nodeFs.closeSync(typeof file === 'object' ? file.fd : file),
+  closeSync: (file) => {
+    const fd = typeof file === 'object' ? file.fd : file;
+    if (pseudoFds.delete(fd)) {
+      return;
+    }
+    nodeFs.closeSync(fd);
+  },
   renameSync: (from, to) => nodeFs.renameSync(from, to),
   unlinkSync: (p) => nodeFs.unlinkSync(p),
   listFileSync: (dir) => { calls.listFileSync += 1; return nodeFs.readdirSync(dir); },
-  readTextSync: (p) => nodeFs.readFileSync(p, 'utf8'),
+  readTextSync: (p) => { calls.readTextSync += 1; return pseudoFiles.has(p) ? '' : nodeFs.readFileSync(p, 'utf8'); },
+  readText: (p) => { calls.readText += 1; return nodeFs.promises.readFile(p, 'utf8'); },
+  stat: (p) => { calls.stat += 1; return nodeFs.promises.stat(p).then((s) => ({ size: s.size, mtimeMs: s.mtimeMs, isDirectory: () => s.isDirectory(), isFile: () => s.isFile() })); },
   statSync: (p) => {
     calls.statSync += 1;
+    if (pseudoFiles.has(p)) {
+      return { size: 0, mtimeMs: 0, isDirectory: () => false };
+    }
     const s = nodeFs.statSync(p);
     return { size: s.size, mtimeMs: s.mtimeMs, isDirectory: () => s.isDirectory() };
   },

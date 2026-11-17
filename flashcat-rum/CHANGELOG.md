@@ -1,5 +1,103 @@
 # Changelog
 
+## 0.8.0
+
+- New: per-view performance vitals, with the same field names and units as
+  the Android SDK. Memory (`view.memory_average`, `view.memory_max`, bytes of
+  RSS) and CPU (`view.cpu_ticks_count`, `view.cpu_ticks_per_second`) are
+  sampled in the foreground while a view is open. Frames give
+  `view.refresh_rate_average`, `view.refresh_rate_min` (normalized to 60),
+  `view.is_slow_rendered`, `view.slow_frame.count`, `view.frozen_frame.count`,
+  `view.slow_frames_rate` and `view.freeze_rate`; API 22+ uses the window's
+  per-frame metrics, API 12–21 counts frames while a list scrolls. A field
+  without samples is omitted, never sent as 0.
+  `RumConfigurationBuilder.setVitalsUpdateFrequency(VitalsUpdateFrequency.X)`
+  sets the sampling period: `FREQUENT` 100 ms, `AVERAGE` 500 ms (default),
+  `RARE` 1000 ms, `NEVER` off; remote configuration can set it too
+  (`vitalsUpdateFrequency`). Sampling reads the process's `/proc` files with
+  reused buffers and kept-open files, so it adds no memory growth.
+- New: app launch vitals. A `vital` event with `vital.type = "app_launch"`
+  reports the time to initial display of a `cold_start` and of a `hot_start`
+  (a return to the foreground); `RumMonitor.reportAppFullyDisplayed()` reports
+  the time to full display. TTID is capped at 60 s and TTFD at 90 s. A warm
+  start (a process kept by the system recreating its window) is not reported:
+  the system delivers no frame for that window. Launch timing needs
+  `startViewTracking(ctx)` on the first page.
+- New: view loading time (`view.loading_time`), measured automatically for
+  `router` pages (page shown to its next frame) and settable with
+  `RumMonitor.addViewLoadingTime(overwrite)`.
+- A native crash or app freeze reported on the next launch is attributed to
+  the session it happened in, as that session was drawn, also when the
+  session had no view yet. The SDK now records the session a process is in
+  (its id, whether it is collected, how it was drawn, and when it ended) as
+  soon as the session starts or ends, not only its last view, and writes a
+  session's first view at once:
+  - A crash in a collected session with no view yet (during launch, right
+    after a session renewal, or in a process with no page) is reported in that
+    session, in an `ApplicationLaunch` view, or in a `Background` view when
+    the system reports that the app was in the background. It used to be
+    reported in a separate session drawn again at the replaying launch's rate.
+  - A crash right after a session renewal is no longer attributed to the
+    previous session's last view.
+  - A crash in a session that is not collected (missed by the sample rate
+    without `setSessionOnError(true)`, or kept on error and thrown away
+    without one) is not reported, like everything else of that session,
+    however long ago the session started. It used to be attributed to the
+    last view of an earlier, collected session of the same process, or
+    reported in a separate session drawn again. A session kept on error still
+    reports its crash, in its own last view.
+  - A crash after the recorded session ended (`stopSession`, expiry), or more
+    than 15 minutes after a collected session last updated its view (it
+    expired unnoticed), is reported in a session of its own. It used to be
+    attributed to that session's last view.
+  - A crash of a process that recorded no session (a crash before RUM started
+    or before the first session), or dated before the recorded session started
+    (an earlier process with the same process id), is reported as before: in a
+    session of its own, drawn as a new session would be.
+  - A crash attributed to a view whose crash-counting update cannot be written
+    is no longer also reported in a session of its own.
+  The record is put back on file when tracking consent is granted again after
+  a refusal, and a write the storage fails is retried by the next one.
+  A crash pending from an earlier version, whose file holds only the last
+  view, is attributed as before. As before, a crash reported in a view of its
+  own carries the replaying launch's version, OS, user and connectivity.
+- Events carry `os.version_major` again. The OS version the SDK reports is the
+  system's full name (for example `OpenHarmony-6.1.1.125`), which has no
+  leading number, so the major version came out empty and was left off every
+  event; it is now the first number in the version (`6`).
+- Resources carry the phases of their request — `resource.dns`, `connect`,
+  `ssl`, `first_byte`, `download`, each `{ start, duration }` in nanoseconds
+  from the start of the request, as in the browser and Android SDKs — when the
+  network kit timed it: requests through `FlashcatHttp`, and through the rcp
+  interceptor on a session that sets `tracing.collectTimeInfo`. A request on a
+  reused connection has no `dns` or `connect`, one over plain http no `ssl`.
+  A redirected request reports `resource.redirect` instead: the kit's other
+  times then cover every hop and cannot be split. Requests reported with
+  `startTracedResource` or `RumMonitor` (axios included) have no phases, and
+  neither does a request reported without a duration because it spanned a
+  stay in the background.
+- A request to one of the trace configuration's `firstPartyHosts` reports
+  `resource.provider` as `{ type: 'first party', domain: <host> }`, and so
+  does the network error of such a request that fails (`error.resource`). Without it
+  the backend could not tell the app's own requests from third-party ones.
+- A native crash carries its faulting address as the `crash.fault_address`
+  attribute when the crash module reports one.
+- Unhandled errors, crashes and freezes carry `error.type`. An uncaught exception is typed by its
+  exception name (`Error`, `TypeError`, `SyntaxError`, …), and so is an
+  unhandled promise rejection whose reason is an `Error`; a rejection with any
+  other value has no type, as in the browser SDK. Crashes and freezes take the
+  type the crash module reports (the signal of a native crash, the fault name
+  of a freeze). Without a type the backend took every error to be an `Error`,
+  so errors of any other type, native crashes and freezes are grouped into new
+  issues once after the upgrade. Errors reported with `addError` and failed
+  requests stay untyped; an `error.type` attribute passed to `addError` now
+  sets the error's type instead of appearing in its context.
+- A freeze's own system text is reported in the error's context as
+  `freeze.reason`.
+- An uncaught exception's stack and message skip the runtime's
+  `SourceMap is not initialized yet` line, as they already skipped
+  `Cannot get SourceMap info`.
+
 ## 0.7.11
 
 Cuts main-thread load and avoids losing events to the disk quota under bursts

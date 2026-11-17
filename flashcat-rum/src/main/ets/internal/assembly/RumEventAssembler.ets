@@ -6,9 +6,20 @@ const VIEW_URL_ATTRIBUTE: string = 'view.url';
 const BUILD_ID_ATTRIBUTE: string = 'build_id';
 const ERROR_BINARY_IMAGES_ATTRIBUTE: string = 'error.binary_images';
 const ERROR_CATEGORY_ATTRIBUTE: string = 'error.category';
+const ERROR_TYPE_ATTRIBUTE: string = 'error.type';
 const ERROR_SOURCE_TYPE_ATTRIBUTE: string = 'error.source_type';
 const ERROR_META_CODE_TYPE_ATTRIBUTE: string = 'error.meta.code_type';
 const ERROR_THREADS_ATTRIBUTE: string = 'error.threads';
+
+export const APP_LAUNCH_TTID: string = 'ttid';
+export const APP_LAUNCH_TTFD: string = 'ttfd';
+
+/** The view an app launch vital is reported on. */
+export interface LaunchView {
+  readonly id: string;
+  readonly name: string;
+  readonly url: string;
+}
 
 /**
  * Builds RUM event objects (View / Error / Resource) for phase 1. Fields follow
@@ -38,7 +49,8 @@ export class RumEventAssembler {
     isActive: boolean,
     attributes: Record<string, Object>,
     draw: DrawnConfiguration | null = null,
-    sampledForError: boolean = false
+    sampledForError: boolean = false,
+    vitalFields: Record<string, Object> = {}
   ): Record<string, Object> {
     const event: Record<string, Object> = {};
     event['type'] = 'view';
@@ -66,6 +78,10 @@ export class RumEventAssembler {
     // crash-free rate. Without it every session reads as crash-free even when
     // is_crash errors were reported. Counts is_crash errors, matching 崩溃次数.
     view['crash'] = RumEventAssembler.count(crashCount);
+    // Only the keys that have samples behind them (memory, CPU, frames).
+    for (const k of Object.keys(vitalFields)) {
+      view[k] = vitalFields[k];
+    }
     event['view'] = view;
 
     RumEventAssembler.applyContext(event, context, attributes);
@@ -87,7 +103,8 @@ export class RumEventAssembler {
     attributes: Record<string, Object>,
     resourceMethod?: string,
     resourceStatusCode?: number,
-    resourceUrl?: string
+    resourceUrl?: string,
+    resourceFirstPartyHost: string = ''
   ): Record<string, Object> {
     const event: Record<string, Object> = {};
     event['type'] = 'error';
@@ -114,6 +131,10 @@ export class RumEventAssembler {
     error['id'] = util.generateRandomUUID(true);
     error['message'] = message;
     error['source'] = source;
+    const errorType: string = RumEventAssembler.asString(attributes[ERROR_TYPE_ATTRIBUTE]);
+    if (errorType.length > 0) {
+      error['type'] = errorType;
+    }
     if (stack !== undefined) {
       error['stack'] = stack;
     }
@@ -147,9 +168,54 @@ export class RumEventAssembler {
       errResource['method'] = resourceMethod ?? 'GET';
       errResource['status_code'] = resourceStatusCode ?? 0;
       errResource['url'] = resourceUrl;
+      RumEventAssembler.setProvider(errResource, resourceFirstPartyHost);
       error['resource'] = errResource;
     }
     event['error'] = error;
+
+    RumEventAssembler.applyContext(event, context, attributes);
+    return event;
+  }
+
+  /**
+   * An app launch vital (`type: vital`, `vital.type: app_launch`), as the
+   * Android SDK writes it. `date` is when the launch started; `duration` is in
+   * nanoseconds. The open view, when there is one, is the view it is reported on.
+   */
+  static appLaunch(
+    context: FlashcatContext,
+    applicationId: string,
+    sessionId: string,
+    view: LaunchView | null,
+    metric: string,
+    startupType: string,
+    dateMs: number,
+    durationNs: number,
+    attributes: Record<string, Object>,
+    draw: DrawnConfiguration | null = null,
+    sampledForError: boolean = false
+  ): Record<string, Object> {
+    const event: Record<string, Object> = {};
+    event['type'] = 'vital';
+    event['date'] = dateMs;
+    event['_dd'] = RumEventAssembler.dd(0, draw, sampledForError);
+    event['application'] = RumEventAssembler.idObj(applicationId);
+    event['session'] = RumEventAssembler.session(sessionId);
+    if (view !== null) {
+      const v: Record<string, Object> = {};
+      v['id'] = view.id;
+      v['url'] = view.url;
+      v['name'] = view.name;
+      event['view'] = v;
+    }
+    const vital: Record<string, Object> = {};
+    vital['id'] = util.generateRandomUUID(true);
+    vital['type'] = 'app_launch';
+    vital['name'] = metric === APP_LAUNCH_TTID ? 'time_to_initial_display' : 'time_to_full_display';
+    vital['app_launch_metric'] = metric;
+    vital['duration'] = durationNs;
+    vital['startup_type'] = startupType;
+    event['vital'] = vital;
 
     RumEventAssembler.applyContext(event, context, attributes);
     return event;
@@ -210,6 +276,8 @@ export class RumEventAssembler {
     durationNs: number | undefined,
     traceId: string | undefined,
     spanId: string | undefined,
+    firstPartyHost: string,
+    phases: Record<string, Object>,
     attributes: Record<string, Object>
   ): Record<string, Object> {
     const event: Record<string, Object> = {};
@@ -246,6 +314,10 @@ export class RumEventAssembler {
     if (durationNs !== undefined) {
       resource['duration'] = durationNs; // absent when not measurable (optional in the schema)
     }
+    for (const name of Object.keys(phases)) {
+      resource[name] = phases[name]; // dns, connect, ssl, first_byte, download, redirect: see resourcePhases
+    }
+    RumEventAssembler.setProvider(resource, firstPartyHost);
     event['resource'] = resource;
 
     RumEventAssembler.applyContext(event, context, attributes);
@@ -253,6 +325,21 @@ export class RumEventAssembler {
   }
 
   // ---- shared sub-objects ----
+
+  /**
+   * `provider` of a resource, or of the resource a network error is about. Only
+   * the app's own hosts are named, as on Android; any other request carries no
+   * provider. The schema spells the type with a space.
+   */
+  private static setProvider(resource: Record<string, Object>, firstPartyHost: string): void {
+    if (firstPartyHost.length === 0) {
+      return;
+    }
+    const provider: Record<string, Object> = {};
+    provider['domain'] = firstPartyHost;
+    provider['type'] = 'first party';
+    resource['provider'] = provider;
+  }
 
   private static dd(documentVersion: number, draw: DrawnConfiguration | null = null,
     sampledForError: boolean = false): Record<string, Object> {
@@ -396,7 +483,7 @@ export class RumEventAssembler {
 
   private static isInternalAttribute(key: string): boolean {
     return key === VIEW_URL_ATTRIBUTE || key === BUILD_ID_ATTRIBUTE ||
-      key === ERROR_BINARY_IMAGES_ATTRIBUTE || key === ERROR_CATEGORY_ATTRIBUTE ||
+      key === ERROR_BINARY_IMAGES_ATTRIBUTE || key === ERROR_CATEGORY_ATTRIBUTE || key === ERROR_TYPE_ATTRIBUTE ||
       key === ERROR_SOURCE_TYPE_ATTRIBUTE || key === ERROR_META_CODE_TYPE_ATTRIBUTE ||
       key === ERROR_THREADS_ATTRIBUTE;
   }
@@ -405,17 +492,24 @@ export class RumEventAssembler {
     return typeof value === 'string' ? value : '';
   }
 
-  /** "5.0.0.102" → "5"; '' when the version has no leading number. */
+  /**
+   * The first run of digits: "5.0.0.102" → "5", and "OpenHarmony-6.1.1.125" — the form
+   * deviceInfo.osFullName takes — → "6"; '' when the version has no number.
+   */
   static majorVersion(version: string): string {
-    let end: number = 0;
-    while (end < version.length) {
-      const code: number = version.charCodeAt(end);
-      if (code < 48 || code > 57) {
-        break;
-      }
+    let start: number = 0;
+    while (start < version.length && !RumEventAssembler.isDigit(version.charCodeAt(start))) {
+      start += 1;
+    }
+    let end: number = start;
+    while (end < version.length && RumEventAssembler.isDigit(version.charCodeAt(end))) {
       end += 1;
     }
-    return version.substring(0, end);
+    return version.substring(start, end);
+  }
+
+  private static isDigit(code: number): boolean {
+    return code >= 48 && code <= 57;
   }
 
   /** Maps HarmonyOS deviceInfo.deviceType to the RUM schema's device.type enum. */

@@ -116,6 +116,21 @@ export default function schemaAlignmentTests(): void {
       expect(context['crash.memory.rss_kb']).assertEqual(201674);
     });
 
+    it('liftsErrorTypeOutOfContext', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+      const attributes: Record<string, Object> = { 'error.type': 'SIGSEGV', 'channel': 'store' };
+      const event = RumEventAssembler.error(
+        testContext(), 'app-1', 'session-1', undefined, undefined,
+        'SIGSEGV(SEGV_MAPERR)', 'source', '#0 pc 1 libentry.so', true, 'unhandled', 1000, attributes);
+      expect(record(event['error'])['type']).assertEqual('SIGSEGV');
+      expect(record(event['context'])['error.type']).assertUndefined();
+      expect(record(event['context'])['channel']).assertEqual('store');
+      // Negative control: no type given, none reported.
+      const untyped = RumEventAssembler.error(
+        testContext(), 'app-1', 'session-1', undefined, undefined,
+        'boom', 'source', 'stack', false, 'handled', 1000, {});
+      expect(record(untyped['error'])['type']).assertUndefined();
+    });
+
     it('emitsAnonymousIdAlongsideUserId', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
       const context: FlashcatContext = testContext();
       context.user = { id: 'alice' };
@@ -131,7 +146,7 @@ export default function schemaAlignmentTests(): void {
     it('emitsSchemaVocabularyForOsDeviceConnectivityAndErrorId',
       TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
         const context: FlashcatContext = testContext();
-        context.device.osVersion = '5.0.0.102';
+        context.device.osVersion = 'OpenHarmony-6.1.1.125'; // deviceInfo.osFullName
         context.device.deviceType = 'phone';
         const event = RumEventAssembler.error(
           context, 'app-1', 'session-1', undefined, undefined,
@@ -141,7 +156,7 @@ export default function schemaAlignmentTests(): void {
         const device = record(event['device']);
         const connectivity = record(event['connectivity']);
         const error = record(event['error']);
-        expect(os['version_major']).assertEqual('5');
+        expect(os['version_major']).assertEqual('6');
         expect(device['type']).assertEqual('mobile');
         expect(device['name']).assertEqual('Pura');
         expect(connectivity['status']).assertEqual('connected');
@@ -157,7 +172,10 @@ export default function schemaAlignmentTests(): void {
       expect(RumEventAssembler.deviceTypeFor('tv')).assertEqual('tv');
       expect(RumEventAssembler.deviceTypeFor('wearable')).assertEqual('other');
       expect(RumEventAssembler.majorVersion('5.0.0.102')).assertEqual('5');
+      expect(RumEventAssembler.majorVersion('OpenHarmony-6.1.1.125')).assertEqual('6');
+      expect(RumEventAssembler.majorVersion('OpenHarmony-5.0.0')).assertEqual('5');
       expect(RumEventAssembler.majorVersion('NEXT')).assertEqual('');
+      expect(RumEventAssembler.majorVersion('')).assertEqual('');
     });
 
     it('extraInfoCannotOverrideAnonymousId', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {

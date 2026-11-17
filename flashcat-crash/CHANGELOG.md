@@ -1,5 +1,49 @@
 # Changelog
 
+## 0.8.0
+
+- New: main-thread jank is reported as a handled RUM error in the current
+  session (`error.category = "Jank"`, `error.type = "MAIN_THREAD_JANK"`,
+  `is_crash = false`) with the stack the system sampled and
+  `context.jank.duration_ms`. On by default;
+  `CrashConfigurationBuilder.setTrackMainThreadJank(false)` turns it off. On
+  API 15+ the module asks the system for stack samples and up to 3 events per
+  process; that setting is process-wide.
+- Crash and freeze reports say when the system reported the app in the
+  background at the fault (`in_background`), so RUM can report a background
+  fault of a session without a view in its `Background` view.
+- A JS crash of a session that was not sampled, persisted under
+  `REPORT_AND_RECOVER` whose restart then failed, stays sampled out. Rewriting
+  the incident as an exit lost the flag, so the next launch reported it in a
+  session of its own drawn again.
+
+- A native crash raised by the kernel for a fault (`SIGSEGV`, `SIGBUS`,
+  `SIGILL`, `SIGFPE`, `SIGTRAP` with a fault code) reports its faulting
+  address in `fault_address` (`0x0` for a null pointer dereference). The
+  message stays without it, so every occurrence of one fault still shares one
+  message. A signal sent by a process (`abort()`, `kill`) has no fault address.
+- Crash and freeze reports carry their error type (`error_type`): the signal
+  of a native crash (`SIGSEGV`), the exception name of an ArkTS crash
+  (`TypeError`, `SyntaxError`, …), the fault name of a freeze
+  (`THREAD_BLOCK_6S`, `APP_INPUT_BLOCK`, …).
+- A native crash's message names its signal and signal code
+  (`SIGSEGV(SEGV_MAPERR)`), followed by the system's reason when it gives one,
+  instead of `NativeCrash`. The fault address is not part of it.
+- An app freeze's message is a fixed description of its kind
+  (`APP_INPUT_BLOCK: User input is not responding`,
+  `THREAD_BLOCK_6S: App main thread is not responding`,
+  `LIFECYCLE_TIMEOUT: Ability lifecycle timed out`, otherwise
+  `App is not responding`). The system's text for one kind varies and can carry
+  log status (`User input does not respond!FREEZE_HALF_HIVIEW_LOG write
+  success`), which split one freeze into several issues; it is now reported in
+  `freeze.reason`. Existing freeze issues are succeeded by new ones once after
+  the upgrade, as the message changes.
+- An ArkTS crash during launch no longer reports the runtime's
+  `SourceMap is not initialized yet` line as the first line of its stack, and
+  the line is never taken for the crash's message. A stack replayed from the
+  system's crash event now drops the same runtime lines as one captured live
+  (also `Cannot get SourceMap info`).
+
 ## 0.7.11
 
 - No changes; released together with `@flashcatcloud/rum` 0.7.11.

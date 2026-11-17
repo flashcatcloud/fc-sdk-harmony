@@ -1,5 +1,7 @@
 /** The view that holds what a session records before its first view. */
 export const APPLICATION_LAUNCH_VIEW: string = 'ApplicationLaunch';
+/** The view that holds a crash of a session that had no view, while the app was in the background. */
+export const BACKGROUND_VIEW: string = 'Background';
 
 /**
  * Internal raw event passed down the scope hierarchy. Scopes react to these and
@@ -9,7 +11,7 @@ export const APPLICATION_LAUNCH_VIEW: string = 'ApplicationLaunch';
 export interface RumRawEvent {
   kind: string;                 // 'startView' | 'stopView' | 'addAction' | 'addError'
                                 // | 'startResource' | 'stopResource' | 'stopResourceWithError'
-                                // | 'keepAlive' | 'markCrash'
+                                // | 'keepAlive' | 'markCrash' | 'appLaunch' | 'addViewLoadingTime'
                                 // | 'openLaunchView'
                                 // markCrash: bump the active view's error+crash counts without
                                 // writing an error event (the error itself is delivered by the
@@ -32,6 +34,17 @@ export interface RumRawEvent {
   errorStack?: string;
   errorHandling?: string;       // 'handled' | 'unhandled'
   isCrash?: boolean;
+
+  // app launch vital (kind === 'appLaunch'); timestampMs is when it was measured
+  launchMetric?: string;        // 'ttid' | 'ttfd'
+  startupType?: string;         // StartupType value
+  launchStartMs?: number;       // epoch ms the launch started: the vital's date
+  launchDurationNs?: number;
+  launchFullyDisplayed?: boolean; // ttid: also report it as the ttfd (fully displayed first)
+
+  // view loading time (kind === 'addViewLoadingTime'); timestampMs is when the view loaded
+  overwrite?: boolean;          // manual: replace a value an earlier manual call set
+  loadingTimeAuto?: boolean;    // measured by the SDK for the router page `key`
 
   // resource specifics (kind === 'startResource' | 'stopResource')
   url?: string;

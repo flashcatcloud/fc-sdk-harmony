@@ -3,6 +3,7 @@ import { RumScope, RumRawEvent } from './RumScope';
 import { RumSessionScope } from './RumSessionScope';
 import { RemoteConfigStore, RemoteConfigValues, DrawnConfiguration } from '../remoteconfig/RemoteConfigStore';
 import { BeforeSamplingCallback, BeforeSamplingContext } from '../../RumTypes';
+import { VitalsCollector } from '../vitals/VitalsCollector';
 
 /** What a forced session reports: it is kept whatever the rates say, so it stands for itself. */
 const FORCED_SAMPLE_RATE: number = 100;
@@ -53,6 +54,7 @@ export class RumApplicationScope implements RumScope {
   // last resolved settings so republishing them cannot turn a deferral into a redraw.
   private lastResolved: DrawnConfiguration | null = null;
   private invokingBeforeSampling: boolean = false;
+  private readonly collector: VitalsCollector | null;
 
   constructor(
     featureScope: FeatureScope,
@@ -62,8 +64,10 @@ export class RumApplicationScope implements RumScope {
     remoteConfig: RemoteConfigStore | null = null,
     beforeSampling: BeforeSamplingCallback | null = null,
     onSessionStarted: (() => void) | null = null,
-    sessionOnError: boolean = false
+    sessionOnError: boolean = false,
+    collector: VitalsCollector | null = null
   ) {
+    this.collector = collector;
     this.featureScope = featureScope;
     this.core = core;
     this.applicationId = applicationId;
@@ -152,7 +156,7 @@ export class RumApplicationScope implements RumScope {
   private static startsUserActivity(event: RumRawEvent): boolean {
     return event.kind !== 'keepAlive' && event.kind !== 'markCrash' && event.kind !== 'openLaunchView'
       && event.kind !== 'stopView' && event.kind !== 'stopResource'
-      && event.kind !== 'stopResourceWithError';
+      && event.kind !== 'stopResourceWithError' && event.kind !== 'addViewLoadingTime';
   }
 
   private rememberExpiredView(session: RumSessionScope): void {
@@ -268,7 +272,7 @@ export class RumApplicationScope implements RumScope {
     this.lastResolved = resolved;
     const session: RumSessionScope = new RumSessionScope(
       this.featureScope, this.core, this.applicationId, resolved.sessionSampleRate, nowMs, this.forced,
-      this.carried(resolved));
+      this.carried(resolved), this.collector);
     if (this.onSessionStarted !== null) {
       this.onSessionStarted();
     }
