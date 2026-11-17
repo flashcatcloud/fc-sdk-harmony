@@ -1,7 +1,31 @@
 # Changelog
 
-## Unreleased
+## 0.8.0
 
+- New: per-view performance vitals, with the same field names and units as
+  the Android SDK. Memory (`view.memory_average`, `view.memory_max`, bytes of
+  RSS) and CPU (`view.cpu_ticks_count`, `view.cpu_ticks_per_second`) are
+  sampled in the foreground while a view is open. Frames give
+  `view.refresh_rate_average`, `view.refresh_rate_min` (normalized to 60),
+  `view.is_slow_rendered`, `view.slow_frame.count`, `view.frozen_frame.count`,
+  `view.slow_frames_rate` and `view.freeze_rate`; API 22+ uses the window's
+  per-frame metrics, API 12–21 counts frames while a list scrolls. A field
+  without samples is omitted, never sent as 0.
+  `RumConfigurationBuilder.setVitalsUpdateFrequency(VitalsUpdateFrequency.X)`
+  sets the sampling period: `FREQUENT` 100 ms, `AVERAGE` 500 ms (default),
+  `RARE` 1000 ms, `NEVER` off; remote configuration can set it too
+  (`vitalsUpdateFrequency`). Sampling reads the process's `/proc` files with
+  reused buffers and kept-open files, so it adds no memory growth.
+- New: app launch vitals. A `vital` event with `vital.type = "app_launch"`
+  reports the time to initial display of a `cold_start` and of a `hot_start`
+  (a return to the foreground); `RumMonitor.reportAppFullyDisplayed()` reports
+  the time to full display. TTID is capped at 60 s and TTFD at 90 s. A warm
+  start (a process kept by the system recreating its window) is not reported:
+  the system delivers no frame for that window. Launch timing needs
+  `startViewTracking(ctx)` on the first page.
+- New: view loading time (`view.loading_time`), measured automatically for
+  `router` pages (page shown to its next frame) and settable with
+  `RumMonitor.addViewLoadingTime(overwrite)`.
 - A native crash or app freeze reported on the next launch is attributed to
   the session it happened in, as that session was drawn, also when the
   session had no view yet. The SDK now records the session a process is in
@@ -58,20 +82,6 @@
   the backend could not tell the app's own requests from third-party ones.
 - A native crash carries its faulting address as the `crash.fault_address`
   attribute when the crash module reports one.
-- A burst of RUM calls no longer holds the calling thread. Within one turn of
-  the event loop the SDK processes events on the caller's turn for at most
-  4 ms; calls past that budget are queued and processed in slices of the same
-  size on later turns, so a host reporting thousands of events at once (for
-  example one action per synced message) keeps its UI thread responsive.
-  Events keep the time and attributes of their call and their order. The
-  queue is processed synchronously, on the caller's turn, before an error or a
-  crash is reported, before the app goes to the background or is flushed,
-  before the user or the tracking consent changes, before session queries,
-  and on stop.
-- While queued events are processed, the view document an action updates is
-  written once per slice instead of once per action. A burst writes about half
-  as much: a few thousand actions in a row no longer exceed the 4 MB disk quota
-  and evict the oldest batches before they are uploaded.
 - Unhandled errors, crashes and freezes carry `error.type`. An uncaught exception is typed by its
   exception name (`Error`, `TypeError`, `SyntaxError`, …), and so is an
   unhandled promise rejection whose reason is an `Error`; a rejection with any
@@ -87,6 +97,24 @@
 - An uncaught exception's stack and message skip the runtime's
   `SourceMap is not initialized yet` line, as they already skipped
   `Cannot get SourceMap info`.
+
+## 0.7.11
+
+Cuts main-thread load and avoids losing events to the disk quota under bursts
+of RUM calls.
+
+- A burst of RUM calls no longer holds the calling thread. Within one turn of
+  the event loop the SDK processes events on the caller's turn for at most
+  4 ms; calls past that budget are queued and processed in slices of the same
+  size on later turns, so the thread yields between slices. Events keep the
+  time and attributes of their call and their order. The queue is processed
+  synchronously, on the caller's turn, before an error or a crash is reported,
+  before the app goes to the background or is flushed, before the user or the
+  tracking consent changes, before session queries, and on stop.
+- While queued events are processed, the view document an action updates is
+  written once per slice instead of once per action. A burst writes about half
+  as much: a few thousand actions in a row no longer exceed the 4 MB disk quota
+  and evict the oldest batches before they are uploaded.
 
 ## 0.7.10
 

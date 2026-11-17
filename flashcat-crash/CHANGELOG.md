@@ -1,7 +1,14 @@
 # Changelog
 
-## Unreleased
+## 0.8.0
 
+- New: main-thread jank is reported as a handled RUM error in the current
+  session (`error.category = "Jank"`, `error.type = "MAIN_THREAD_JANK"`,
+  `is_crash = false`) with the stack the system sampled and
+  `context.jank.duration_ms`. On by default;
+  `CrashConfigurationBuilder.setTrackMainThreadJank(false)` turns it off. On
+  API 15+ the module asks the system for stack samples and up to 3 events per
+  process; that setting is process-wide.
 - Crash and freeze reports say when the system reported the app in the
   background at the fault (`in_background`), so RUM can report a background
   fault of a session without a view in its `Background` view.
@@ -36,6 +43,18 @@
   the line is never taken for the crash's message. A stack replayed from the
   system's crash event now drops the same runtime lines as one captured live
   (also `Cannot get SourceMap info`).
+
+## 0.7.11
+
+- No changes; released together with `@flashcatcloud/rum` 0.7.11.
+
+## 0.7.10
+
+- No changes; released together with `@flashcatcloud/rum` 0.7.10.
+
+## 0.7.9
+
+- No changes; released together with `@flashcatcloud/rum` 0.7.9.
 
 ## 0.7.8
 

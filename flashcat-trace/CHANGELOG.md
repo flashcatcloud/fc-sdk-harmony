@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.8.0
 
 - `FlashcatHttp` and the rcp interceptor hand the network kit's timing of each
   request to RUM, which reports it as the resource's phases. For rcp the
@@ -10,6 +10,18 @@
 - A request to one of the `firstPartyHosts` is marked as first-party on its RUM
   resource, whichever way it was reported (`FlashcatHttp`, rcp,
   `startTracedResource`).
+
+## 0.7.11
+
+- No changes; released together with `@flashcatcloud/rum` 0.7.11.
+
+## 0.7.10
+
+- No changes; released together with `@flashcatcloud/rum` 0.7.10.
+
+## 0.7.9
+
+- No changes; released together with `@flashcatcloud/rum` 0.7.9.
 
 ## 0.7.8
 
