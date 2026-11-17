@@ -162,12 +162,14 @@ export class LastViewSnapshot {
     if (session !== null && LastViewSnapshot.sessionIdOf(event) !== session.id) {
       return;
     }
-    const first: boolean = session !== null && (LastViewSnapshot.latest === null || LastViewSnapshot.unwritten);
+    // A failed write is retried by the next batched one, not by every update: a storage
+    // that keeps failing costs one attempt per delay, not one per event.
+    const first: boolean = session !== null && LastViewSnapshot.latest === null;
     LastViewSnapshot.pending = event;
     LastViewSnapshot.latest = event;
     if (first) {
-      // The session's first view (or the first since a write was refused): until it
-      // is on file, a fault would be reported in a view of its own instead of this one.
+      // The session's first view: until it is on file, a fault would be reported in a
+      // view of its own instead of this one.
       LastViewSnapshot.flush();
       return;
     }

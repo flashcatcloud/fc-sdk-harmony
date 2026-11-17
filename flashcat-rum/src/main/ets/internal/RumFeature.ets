@@ -571,14 +571,25 @@ export class RumFeature implements Feature, FeatureEventReceiver {
    *   `ApplicationLaunch` view — `Background` when the system says the app was in the
    *   background — drawn as the session was. No new draw.
    *
-   * A file of an earlier version records no session: its view is used as before.
+   * A file of an earlier version records no session: its view is used as before. A fault
+   * the system reports without a time cannot be placed in the process's run at all: a
+   * session of its own.
    *
    * Once the fault is attributed it is never handed on to a session of its own: a
    * partial write (the error landed, its view did not) would count it twice. Such a
    * fault is not retried either — the system reports it once, and the file it would
-   * be retried against is consumed when it is read.
+   * be retried against is consumed when it is read — so after a partial write the
+   * error is visible while the session's crash count misses it.
    */
   private reportInPreviousRun(event: Record<string, Object>): boolean {
+    const faultAt: number | undefined = RumFeature.optionalPositiveNumber(event['timestamp_ms']);
+    if (faultAt === undefined) {
+      // When the fault happened is unknown, so is whether it is this process's: an
+      // earlier process with the same id (ids are reused) cannot be told apart.
+      FlashcatLog.d('rum.crash: fault time unknown; reporting in a session of its own');
+      return false;
+    }
+    const faultAtMs: number = faultAt;
     const snapshot: Record<string, Object> | null = this.previousRunView;
     const session: SessionRecord | null = this.previousRunSession;
     if (session === null) {
@@ -590,7 +601,6 @@ export class RumFeature implements Feature, FeatureEventReceiver {
       event['delivered'] = this.writeCrashFromLastView(event, snapshot);
       return true;
     }
-    const faultAtMs: number = RumFeature.optionalPositiveNumber(event['timestamp_ms']) ?? Date.now();
     if (session.startedAtMs > 0 && faultAtMs < session.startedAtMs) {
       // Older than the session: an earlier process with the same id (ids are reused)
       // faulted, not the one that wrote this file.

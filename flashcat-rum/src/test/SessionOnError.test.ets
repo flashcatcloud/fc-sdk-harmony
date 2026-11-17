@@ -135,12 +135,15 @@ class CapturingScope implements FeatureScope {
   lastViewDeletes: number = 0;
   /** The crash storage fails every last-view write (a full disk). */
   refuseLastView: boolean = false;
+  /** Last-view writes asked of the crash storage, refused ones included. */
+  lastViewAttempts: number = 0;
   /** The core whose context events are written with (the default test context when unset). */
   core: FakeCore | null = null;
 
   sendEvent(event: Record<string, Object>): void {
     const type: Object | undefined = event['type'];
     if (type === 'crash_storage_write_last_view') {
+      this.lastViewAttempts += 1;
       if (this.refuseLastView) {
         event['success'] = false;
         return;
@@ -3865,7 +3868,7 @@ export default function sessionOnErrorTests(): void {
         expect(run(false).written.length).assertEqual(0);
       });
 
-    it('aRefusedSnapshotWriteIsRetriedByTheNextOne',
+    it('aRefusedSnapshotWriteIsRetriedAtTheBatchedCadence',
       TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
         const core: FakeCore = new FakeCore();
         const scope: CapturingScope = new CapturingScope();
@@ -3876,16 +3879,46 @@ export default function sessionOnErrorTests(): void {
           const body: Record<string, Object> = (file['view'] as Record<string, Object>)['view'] as Record<string, Object>;
           return (body['action'] as Record<string, Object>)['count'] as number;
         };
-        scope.refuseLastView = true; // the storage fails the write (success=false)
+        scope.refuseLastView = true; // the storage keeps failing the write (success=false)
         monitor.addAction(RumActionType.TAP, 'one');
         LastViewSnapshot.flush();
         expect(actionsOnFile()).assertEqual(0); // the earlier file stays
+        const attempts: number = scope.lastViewAttempts;
+        for (let i: number = 0; i < 5; i++) {
+          monitor.addAction(RumActionType.TAP, `again-${i}`);
+        }
+        // A failing storage is not asked again on every update: once per batched write.
+        expect(scope.lastViewAttempts).assertEqual(attempts);
+        LastViewSnapshot.flush();
+        expect(scope.lastViewAttempts).assertEqual(attempts + 1);
+        // Negative control: once the storage works, that batched write puts it on disk.
         scope.refuseLastView = false;
-        monitor.addAction(RumActionType.TAP, 'two'); // not on disk: this update goes out at once
-        expect(actionsOnFile()).assertEqual(2);
-        // Negative control: with that write on disk, the next update waits for the delay.
-        monitor.addAction(RumActionType.TAP, 'three');
-        expect(actionsOnFile()).assertEqual(2);
+        monitor.addAction(RumActionType.TAP, 'two');
+        LastViewSnapshot.flush();
+        expect(actionsOnFile()).assertEqual(7);
+      });
+
+    it('aFaultWithoutATimeIsNotTakenForTheRecordedSessions',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        // Without a time the fault cannot be told apart from an earlier process's with the
+        // same id: it goes to a session of its own, not into the recorded session.
+        const core: FakeCore = new FakeCore();
+        const scope: CapturingScope = new CapturingScope();
+        launchVital(featureWith(core, scope, 100, false));
+        const recorded: string = core.featureContext['session.id'] as string;
+        const undated: Record<string, Object> = {};
+        const dated0: Record<string, Object> = nativeCrash(Date.now());
+        for (const key of Object.keys(dated0)) {
+          if (key !== 'timestamp_ms') {
+            undated[key] = dated0[key];
+          }
+        }
+        const own: CapturingScope = nextLaunch(core, scope.lastView, 100, false, undated);
+        expect(own.ofType('error').length).assertEqual(1);
+        expect(sessionOf(own.ofType('error')[0])['id'] === recorded).assertFalse();
+        // Negative control: the same fault, dated, is the recorded session's.
+        const dated: CapturingScope = nextLaunch(core, scope.lastView, 100, false, nativeCrash(Date.now()));
+        expect(sessionOf(dated.ofType('error')[0])['id']).assertEqual(recorded);
       });
 
     it('aFaultOlderThanTheRecordedSessionIsAnEarlierProcesssWithTheSameId',
