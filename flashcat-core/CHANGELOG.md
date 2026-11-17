@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- The RUM last-view file is written to a temporary file and renamed into
+  place, so a process killed during the write leaves the previous file whole
+  instead of a truncated one the next launch cannot read. Its write reports
+  failure to RUM, which retries it.
+
 - Before the user (`setUserInfo`, `clearUserInfo`) or the tracking consent
   changes, the core asks RUM to process the events it still holds queued, so
   they are written with the user and consent of their call.

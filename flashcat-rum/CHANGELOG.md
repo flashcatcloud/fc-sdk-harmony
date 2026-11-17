@@ -2,6 +2,41 @@
 
 ## Unreleased
 
+- A native crash or app freeze reported on the next launch is attributed to
+  the session it happened in, as that session was drawn, also when the
+  session had no view yet. The SDK now records the session a process is in
+  (its id, whether it is collected, how it was drawn, and when it ended) as
+  soon as the session starts or ends, not only its last view, and writes a
+  session's first view at once:
+  - A crash in a collected session with no view yet (during launch, right
+    after a session renewal, or in a process with no page) is reported in that
+    session, in an `ApplicationLaunch` view, or in a `Background` view when
+    the system reports that the app was in the background. It used to be
+    reported in a separate session drawn again at the replaying launch's rate.
+  - A crash right after a session renewal is no longer attributed to the
+    previous session's last view.
+  - A crash in a session that is not collected (missed by the sample rate
+    without `setSessionOnError(true)`, or kept on error and thrown away
+    without one) is not reported, like everything else of that session,
+    however long ago the session started. It used to be attributed to the
+    last view of an earlier, collected session of the same process, or
+    reported in a separate session drawn again. A session kept on error still
+    reports its crash, in its own last view.
+  - A crash after the recorded session ended (`stopSession`, expiry), or more
+    than 15 minutes after a collected session last updated its view (it
+    expired unnoticed), is reported in a session of its own. It used to be
+    attributed to that session's last view.
+  - A crash of a process that recorded no session (a crash before RUM started
+    or before the first session), or dated before the recorded session started
+    (an earlier process with the same process id), is reported as before: in a
+    session of its own, drawn as a new session would be.
+  - A crash attributed to a view whose crash-counting update cannot be written
+    is no longer also reported in a session of its own.
+  The record is put back on file when tracking consent is granted again after
+  a refusal, and a write the storage fails is retried by the next one.
+  A crash pending from an earlier version, whose file holds only the last
+  view, is attributed as before. As before, a crash reported in a view of its
+  own carries the replaying launch's version, OS, user and connectivity.
 - Events carry `os.version_major` again. The OS version the SDK reports is the
   system's full name (for example `OpenHarmony-6.1.1.125`), which has no
   leading number, so the major version came out empty and was left off every

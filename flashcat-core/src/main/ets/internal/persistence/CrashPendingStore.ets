@@ -143,12 +143,12 @@ export class CrashPendingStore implements FeatureEventReceiver {
   }
 
   /**
-   * Persist the latest ViewEvent. Deliberately NOT the atomic fsync path the
-   * other sidecars use: this runs on every view write (i.e. after every action,
-   * error and resource), and an fsync per event would put disk latency on the
-   * hot path. Losing the newest snapshot to a hard kill is acceptable — the
-   * previous one is at most one document_version behind, and a stale snapshot
-   * still attributes the crash to the right session and view.
+   * Persist the latest ViewEvent and the session record. Written to a temp file
+   * and renamed over the old one, so a kill mid-write leaves the previous file
+   * whole instead of a truncated one the next launch cannot parse (losing the
+   * session the crash happened in). Without the fsync the other sidecars pay:
+   * this runs whenever the view changes, and a write the kill beats only loses
+   * the newest update — the file before it still names the session.
    */
   private writeLastView(serialized: string): boolean {
     if (serialized.length === 0 || serialized.length > MAX_LAST_VIEW_BYTES) {
@@ -156,17 +156,24 @@ export class CrashPendingStore implements FeatureEventReceiver {
     }
     this.ensureDir();
     const path: string = `${this.rootDir}/${LAST_VIEW_FILE}`;
+    const tmpPath: string = `${path}${TMP_SUFFIX}`;
     try {
       const mode: number = fs.OpenMode.WRITE_ONLY | fs.OpenMode.CREATE | fs.OpenMode.TRUNC;
-      const file: fs.File = fs.openSync(path, mode);
+      const file: fs.File = fs.openSync(tmpPath, mode);
       try {
         fs.writeSync(file.fd, serialized);
-        return true;
       } finally {
         fs.closeSync(file);
       }
+      fs.renameSync(tmpPath, path);
+      return true;
     } catch (error) {
       FlashcatLog.e(`crash.storage: last-view write failed: ${CrashPendingStore.errorText(error)}`);
+      try {
+        fs.unlinkSync(tmpPath);
+      } catch (_cleanup) {
+        // best-effort temp cleanup
+      }
       return false;
     }
   }

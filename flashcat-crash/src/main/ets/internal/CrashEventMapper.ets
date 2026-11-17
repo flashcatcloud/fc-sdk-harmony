@@ -412,6 +412,11 @@ export class CrashEventMapper {
     if (typeof pid === 'number' && pid > 0) {
       event['process_id'] = pid;
     }
+    // The system says whether the app was in the foreground at the fault: a fault in the
+    // background of a session with no view is reported in its Background view.
+    if (params['foreground'] === false) {
+      event['in_background'] = true;
+    }
     // The faulting address differs between occurrences of one fault, so it is a
     // field of its own, never part of the message.
     const faultAddress: string = CrashEventMapper.faultAddress(signal);

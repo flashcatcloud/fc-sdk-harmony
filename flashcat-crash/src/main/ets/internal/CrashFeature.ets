@@ -360,7 +360,8 @@ export class CrashFeature implements Feature, FeatureEventReceiver {
       incident.sessionId,
       incident.viewId,
       incident.viewName,
-      incident.viewUrl);
+      incident.viewUrl,
+      incident.originSampled);
     if (!this.persistPendingIncident(downgraded)) {
       FlashcatLog.e('crash.recovery: downgrade write failed; replay may over-report recovery');
     }

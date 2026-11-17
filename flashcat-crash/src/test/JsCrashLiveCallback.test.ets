@@ -232,6 +232,30 @@ export default function jsCrashLiveCallbackTests(): void {
         expect(incident['origin_sampled']).assertEqual(false);
       });
 
+    it('aFailedRestartKeepsTheIncidentSampledOut',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        // The restart did not happen: the incident is rewritten as an exit, and still says
+        // whether its session was sampled — a sampled-out crash must not come back as an
+        // unattributed one, drawn again on the next launch.
+        const run = (sampled: boolean): Record<string, Object> => {
+          const core: RumContextCore = new RumContextCore();
+          core.rum = { 'session.id': 's-1', 'session.sampled': sampled };
+          const feature: CrashFeature = featureWith(core, JsCrashPolicy.REPORT_AND_RECOVER);
+          const control: Record<string, Object> = liveCallback(feature, 'unhandled');
+          expect(control['recover']).assertEqual(true);
+          feature.onReceive({ 'type': 'js_crash_recovery_failed', 'target': 'crash' } as Record<string, Object>);
+          const writes: Array<Record<string, Object>> = core.crashScope.ofType('crash_storage_write');
+          const last: Record<string, Object> = JSON.parse(writes[writes.length - 1]['serialized'] as string) as Record<string, Object>;
+          expect(last['policy']).assertEqual(JsCrashPolicy.REPORT_THEN_EXIT as string);
+          return last;
+        };
+        expect(run(false)['origin_sampled']).assertEqual(false);
+        // Negative control: a sampled session's incident stays sampled, with its ids.
+        const sampled: Record<string, Object> = run(true);
+        expect(sampled['origin_sampled']).assertEqual(true);
+        expect(sampled['session_id']).assertEqual('s-1');
+      });
+
     it('otherPoliciesKeepTheOnExceptionFallbackAsAnError',
       TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
         const control: Record<string, Object> = liveCallback(
