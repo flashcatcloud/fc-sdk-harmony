@@ -102,8 +102,10 @@ export class FlashcatTrace {
       const headers: Record<string, string> = {};
       let traceId: string | undefined = undefined;
       let spanId: string | undefined = undefined;
+      const host: string = hostOfUrl(url);
+      const firstParty: boolean = config.isFirstParty(host);
 
-      if (injectTrace && isInjectionAllowed(core) && config.isFirstParty(hostOfUrl(url))) {
+      if (injectTrace && firstParty && isInjectionAllowed(core)) {
         const tc: TraceContext = TraceContext.generate(config.sampleRate);
         headers['traceparent'] = tc.traceparent();
         headers['tracestate'] = tc.tracestate();
@@ -116,7 +118,7 @@ export class FlashcatTrace {
         }
       }
 
-      publishResourceStarted(core, key, url, method, traceId, spanId);
+      publishResourceStarted(core, key, url, method, traceId, spanId, firstParty ? host : '');
       return new TracedResource(key, headers);
     } catch (error) {
       FlashcatTrace.logFailure('startTracedResource', error);
