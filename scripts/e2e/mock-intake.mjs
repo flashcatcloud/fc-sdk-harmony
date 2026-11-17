@@ -84,6 +84,22 @@ function serveOrigin(req, res, bodyBytes) {
   fs.appendFileSync(requestsFile, `${JSON.stringify({
     url: req.url, method: req.method, headers: req.headers, bodyBytes
   })}\n`);
+  // Resource timing: a measurable wait for the first byte, then a response
+  // body that arrives in two parts, so first_byte and download both take time.
+  if (req.url.startsWith('/e2e/slow')) {
+    console.log(`origin ${req.method} ${req.url} -> 200 (slow)`);
+    setTimeout(() => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.write(`{"part":1,"pad":"${'x'.repeat(32 * 1024)}",`);
+      setTimeout(() => res.end('"part2":2}'), 120);
+    }, 150);
+    return;
+  }
+  if (req.url.startsWith('/e2e/redirect')) {
+    console.log(`origin ${req.method} ${req.url} -> 302`);
+    setTimeout(() => res.writeHead(302, { location: '/e2e/slow?redirected=1' }).end(), 100);
+    return;
+  }
   const status = req.url.startsWith('/e2e/status/')
     ? Number(req.url.slice('/e2e/status/'.length)) || 200
     : 200;

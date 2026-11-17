@@ -3,6 +3,7 @@ import { util } from '@kit.ArkTS';
 import { SdkCore, FeatureScope, FlashcatLog, RUM_FEATURE_NAME, TRACE_FEATURE_NAME, TrackingConsent } from '@flashcatcloud/core';
 import { TraceConfiguration } from '../TraceConfiguration';
 import { TraceContext } from './TraceContext';
+import { TransferTiming, transferTimingOfRcp } from './TransferTiming';
 
 /**
  * rcp interceptor that (1) injects a W3C `traceparent`/`tracestate` into outgoing
@@ -34,9 +35,9 @@ export class TraceInterceptor implements rcp.Interceptor {
       // traffic unless the user has granted consent. (RUM resource events are still
       // reported — the consent-gated writer buffers or drops them itself.)
       let tc: TraceContext | null = null;
-      if (isInjectionAllowed(this.core)
-        && this.configuration.isFirstParty(hostOfUrl(context.request.url.toString()))
-        && shouldInjectTraceHeaders(context.request.headers)) {
+      const host: string = hostOfUrl(context.request.url.toString());
+      const firstParty: boolean = this.configuration.isFirstParty(host);
+      if (firstParty && isInjectionAllowed(this.core) && shouldInjectTraceHeaders(context.request.headers)) {
         tc = TraceContext.generate(this.configuration.sampleRate);
         if (context.request.headers === undefined) {
           context.request.headers = {};
@@ -51,7 +52,8 @@ export class TraceInterceptor implements rcp.Interceptor {
       requestKey = util.generateRandomUUID(true);
       // An unsampled trace is dropped by the APM backend, so advertising its ids on
       // the RUM resource would create a dead RUM->APM link. Correlate only when sampled.
-      notifyRequestStarted(this.core, requestKey, context.request, tc !== null && tc.sampled ? tc : null);
+      notifyRequestStarted(this.core, requestKey, context.request, tc !== null && tc.sampled ? tc : null,
+        firstParty ? host : '');
     } catch (error) {
       logTelemetryFailure('request start', error);
     }
@@ -187,16 +189,17 @@ function rumScope(core: SdkCore | null): FeatureScope | null {
 }
 
 function notifyRequestStarted(core: SdkCore | null, key: string,
-  request: rcp.Request, tc: TraceContext | null): void {
+  request: rcp.Request, tc: TraceContext | null, firstPartyHost: string): void {
   const traceId: string | undefined = tc !== null ? tc.traceId : undefined;
   const spanId: string | undefined = tc !== null ? tc.spanId : undefined;
-  publishResourceStarted(core, key, request.url.toString(), request.method ?? 'GET', traceId, spanId);
+  publishResourceStarted(core, key, request.url.toString(), request.method ?? 'GET', traceId, spanId,
+    firstPartyHost);
 }
 
 function notifyRequestCompleted(core: SdkCore | null, key: string, response: rcp.Response): void {
   publishResourceCompleted(core, key, response.statusCode,
     response.body !== undefined && response.body !== null ? response.body.byteLength : 0,
-    contentTypeOf(response.headers));
+    contentTypeOf(response.headers), transferTimingOfRcp(response.timeInfo));
 }
 
 function notifyRequestFailed(core: SdkCore | null, key: string, e: Object): void {
@@ -222,9 +225,14 @@ export function failureMessage(e: Object | undefined): string {
 // the FlashcatHttp wrapper). Keyed by plain url/method strings so any network
 // stack can drive RUM resource tracking through the same bus path. ----
 
-/** @internal */
+/**
+ * @internal
+ * @param firstPartyHost the url's host when it matches the configured
+ *        `firstPartyHosts` (the resource is then reported as the app's own,
+ *        `resource.provider`); '' otherwise
+ */
 export function publishResourceStarted(core: SdkCore | null, key: string, url: string,
-  method: string, traceId?: string, spanId?: string): void {
+  method: string, traceId: string | undefined, spanId: string | undefined, firstPartyHost: string): void {
   const scope: FeatureScope | null = rumScope(core);
   if (scope === null) {
     return;
@@ -234,6 +242,9 @@ export function publishResourceStarted(core: SdkCore | null, key: string, url: s
   event['key'] = key;
   event['url'] = url;
   event['method'] = method;
+  if (firstPartyHost.length > 0) {
+    event['first_party_host'] = firstPartyHost;
+  }
   if (traceId !== undefined) {
     event['trace_id'] = traceId;
   }
@@ -248,9 +259,12 @@ export function publishResourceStarted(core: SdkCore | null, key: string, url: s
   scope.sendEvent(event);
 }
 
-/** @internal */
+/**
+ * @internal
+ * @param timing the network kit's timing of the request, when it has one
+ */
 export function publishResourceCompleted(core: SdkCore | null, key: string,
-  statusCode: number, size: number, mimeType: string = ''): void {
+  statusCode: number, size: number, mimeType: string = '', timing?: TransferTiming): void {
   const scope: FeatureScope | null = rumScope(core);
   if (scope === null) {
     return;
@@ -264,6 +278,9 @@ export function publishResourceCompleted(core: SdkCore | null, key: string,
   // (image/media/font/css/js/native), matching the Android/iOS SDKs.
   if (mimeType.length > 0) {
     event['mime_type'] = mimeType;
+  }
+  if (timing !== undefined) {
+    event['timing'] = timing;
   }
   scope.sendEvent(event);
 }

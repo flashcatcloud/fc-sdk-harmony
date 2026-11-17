@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+- Resources carry the phases of their request — `resource.dns`, `connect`,
+  `ssl`, `first_byte`, `download`, each `{ start, duration }` in nanoseconds
+  from the start of the request, as in the browser and Android SDKs — when the
+  network kit timed it: requests through `FlashcatHttp`, and through the rcp
+  interceptor on a session that sets `tracing.collectTimeInfo`. A request on a
+  reused connection has no `dns` or `connect`, one over plain http no `ssl`.
+  A redirected request reports `resource.redirect` instead: the kit's other
+  times then cover every hop and cannot be split. Requests reported with
+  `startTracedResource` or `RumMonitor` (axios included) have no phases, and
+  neither does a request reported without a duration because it spanned a
+  stay in the background.
+- A request to one of the trace configuration's `firstPartyHosts` reports
+  `resource.provider` as `{ type: 'first party', domain: <host> }`, and so
+  does the network error of such a request that fails (`error.resource`). Without it
+  the backend could not tell the app's own requests from third-party ones.
 - A native crash carries its faulting address as the `crash.fault_address`
   attribute when the crash module reports one.
 - A burst of RUM calls no longer holds the calling thread. Within one turn of
