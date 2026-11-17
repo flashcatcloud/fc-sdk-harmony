@@ -146,7 +146,7 @@ export default function schemaAlignmentTests(): void {
     it('emitsSchemaVocabularyForOsDeviceConnectivityAndErrorId',
       TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
         const context: FlashcatContext = testContext();
-        context.device.osVersion = '5.0.0.102';
+        context.device.osVersion = 'OpenHarmony-6.1.1.125'; // deviceInfo.osFullName
         context.device.deviceType = 'phone';
         const event = RumEventAssembler.error(
           context, 'app-1', 'session-1', undefined, undefined,
@@ -156,7 +156,7 @@ export default function schemaAlignmentTests(): void {
         const device = record(event['device']);
         const connectivity = record(event['connectivity']);
         const error = record(event['error']);
-        expect(os['version_major']).assertEqual('5');
+        expect(os['version_major']).assertEqual('6');
         expect(device['type']).assertEqual('mobile');
         expect(device['name']).assertEqual('Pura');
         expect(connectivity['status']).assertEqual('connected');
@@ -172,7 +172,10 @@ export default function schemaAlignmentTests(): void {
       expect(RumEventAssembler.deviceTypeFor('tv')).assertEqual('tv');
       expect(RumEventAssembler.deviceTypeFor('wearable')).assertEqual('other');
       expect(RumEventAssembler.majorVersion('5.0.0.102')).assertEqual('5');
+      expect(RumEventAssembler.majorVersion('OpenHarmony-6.1.1.125')).assertEqual('6');
+      expect(RumEventAssembler.majorVersion('OpenHarmony-5.0.0')).assertEqual('5');
       expect(RumEventAssembler.majorVersion('NEXT')).assertEqual('');
+      expect(RumEventAssembler.majorVersion('')).assertEqual('');
     });
 
     it('extraInfoCannotOverrideAnonymousId', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {

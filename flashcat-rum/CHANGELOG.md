@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Events carry `os.version_major` again. The OS version the SDK reports is the
+  system's full name (for example `OpenHarmony-6.1.1.125`), which has no
+  leading number, so the major version came out empty and was left off every
+  event; it is now the first number in the version (`6`).
 - Resources carry the phases of their request — `resource.dns`, `connect`,
   `ssl`, `first_byte`, `download`, each `{ start, duration }` in nanoseconds
   from the start of the request, as in the browser and Android SDKs — when the
