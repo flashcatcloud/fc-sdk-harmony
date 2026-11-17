@@ -1,15 +1,27 @@
 # Changelog
 
-## Unreleased
+## 0.8.0
 
 - The RUM last-view file is written to a temporary file and renamed into
   place, so a process killed during the write leaves the previous file whole
   instead of a truncated one the next launch cannot read. Its write reports
   failure to RUM, which retries it.
 
+## 0.7.11
+
+- Released together with `@flashcatcloud/rum` 0.7.11, which cuts main-thread
+  load and avoids losing events to the disk quota under bursts of RUM calls.
 - Before the user (`setUserInfo`, `clearUserInfo`) or the tracking consent
   changes, the core asks RUM to process the events it still holds queued, so
   they are written with the user and consent of their call.
+
+## 0.7.10
+
+- No changes; released together with `@flashcatcloud/rum` 0.7.10.
+
+## 0.7.9
+
+- No changes; released together with `@flashcatcloud/rum` 0.7.9.
 
 ## 0.7.8
 
