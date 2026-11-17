@@ -76,6 +76,14 @@ export default function crashReportTests(): void {
         .assertUndefined();
     });
 
+    it('carriesTheFaultAddressAsAttribute', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+      const event: Record<string, Object> = { 'type': 'crash_report', 'crash_kind': 'crash', 'fault_address': '0x0' };
+      expect(RumFeature.crashAttributes(event)['crash.fault_address']).assertEqual('0x0');
+      // Negative control: a crash without one carries none.
+      expect(RumFeature.crashAttributes({ 'crash_kind': 'crash' } as Record<string, Object>)['crash.fault_address'])
+        .assertUndefined();
+    });
+
     it('carriesThreadsAndMemoryAtFault', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
       const threads: Array<Record<string, Object>> = [
         { 'name': 'example.app', 'crashed': true, 'stack': '#0 pc 0000000000001e10 /data/libentry.so' }

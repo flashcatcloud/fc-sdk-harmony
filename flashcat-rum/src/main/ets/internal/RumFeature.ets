@@ -994,6 +994,7 @@ export class RumFeature implements Feature, FeatureEventReceiver {
         attributes[`crash.memory.${key}`] = memory[key];
       }
     }
+    RumFeature.copyNonEmptyString(event, attributes, 'fault_address', 'crash.fault_address');
     const kind: Object | undefined = event['crash_kind'];
     // APP_FREEZE is the system watchdog's application-not-responding verdict
     // (delivered on next launch, like Android ANRs) — not a self-sampled hang,

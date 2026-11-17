@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- A native crash raised by the kernel for a fault (`SIGSEGV`, `SIGBUS`,
+  `SIGILL`, `SIGFPE`, `SIGTRAP` with a fault code) reports its faulting
+  address in `fault_address` (`0x0` for a null pointer dereference). The
+  message stays without it, so every occurrence of one fault still shares one
+  message. A signal sent by a process (`abort()`, `kill`) has no fault address.
 - Crash and freeze reports carry their error type (`error_type`): the signal
   of a native crash (`SIGSEGV`), the exception name of an ArkTS crash
   (`TypeError`, `SyntaxError`, …), the fault name of a freeze

@@ -437,6 +437,25 @@ export default function crashEventMapperTests(): void {
       expect(bare['error_type']).assertEqual('NativeCrash');
     });
 
+    it('reportsTheFaultAddressOfAKernelRaisedSignal', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+      const address = (signo: number, code: number | undefined, raw: string): Object | undefined =>
+        CrashEventMapper.fromAppCrash(nativeCrashWithSignal(signo, code, raw, ''))['fault_address'];
+      // The two spellings a device delivers: zero-padded without a prefix, and "0x"-prefixed.
+      expect(address(11, 1, '000000000000000000')).assertEqual('0x0');
+      expect(address(11, 2, '0x0000007F0000BEEF')).assertEqual('0x7f0000beef');
+      expect(address(7, 1, '00000000deadbeef')).assertEqual('0xdeadbeef');
+      // A signal a process sent carries the sender (pid and uid) in the address field: no fault address.
+      expect(address(6, -6, '0x01317bf500005d9a')).assertUndefined();
+      expect(address(11, 0, '0x0')).assertUndefined();
+      expect(address(11, 0x80, '0x0')).assertUndefined();
+      // Negative controls: no code, no usable address, no signal.
+      expect(address(11, undefined, '0x0')).assertUndefined();
+      expect(address(11, 1, '')).assertUndefined();
+      expect(address(11, 1, 'not-an-address')).assertUndefined();
+      expect(CrashEventMapper.fromAppCrash(nativeCrashWithSignal(undefined, 1, '0x0', ''))['fault_address'])
+        .assertUndefined();
+    });
+
     it('namesSignalCodesPerSignal', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
       const message = (signo: number, code: number | undefined): string =>
         CrashEventMapper.fromAppCrash(nativeCrashWithSignal(signo, code, '0x0', ''))['message'] as string;
