@@ -422,6 +422,20 @@ export default function crashEventMapperTests(): void {
       expect(CrashEventMapper.fromAppCrash({ 'crash_type': 'JsError' })['process_id']).assertUndefined();
     });
 
+    it('saysWhenTheFaultHappenedInTheBackground', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+      // The system's `foreground` flag: RUM reports a background fault of a session with no
+      // view in its Background view.
+      const background: Record<string, Object> = nativeCrashWithThreads();
+      background['foreground'] = false;
+      expect(CrashEventMapper.fromAppCrash(background)['in_background']).assertEqual(true);
+      expect(CrashEventMapper.fromAppFreeze(background)['in_background']).assertEqual(true);
+      // Negative controls: in the foreground, or not said at all, it is not in the background.
+      const foreground: Record<string, Object> = nativeCrashWithThreads();
+      foreground['foreground'] = true;
+      expect(CrashEventMapper.fromAppCrash(foreground)['in_background']).assertUndefined();
+      expect(CrashEventMapper.fromAppCrash(nativeCrashWithThreads())['in_background']).assertUndefined();
+    });
+
     it('namesANativeCrashBySignalAndCode', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
       // A native SIGSEGV as delivered: no name, an empty message, the signal under exception.signal.
       const ev: Record<string, Object> = CrashEventMapper.fromAppCrash(nativeCrashWithSignal(11, 1, '0x0', ''));

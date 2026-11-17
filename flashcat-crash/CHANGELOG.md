@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Crash and freeze reports say when the system reported the app in the
+  background at the fault (`in_background`), so RUM can report a background
+  fault of a session without a view in its `Background` view.
+- A JS crash of a session that was not sampled, persisted under
+  `REPORT_AND_RECOVER` whose restart then failed, stays sampled out. Rewriting
+  the incident as an exit lost the flag, so the next launch reported it in a
+  session of its own drawn again.
+
 - A native crash raised by the kernel for a fault (`SIGSEGV`, `SIGBUS`,
   `SIGILL`, `SIGFPE`, `SIGTRAP` with a fault code) reports its faulting
   address in `fault_address` (`0x0` for a null pointer dereference). The

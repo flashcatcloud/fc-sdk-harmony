@@ -1,5 +1,7 @@
 /** The view that holds what a session records before its first view. */
 export const APPLICATION_LAUNCH_VIEW: string = 'ApplicationLaunch';
+/** The view that holds a crash of a session that had no view, while the app was in the background. */
+export const BACKGROUND_VIEW: string = 'Background';
 
 /**
  * Internal raw event passed down the scope hierarchy. Scopes react to these and

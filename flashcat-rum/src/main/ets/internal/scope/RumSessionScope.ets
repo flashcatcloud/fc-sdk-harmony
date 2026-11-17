@@ -8,8 +8,9 @@ import { writeMapped } from '../RumEventMapperHolder';
 import { DrawnConfiguration } from '../remoteconfig/RemoteConfigStore';
 import { WithholdingFeatureScope } from './WithheldEvents';
 import { VitalsCollector } from '../vitals/VitalsCollector';
+import { LastViewSnapshot } from '../LastViewSnapshot';
 
-const SESSION_INACTIVITY_MS: number = 15 * 60 * 1000;     // 15 min
+export const SESSION_INACTIVITY_MS: number = 15 * 60 * 1000; // 15 min
 const SESSION_MAX_DURATION_MS: number = 4 * 60 * 60 * 1000; // 4 h
 // Closed views kept alive until their in-flight resources settle. Bounded so a
 // leak of never-settling requests can't pin unbounded view scopes.
@@ -93,6 +94,17 @@ export class RumSessionScope implements RumScope {
     // made it out before the process died.
     update['session.sampled'] = this.sampled;
     this.core.updateFeatureContext('rum', update);
+    // The same for a fault the next launch reports (native crash, freeze): it is this
+    // session's from now on, with this draw, even before the session has a view.
+    LastViewSnapshot.startSession({
+      id: this.sessionId,
+      sampled: this.sampled,
+      sampledForError: this.sampledOnError,
+      rcVersion: draw.version,
+      sessionSampleRate: draw.sessionSampleRate,
+      sessionOnError: draw.sessionOnError,
+      endedAtMs: 0
+    });
   }
 
   handleEvent(event: RumRawEvent): RumScope | null {
@@ -127,6 +139,8 @@ export class RumSessionScope implements RumScope {
         // view so it still reaches session_crash_count.
         this.lastStoppedView.handleEvent(event);
       }
+      // Ended first: a session thrown away below is then never read as running.
+      LastViewSnapshot.endSession(this.sessionId, this.expiredAtMs(event.timestampMs));
       if (this.withheld !== null) {
         if (crashIsOurs) {
           this.withheld.releaseForCrash();
@@ -268,6 +282,7 @@ export class RumSessionScope implements RumScope {
       const cleared: Record<string, Object> = {};
       cleared['session.id'] = '';
       this.core.updateFeatureContext('rum', cleared);
+      LastViewSnapshot.endSession(this.sessionId, this.expiredAtMs(event.timestampMs));
       return;
     }
     if (!this.sampled) {
@@ -321,6 +336,8 @@ export class RumSessionScope implements RumScope {
       this.retireView(this.activeView); // keep in-flight resources drainable
       this.activeView = null;
     }
+    // Ended first: a session thrown away below is then never read as running.
+    LastViewSnapshot.endSession(this.sessionId, this.isExpired(nowMs) ? this.expiredAtMs(nowMs) : nowMs);
     if (this.withheld !== null) {
       this.withheld.settle();
     }
@@ -489,6 +506,11 @@ export class RumSessionScope implements RumScope {
 
   private lastAliveMs(): number {
     return Math.max(this.lastActivityMs, this.lastKeepAliveMs);
+  }
+
+  /** When an expired session stopped being the one events go to: its inactivity or lifetime limit. */
+  private expiredAtMs(nowMs: number): number {
+    return Math.min(nowMs, this.lastActivityMs + SESSION_INACTIVITY_MS, this.startedAtMs + SESSION_MAX_DURATION_MS);
   }
 
   private isExpired(nowMs: number): boolean {
