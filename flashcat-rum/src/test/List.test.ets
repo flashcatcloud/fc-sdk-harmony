@@ -15,6 +15,7 @@ import viewLoadingTimeTests from './ViewLoadingTime.test';
 import resourceDurationBackgroundTests from './ResourceDurationBackground.test';
 import activeBeaconTests from './ActiveBeacon.test';
 import dispatchQueueTests from './DispatchQueue.test';
+import resourcePhasesTests from './ResourcePhases.test';
 
 export default function testsuite(): void {
   crashReportTests();
@@ -31,6 +32,7 @@ export default function testsuite(): void {
   resourceDurationBackgroundTests();
   activeBeaconTests();
   dispatchQueueTests();
+  resourcePhasesTests();
   describe('flashcat-rum', (): void => {
     it('defaultMonitorIsNoOp', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
       const monitor = GlobalRumMonitor.get();
