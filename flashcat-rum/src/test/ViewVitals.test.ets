@@ -1,14 +1,15 @@
 import { describe, expect, it, Level, Size, TestType } from '@ohos/hypium';
+import { process } from '@kit.ArkTS';
 import {
   FlashcatContext, FeatureScope, EventWriter, SdkCore, TrackingConsent,
   Feature, FeatureEventReceiver, UserInfo, IntakeTarget
 } from '@flashcatcloud/core';
 import { hidebug } from '@kit.PerformanceAnalysisKit';
 import { fileIo } from '@kit.CoreFileKit';
-import { ViewVitals } from '../main/ets/internal/vitals/ViewVitals';
+import { CpuReading, ViewVitals } from '../main/ets/internal/vitals/ViewVitals';
 import { ResourceSampler, ResourceReaders, SamplerTimer } from '../main/ets/internal/vitals/ResourceSampler';
 import {
-  parseUtimeTicks, parseVmRssKb, systemResourceReaders
+  parseAllowedCpus, parseStatField, parseVmRssKb, systemResourceReaders, UTIME_FIELD
 } from '../main/ets/internal/vitals/SystemResourceReaders';
 import {
   VitalsUpdateFrequency, vitalsPeriodMs, parseVitalsUpdateFrequency, DEFAULT_VITALS_UPDATE_FREQUENCY
@@ -161,12 +162,12 @@ class FakeReaders {
         }
         return Promise.resolve(this.memory);
       },
-      cpuTicks: (): number | null => {
+      cpu: (): CpuReading | null => {
         this.cpuReads++;
         if (this.cpuThrows) {
           throw new Error('13900012 permission denied');
         }
-        return this.cpu;
+        return ticksAt(this.cpu);
       }
     };
   }
@@ -187,13 +188,23 @@ class RejectingContextCore extends FakeCore {
   }
 }
 
+/** A view that records the sampler run of each CPU reading. */
+class RunRecordingVitals extends ViewVitals {
+  readonly runs: number[] = [];
+
+  onCpuSample(cpu: CpuReading, run: number): void {
+    this.runs.push(run);
+    super.onCpuSample(cpu, run);
+  }
+}
+
 /** A view whose sample handling fails. */
 class ThrowingVitals extends ViewVitals {
   onMemorySample(_bytes: number): void {
     throw new Error('view failed');
   }
 
-  onCpuSample(_ticks: number): void {
+  onCpuSample(_cpu: CpuReading, _run: number): void {
     throw new Error('view failed');
   }
 }
@@ -236,7 +247,17 @@ function vmRssKb(text: string): number | null {
 }
 
 function utimeTicks(text: string): number | null {
-  return parseUtimeTicks(bytesOf(text), text.length);
+  return parseStatField(bytesOf(text), text.length, UTIME_FIELD);
+}
+
+/** A reading at `ms` of `processTicks` ticks (all of them user time) and `main` main-thread ticks, on `cores` cores. */
+function cpuAt(ms: number, processTicks: number, main: number, cores: number = 4): CpuReading {
+  return { userTicks: processTicks, processTicks: processTicks, mainThreadTicks: main, cores: cores, atNs: ms * 1_000_000 };
+}
+
+/** A reading of `ticks` of user time alone, at no particular time: what the tick fields count. */
+function ticksAt(ticks: number, atNs: number = 0): CpuReading {
+  return { userTicks: ticks, processTicks: ticks, mainThreadTicks: -1, cores: 0, atNs: atNs };
 }
 
 class FakeFetcher implements RemoteConfigFetcher {
@@ -259,7 +280,7 @@ export default function viewVitalsTests(): void {
       const vitals: ViewVitals = new ViewVitals();
       expect(Object.keys(vitals.toFields(10 * SECOND_NS)).length).assertEqual(0);
       // One CPU reading is only a baseline: no ticks can be told from it.
-      vitals.onCpuSample(500);
+      vitals.onCpuSample(ticksAt(500), 0);
       expect(Object.keys(vitals.toFields(10 * SECOND_NS)).length).assertEqual(0);
     });
 
@@ -275,9 +296,9 @@ export default function viewVitalsTests(): void {
 
     it('cpuTicksCountFromTheViewsFirstReading', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
       const vitals: ViewVitals = new ViewVitals();
-      vitals.onCpuSample(1000);
-      vitals.onCpuSample(1004);
-      vitals.onCpuSample(1010);
+      vitals.onCpuSample(ticksAt(1000), 0);
+      vitals.onCpuSample(ticksAt(1004), 0);
+      vitals.onCpuSample(ticksAt(1010), 0);
       const fields: Record<string, Object> = vitals.toFields(2 * SECOND_NS);
       expect(fields['cpu_ticks_count']).assertEqual(10);
       expect(fields['cpu_ticks_per_second']).assertEqual(5);
@@ -285,12 +306,115 @@ export default function viewVitalsTests(): void {
 
     it('cpuTicksPerSecondNeedsAFullSecond', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
       const vitals: ViewVitals = new ViewVitals();
-      vitals.onCpuSample(0);
-      vitals.onCpuSample(3);
+      vitals.onCpuSample(ticksAt(0), 0);
+      vitals.onCpuSample(ticksAt(3), 0);
       const short: Record<string, Object> = vitals.toFields(SECOND_NS - 1);
       expect(short['cpu_ticks_count']).assertEqual(3);
       expect(short['cpu_ticks_per_second']).assertUndefined();
       expect(vitals.toFields(SECOND_NS)['cpu_ticks_per_second']).assertEqual(3);
+    });
+
+    it('cpuUsageIsTheProcessShareOfAllCoresAndTheMainThreadsOfOne', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+      // 4 cores, 1 s: 200 ticks of process time (2 s of CPU) is half of 4 cores; 50 ticks
+      // of main-thread time is half of one. The first half-second is the busy one.
+      const vitals: ViewVitals = new ViewVitals();
+      vitals.onCpuSample(cpuAt(0, 0, 0), 1);
+      vitals.onCpuSample(cpuAt(500, 160, 45), 1);
+      vitals.onCpuSample(cpuAt(1000, 200, 50), 1);
+      const fields: Record<string, Object> = vitals.toFields(SECOND_NS);
+      expect(fields['cpu_usage_average']).assertEqual(50);
+      expect(fields['cpu_usage_max']).assertEqual(80);
+      expect(fields['main_thread_cpu_usage_average']).assertEqual(50);
+      expect(fields['main_thread_cpu_usage_max']).assertEqual(90);
+      // The tick fields keep counting user time alone, as before.
+      expect(fields['cpu_ticks_count']).assertEqual(200);
+    });
+
+    it('cpuUsageNeedsAlmostASecondOfForegroundTime', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+      const vitals: ViewVitals = new ViewVitals();
+      vitals.onCpuSample(cpuAt(0, 0, 0), 1);
+      vitals.onCpuSample(cpuAt(850, 40, 10), 1);
+      const short: Record<string, Object> = vitals.toFields(SECOND_NS);
+      expect(short['cpu_usage_average']).assertUndefined();
+      expect(short['main_thread_cpu_usage_average']).assertUndefined();
+      // Negative control: 0.9 s is enough.
+      vitals.onCpuSample(cpuAt(900, 40, 10), 1);
+      expect(vitals.toFields(SECOND_NS)['cpu_usage_average'] !== undefined).assertTrue();
+      expect(vitals.toFields(SECOND_NS)['main_thread_cpu_usage_average'] !== undefined).assertTrue();
+    });
+
+    it('cpuUsageLeavesOutTheTimeBetweenTwoSamplerRuns', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+      // Run 1, a stay in the background (100 s, 5000 ticks the sampler never saw), run 2.
+      const feed = (runs: number[]): Record<string, Object> => {
+        const vitals: ViewVitals = new ViewVitals();
+        vitals.onCpuSample(cpuAt(0, 0, 0), runs[0]);
+        vitals.onCpuSample(cpuAt(500, 100, 25), runs[1]);
+        vitals.onCpuSample(cpuAt(100_500, 5100, 1025), runs[2]);
+        vitals.onCpuSample(cpuAt(101_000, 5200, 1050), runs[3]);
+        return vitals.toFields(SECOND_NS);
+      };
+      const split: Record<string, Object> = feed([1, 1, 2, 2]);
+      // 200 ticks over 1 s of foreground on 4 cores; 50 ticks over 1 s on the main thread.
+      expect(split['cpu_usage_average']).assertEqual(50);
+      expect(split['main_thread_cpu_usage_average']).assertEqual(50);
+      expect(split['cpu_usage_max']).assertEqual(50);
+      // Negative control: as one run, the background stay counts as if it were the view's.
+      const joined: Record<string, Object> = feed([1, 1, 1, 1]);
+      expect(joined['cpu_usage_average'] === 50).assertFalse();
+    });
+
+    it('aPeakIsTakenOverAQuarterSecondAtLeast', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+      // One tick of main-thread time in a 0.1 s gap would read 100 %: readings 0.1 s apart
+      // are merged until the interval reaches 0.25 s.
+      const vitals: ViewVitals = new ViewVitals();
+      vitals.onCpuSample(cpuAt(0, 0, 0, 1), 1);
+      vitals.onCpuSample(cpuAt(100, 10, 10, 1), 1);
+      for (let ms: number = 200; ms <= 1000; ms += 100) {
+        vitals.onCpuSample(cpuAt(ms, 10, 10, 1), 1);
+      }
+      const fields: Record<string, Object> = vitals.toFields(SECOND_NS);
+      // 10 ticks (0.1 s) over the first 0.3 s.
+      expect(Math.round((fields['main_thread_cpu_usage_max'] as number) * 1000) / 1000).assertEqual(33.333);
+      expect(Math.round((fields['cpu_usage_max'] as number) * 1000) / 1000).assertEqual(33.333);
+      expect(fields['main_thread_cpu_usage_average']).assertEqual(10);
+    });
+
+    it('anUnknownCoreCountOrMainThreadLeavesOnlyItsOwnFieldsOut', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+      const noCores: ViewVitals = new ViewVitals();
+      noCores.onCpuSample(cpuAt(0, 0, 0, 0), 1);
+      noCores.onCpuSample(cpuAt(1000, 100, 50, 0), 1);
+      const a: Record<string, Object> = noCores.toFields(SECOND_NS);
+      expect(a['cpu_usage_average']).assertUndefined();
+      expect(a['cpu_usage_max']).assertUndefined();
+      expect(a['main_thread_cpu_usage_average']).assertEqual(50);
+      const noMain: ViewVitals = new ViewVitals();
+      noMain.onCpuSample(cpuAt(0, 0, -1), 1);
+      noMain.onCpuSample(cpuAt(1000, 100, -1), 1);
+      const b: Record<string, Object> = noMain.toFields(SECOND_NS);
+      expect(b['main_thread_cpu_usage_average']).assertUndefined();
+      expect(b['main_thread_cpu_usage_max']).assertUndefined();
+      expect(b['cpu_usage_average']).assertEqual(25);
+    });
+
+    it('aReadingAtTheSameInstantLosesNoTicks', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+      // Two views' timers can land on one clock reading: what the second adds is counted with the next.
+      const vitals: ViewVitals = new ViewVitals();
+      vitals.onCpuSample(cpuAt(0, 0, 0), 1);
+      vitals.onCpuSample(cpuAt(500, 100, 25), 1);
+      vitals.onCpuSample(cpuAt(500, 120, 30), 1);
+      vitals.onCpuSample(cpuAt(1000, 200, 50), 1);
+      expect(vitals.toFields(SECOND_NS)['cpu_usage_average']).assertEqual(50);
+      expect(vitals.toFields(SECOND_NS)['main_thread_cpu_usage_average']).assertEqual(50);
+    });
+
+    it('cpuUsageNeverReadsAboveAHundred', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+      // Tick accounting can run slightly ahead of the clock: a full core reads 100, not more.
+      const vitals: ViewVitals = new ViewVitals();
+      vitals.onCpuSample(cpuAt(0, 0, 0, 1), 1);
+      vitals.onCpuSample(cpuAt(1000, 103, 103, 1), 1);
+      const fields: Record<string, Object> = vitals.toFields(SECOND_NS);
+      expect(fields['cpu_usage_average']).assertEqual(100);
+      expect(fields['main_thread_cpu_usage_max']).assertEqual(100);
     });
 
     it('frequenciesMeanTheAndroidPeriods', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
@@ -332,10 +456,56 @@ export default function viewVitalsTests(): void {
       pseudo.set('/proc/self/stat', STAT_LINE);
       try {
         expect(fileIo.readTextSync('/proc/self/stat')).assertEqual(''); // the trap the reader must avoid
-        const read: (() => number | null) | null = systemResourceReaders().cpuTicks;
-        expect(read === null ? null : read()).assertEqual(4242);
+        const read: (() => CpuReading | null) | null = systemResourceReaders().cpu;
+        expect(read === null ? null : read()?.userTicks).assertEqual(4242);
       } finally {
         pseudo.delete('/proc/self/stat');
+      }
+    });
+
+    it('statTimesAreField14And15', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+      expect(parseStatField(bytesOf(STAT_LINE), STAT_LINE.length, 15)).assertEqual(77);
+      // Negative control: a line that stops at utime has no stime.
+      const short: string = '1 (a) S 1 1 0 0 -1 0 0 0 0 0 4242';
+      expect(parseStatField(bytesOf(short), short.length, 15)).assertNull();
+    });
+
+    it('theAllowedCpusAreCountedFromTheStatusText', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+      const cpus = (list: string): number | null => {
+        const text: string = `Name:\tentry\nCpus_allowed:\t1ff\nCpus_allowed_list:\t${list}\nVmRSS:\t 1 kB\n`;
+        return parseAllowedCpus(bytesOf(text), text.length);
+      };
+      expect(cpus('0,1,2,3,4,5,6,7,8')).assertEqual(9);
+      expect(cpus('0-8')).assertEqual(9);
+      expect(cpus('0-3,6,8-9')).assertEqual(7);
+      // Negative controls: no such line, an inverted range, or junk.
+      expect(parseAllowedCpus(bytesOf(STATUS_TEXT), STATUS_TEXT.length)).assertNull();
+      expect(cpus('3-1')).assertNull();
+      expect(cpus('x')).assertNull();
+    });
+
+    it('aReadingHasTheProcessesAndTheMainThreadsTimes', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+      const pseudo: Map<string, string> = (fileIo as Object as Record<string, Object>)['pseudoFiles'] as Map<string, string>;
+      const mainPath: string = `/proc/self/task/${process.pid}/stat`;
+      try {
+        pseudo.set('/proc/self/stat', `${STAT_LINE}\n`);
+        pseudo.set(mainPath, `${STAT_LINE.replace(' 4242 77 ', ' 300 20 ')}\n`);
+        pseudo.set('/proc/self/status', `${STATUS_TEXT}Cpus_allowed_list:\t0-8\n`);
+        const read: (() => CpuReading | null) | null = systemResourceReaders().cpu;
+        const cpu: CpuReading | null = read === null ? null : read();
+        expect(cpu?.userTicks).assertEqual(4242);
+        expect(cpu?.processTicks).assertEqual(4242 + 77);
+        expect(cpu?.mainThreadTicks).assertEqual(320);
+        expect((cpu?.atNs ?? 0) > 0).assertTrue();
+        // Negative control: an unreadable main thread leaves only its own value out.
+        pseudo.set(mainPath, 'not a stat line\n');
+        const without: CpuReading | null = read === null ? null : read();
+        expect(without?.processTicks).assertEqual(4242 + 77);
+        expect(without?.mainThreadTicks).assertEqual(-1);
+      } finally {
+        pseudo.delete('/proc/self/stat');
+        pseudo.delete(mainPath);
+        pseudo.delete('/proc/self/status');
       }
     });
 
@@ -343,9 +513,9 @@ export default function viewVitalsTests(): void {
       // The readers reuse one buffer: what a longer earlier read left in it is not part of the next file.
       const pseudo: Map<string, string> = (fileIo as Object as Record<string, Object>)['pseudoFiles'] as Map<string, string>;
       try {
-        const read: (() => number | null) | null = systemResourceReaders().cpuTicks;
+        const read: (() => CpuReading | null) | null = systemResourceReaders().cpu;
         pseudo.set('/proc/self/stat', STAT_LINE);
-        expect(read === null ? null : read()).assertEqual(4242);
+        expect(read === null ? null : read()?.userTicks).assertEqual(4242);
         pseudo.set('/proc/self/stat', '1234 (app) S 1 2 3');
         expect(read === null ? null : read()).assertNull();
       } finally {
@@ -359,16 +529,17 @@ export default function viewVitalsTests(): void {
       const pseudo: Map<string, string> = io['pseudoFiles'] as Map<string, string>;
       const calls: Record<string, number> = io['calls'] as Record<string, number>;
       try {
-        const read: (() => number | null) | null = systemResourceReaders().cpuTicks;
+        const read: (() => CpuReading | null) | null = systemResourceReaders().cpu;
         pseudo.set('/proc/self/stat', `${STAT_LINE}\n`);
-        expect(read === null ? null : read()).assertEqual(4242);
+        expect(read === null ? null : read()?.userTicks).assertEqual(4242);
         const opens: number = calls['openSync'];
         const reads: number = calls['readSync'];
         pseudo.set('/proc/self/stat', `${STAT_LINE.replace(' 4242 ', ' 5000 ')}\n`);
-        expect(read === null ? null : read()).assertEqual(5000);
+        expect(read === null ? null : read()?.userTicks).assertEqual(5000);
         expect(calls['openSync']).assertEqual(opens);
         // A whole line in the first read is the whole file: no read on to the empty one at the end.
-        expect(calls['readSync'] - reads).assertEqual(1);
+        // One read each for the process's stat and the main thread's.
+        expect(calls['readSync'] - reads).assertEqual(2);
       } finally {
         pseudo.delete('/proc/self/stat');
       }
@@ -426,6 +597,25 @@ export default function viewVitalsTests(): void {
         limit['limit'] = 0;
         pseudo.delete('/proc/self/status');
       }
+    });
+
+    it('aStayInTheBackgroundEndsTheSamplersRun', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+      // A view must know which readings have only foreground time between them.
+      const readers: FakeReaders = new FakeReaders();
+      const timer: FakeTimer = new FakeTimer();
+      const s: ResourceSampler = sampler(readers, timer);
+      const runs: RunRecordingVitals = new RunRecordingVitals();
+      s.register(runs);
+      s.setForeground(true);
+      timer.fire();
+      s.setForeground(false);
+      s.setForeground(true);
+      timer.fire();
+      expect(runs.runs.length).assertEqual(4);
+      // Negative control: readings of one stretch in the foreground share their run.
+      expect(runs.runs[1]).assertEqual(runs.runs[0]);
+      expect(runs.runs[2] === runs.runs[1]).assertFalse();
+      expect(runs.runs[3]).assertEqual(runs.runs[2]);
     });
 
     it('nothingIsSampledInTheBackground', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, async (): Promise<void> => {

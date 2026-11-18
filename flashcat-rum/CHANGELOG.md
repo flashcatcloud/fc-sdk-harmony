@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+- New: CPU usage per view as a percentage, with the same field names and
+  meaning as the iOS SDK, so the two platforms can be compared.
+  - `view.cpu_usage_average` / `view.cpu_usage_max`: the process's CPU time
+    (user and system, all threads) as a percentage of all the cores it may run
+    on.
+  - `view.main_thread_cpu_usage_average` / `view.main_thread_cpu_usage_max`:
+    the main thread's, as a percentage of one core.
+  - Only foreground time between consecutive readings counts; a stay in the
+    background in the middle of a view is left out.
+  - Peaks are taken over intervals of at least 0.25 s and are never below the
+    average.
+  - Reported once the view has 0.9 s of foreground time.
+  - `view.cpu_ticks_count` / `view.cpu_ticks_per_second` are unchanged (user
+    time, Android parity).
 - Every crash and freeze reports whether the app was in the foreground at the
   fault (`view.in_foreground`) and whether its session was drawn by the sample
   rate (`session.sampled`): `true` when drawn or forced, `false` when kept only
