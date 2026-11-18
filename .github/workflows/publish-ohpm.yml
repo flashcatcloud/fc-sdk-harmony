@@ -154,12 +154,11 @@ jobs:
           node <<'NODE'
           const { execFileSync } = require('node:child_process');
 
-          const packages = [
-            ['flashcat-core/build/default/outputs/default/flashcat_core.har', '@flashcatcloud/core'],
-            ['flashcat-rum/build/default/outputs/default/flashcat_rum.har', '@flashcatcloud/rum'],
-            ['flashcat-crash/build/default/outputs/default/flashcat_crash.har', '@flashcatcloud/crash'],
-            ['flashcat-trace/build/default/outputs/default/flashcat_trace.har', '@flashcatcloud/trace'],
-          ];
+          // The packages the publish step publishes: flashcat_<x> is @flashcatcloud/<x>.
+          const packages = process.env.HARMONY_MODULES.trim().split(/\s+/).map((module) => [
+            `${module.replace('_', '-')}/build/default/outputs/default/${module}.har`,
+            `@flashcatcloud/${module.substring('flashcat_'.length)}`,
+          ]);
 
           for (const [har, expectedName] of packages) {
             const manifest = execFileSync('tar', ['-xOzf', har, 'package/oh-package.json5'], { encoding: 'utf8' });
@@ -174,20 +173,15 @@ jobs:
       - name: Prepublish check
         run: |
           set -euo pipefail
-          ohpm prepublish flashcat-core/build/default/outputs/default/flashcat_core.har
-          ohpm prepublish flashcat-rum/build/default/outputs/default/flashcat_rum.har
-          ohpm prepublish flashcat-crash/build/default/outputs/default/flashcat_crash.har
-          ohpm prepublish flashcat-trace/build/default/outputs/default/flashcat_trace.har
+          for module in $HARMONY_MODULES; do
+            ohpm prepublish "${module/_/-}/build/default/outputs/default/${module}.har"
+          done
 
       - name: Upload HAR artifacts
         uses: actions/upload-artifact@v4
         with:
           name: harmony-ohpm-har
-          path: |
-            flashcat-core/build/default/outputs/default/flashcat_core.har
-            flashcat-rum/build/default/outputs/default/flashcat_rum.har
-            flashcat-crash/build/default/outputs/default/flashcat_crash.har
-            flashcat-trace/build/default/outputs/default/flashcat_trace.har
+          path: flashcat-*/build/default/outputs/default/flashcat_*.har
           if-no-files-found: error
 
       - name: Configure ohpm publish credentials
