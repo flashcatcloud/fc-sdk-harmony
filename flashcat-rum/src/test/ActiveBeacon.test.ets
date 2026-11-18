@@ -71,6 +71,9 @@ class FakeCore implements SdkCore {
   isAppInForeground(): boolean {
     return this.foreground;
   }
+  isAppStateKnown(): boolean {
+    return true;
+  }
   setUserInfo(user: UserInfo): void {
     this.user = user;
   }

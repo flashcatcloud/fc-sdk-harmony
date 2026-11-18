@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- `SdkCore.isAppStateKnown()`: whether the system has said yet if the app is
+  in the foreground or the background. Until it has, `isAppInForeground()`
+  false means unknown, not background.
+
 ## 0.8.0
 
 - The RUM last-view file is written to a temporary file and renamed into

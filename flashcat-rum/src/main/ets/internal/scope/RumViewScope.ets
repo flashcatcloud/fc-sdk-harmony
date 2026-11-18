@@ -201,9 +201,9 @@ export class RumViewScope implements RumScope {
       case 'addError':
         this.errorCount += 1;
         // A crash (is_crash) also bumps the view's crash count so the backend can
-        // derive session_crash_count → crash-free rate. Freezes/app-hangs currently
-        // arrive as is_crash too (distinguished by error.category); counting them
-        // here keeps crash-free rate consistent with 崩溃次数 (= is_crash errors).
+        // derive session_crash_count → crash-free rate. Only crashes the process
+        // lives through report here; a freeze is reported by the next launch and
+        // never counts as a crash (RumFeature).
         if (event.isCrash === true) {
           this.crashCount += 1;
         }
@@ -384,11 +384,13 @@ export class RumViewScope implements RumScope {
   }
 
   private writeError(raw: RumRawEvent): void {
+    const attributes: Record<string, Object> = this.viewAttributes(raw.attributes);
     this.featureScope.withWriteContext((context: FlashcatContext, writer: EventWriter) => {
       const event: Record<string, Object> = RumEventAssembler.error(
         context, this.applicationId, this.sessionId, this.viewId, this.viewName,
         raw.errorMessage ?? '', raw.errorSource ?? 'source', raw.errorStack,
-        raw.isCrash ?? false, raw.errorHandling ?? 'handled', raw.timestampMs, this.viewAttributes(raw.attributes));
+        raw.isCrash ?? false, raw.errorHandling ?? 'handled', raw.timestampMs,
+        raw.isCrash === true ? RumEventAssembler.withSessionSampled(attributes, !this.sampledForError) : attributes);
       // Error/crash events are force-flushed so they upload promptly (not after the
       // 5s/512KB batch threshold).
       writeMapped(writer, event, true);

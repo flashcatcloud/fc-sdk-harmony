@@ -10,6 +10,11 @@ const ERROR_TYPE_ATTRIBUTE: string = 'error.type';
 const ERROR_SOURCE_TYPE_ATTRIBUTE: string = 'error.source_type';
 const ERROR_META_CODE_TYPE_ATTRIBUTE: string = 'error.meta.code_type';
 const ERROR_THREADS_ATTRIBUTE: string = 'error.threads';
+// Stamped on fatal errors only (crashes, freezes): whether the app was in the
+// foreground at the fault, and whether the session was drawn by the sample rate
+// (or forced) rather than kept only because it errored. Absent when unknown.
+const VIEW_IN_FOREGROUND_ATTRIBUTE: string = 'view.in_foreground';
+const SESSION_SAMPLED_ATTRIBUTE: string = 'session.sampled';
 
 export const APP_LAUNCH_TTID: string = 'ttid';
 export const APP_LAUNCH_TTFD: string = 'ttfd';
@@ -115,7 +120,8 @@ export class RumEventAssembler {
       event['build_id'] = buildId;
     }
     event['application'] = RumEventAssembler.idObj(applicationId);
-    event['session'] = RumEventAssembler.session(sessionId);
+    const session: Record<string, Object> = RumEventAssembler.session(sessionId);
+    event['session'] = session;
     if (viewId !== undefined) {
       const view: Record<string, Object> = {};
       view['id'] = viewId;
@@ -172,9 +178,37 @@ export class RumEventAssembler {
       error['resource'] = errResource;
     }
     event['error'] = error;
+    if (isCrash) {
+      const inForeground: Object | undefined = attributes[VIEW_IN_FOREGROUND_ATTRIBUTE];
+      const view: Object | undefined = event['view'];
+      if (typeof inForeground === 'boolean' && view !== undefined) {
+        (view as Record<string, Object>)['in_foreground'] = inForeground;
+      }
+      const sampled: Object | undefined = attributes[SESSION_SAMPLED_ATTRIBUTE];
+      if (typeof sampled === 'boolean') {
+        session['sampled'] = sampled;
+      }
+    }
 
     RumEventAssembler.applyContext(event, context, attributes);
     return event;
+  }
+
+  /**
+   * A copy of `attributes` saying whether the session an error is written in was
+   * drawn — unless they already say it (a replayed crash carries what its run
+   * recorded). Only a crash reports it.
+   */
+  static withSessionSampled(attributes: Record<string, Object>, sampled: boolean): Record<string, Object> {
+    if (typeof attributes[SESSION_SAMPLED_ATTRIBUTE] === 'boolean') {
+      return attributes;
+    }
+    const out: Record<string, Object> = {};
+    for (const key of Object.keys(attributes)) {
+      out[key] = attributes[key];
+    }
+    out[SESSION_SAMPLED_ATTRIBUTE] = sampled;
+    return out;
   }
 
   /**
@@ -485,7 +519,7 @@ export class RumEventAssembler {
     return key === VIEW_URL_ATTRIBUTE || key === BUILD_ID_ATTRIBUTE ||
       key === ERROR_BINARY_IMAGES_ATTRIBUTE || key === ERROR_CATEGORY_ATTRIBUTE || key === ERROR_TYPE_ATTRIBUTE ||
       key === ERROR_SOURCE_TYPE_ATTRIBUTE || key === ERROR_META_CODE_TYPE_ATTRIBUTE ||
-      key === ERROR_THREADS_ATTRIBUTE;
+      key === ERROR_THREADS_ATTRIBUTE || key === VIEW_IN_FOREGROUND_ATTRIBUTE || key === SESSION_SAMPLED_ATTRIBUTE;
   }
 
   private static asString(value: Object | undefined): string {

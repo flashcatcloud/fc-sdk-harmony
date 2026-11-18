@@ -61,7 +61,7 @@ export default function crashAttributionTests(): void {
   describe('crashAttribution', (): void => {
     it('marksCrashAndAdvancesDocumentVersion', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0,
       (): void => {
-        const marked: Record<string, Object> = RumFeature.viewEventWithCrash(viewEvent(0, 4));
+        const marked: Record<string, Object> = RumFeature.viewEventWithCrash(viewEvent(0, 4), true);
         expect(countOf(marked, 'crash')).assertEqual(1);
         expect((marked['_dd'] as Record<string, Object>)['document_version']).assertEqual(5);
         expect(viewOf(marked)['is_active']).assertEqual(false);
@@ -69,14 +69,14 @@ export default function crashAttributionTests(): void {
 
     it('incrementsAnExistingCrashCount', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0,
       (): void => {
-        const marked: Record<string, Object> = RumFeature.viewEventWithCrash(viewEvent(2, 9));
+        const marked: Record<string, Object> = RumFeature.viewEventWithCrash(viewEvent(2, 9), true);
         expect(countOf(marked, 'crash')).assertEqual(3);
         expect((marked['_dd'] as Record<string, Object>)['document_version']).assertEqual(10);
       });
 
     it('treatsAMissingCrashObjectAsZero', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0,
       (): void => {
-        const marked: Record<string, Object> = RumFeature.viewEventWithCrash(viewEvent(undefined, 1));
+        const marked: Record<string, Object> = RumFeature.viewEventWithCrash(viewEvent(undefined, 1), true);
         expect(countOf(marked, 'crash')).assertEqual(1);
       });
 
@@ -85,7 +85,7 @@ export default function crashAttributionTests(): void {
     // crash alone left the session permanently one error short.
     it('countsTheCrashAsAnErrorToo', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0,
       (): void => {
-        const marked: Record<string, Object> = RumFeature.viewEventWithCrash(viewEvent(0, 4));
+        const marked: Record<string, Object> = RumFeature.viewEventWithCrash(viewEvent(0, 4), true);
         expect(countOf(marked, 'error')).assertEqual(4); // 3 + this crash
         expect(countOf(marked, 'crash')).assertEqual(1);
       });
@@ -94,7 +94,7 @@ export default function crashAttributionTests(): void {
     // session's totals on the backend.
     it('leavesUnrelatedCountersUntouched', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0,
       (): void => {
-        const marked: Record<string, Object> = RumFeature.viewEventWithCrash(viewEvent(0, 4));
+        const marked: Record<string, Object> = RumFeature.viewEventWithCrash(viewEvent(0, 4), true);
         expect(countOf(marked, 'action')).assertEqual(7);
         expect(countOf(marked, 'resource')).assertEqual(5);
         expect(viewOf(marked)['time_spent']).assertEqual(1234000000);
@@ -102,7 +102,7 @@ export default function crashAttributionTests(): void {
 
     it('keepsIdentityAndViewStartDate', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0,
       (): void => {
-        const marked: Record<string, Object> = RumFeature.viewEventWithCrash(viewEvent(0, 4));
+        const marked: Record<string, Object> = RumFeature.viewEventWithCrash(viewEvent(0, 4), true);
         expect((marked['session'] as Record<string, Object>)['id']).assertEqual('session-1');
         expect(viewOf(marked)['id']).assertEqual('view-1');
         expect(viewOf(marked)['url']).assertEqual('pages/Index.js');
@@ -115,7 +115,7 @@ export default function crashAttributionTests(): void {
     it('doesNotMutateTheSourceSnapshot', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0,
       (): void => {
         const source: Record<string, Object> = viewEvent(0, 4);
-        RumFeature.viewEventWithCrash(source);
+        RumFeature.viewEventWithCrash(source, true);
         expect(countOf(source, 'crash')).assertEqual(0);
         expect(countOf(source, 'error')).assertEqual(3);
         expect(viewOf(source)['is_active']).assertEqual(true);
@@ -126,8 +126,8 @@ export default function crashAttributionTests(): void {
     // it must land on the next version rather than re-issue a settled one.
     it('chainsASecondFaultOntoTheNextVersion', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0,
       (): void => {
-        const first: Record<string, Object> = RumFeature.viewEventWithCrash(viewEvent(0, 4));
-        const second: Record<string, Object> = RumFeature.viewEventWithCrash(first);
+        const first: Record<string, Object> = RumFeature.viewEventWithCrash(viewEvent(0, 4), true);
+        const second: Record<string, Object> = RumFeature.viewEventWithCrash(first, true);
         expect(countOf(second, 'crash')).assertEqual(2);
         expect(countOf(second, 'error')).assertEqual(5); // 3 + two crashes
         expect((second['_dd'] as Record<string, Object>)['document_version']).assertEqual(6);
