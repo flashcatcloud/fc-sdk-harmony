@@ -8,7 +8,7 @@ DEVECO=/Applications/DevEco-Studio.app/Contents
 export DEVECO_SDK_HOME="$DEVECO/sdk"
 export PATH="$DEVECO/tools/ohpm/bin:$DEVECO/tools/node/bin:$PATH"
 HVIGORW="$DEVECO/tools/hvigor/bin/hvigorw"
-MODULES="flashcat_core@default,flashcat_rum@default,flashcat_crash@default,flashcat_trace@default"
+MODULES="flashcat_core@default,flashcat_rum@default,flashcat_crash@default,flashcat_trace@default,flashcat_axios@default"
 
 echo "==> unit tests (headless)"
 node scripts/unit-node/run.mjs
