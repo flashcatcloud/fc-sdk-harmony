@@ -74,8 +74,11 @@ export default function appForegroundTests(): void {
       const received: string[] = [];
       const core: FlashcatCore = build(new FakeApp(appManager.ProcessState.STATE_ACTIVE), received);
       expect(core.isAppInForeground()).assertFalse();
+      // Not yet answered: unknown, not background.
+      expect(core.isAppStateKnown()).assertFalse();
       await settle();
       expect(core.isAppInForeground()).assertTrue();
+      expect(core.isAppStateKnown()).assertTrue();
       expect(received.indexOf('app_foreground_detected') !== -1).assertTrue();
       // Not a return from the background: RUM must not refresh its remote
       // configuration for it, so the app_foreground message is not sent.
@@ -92,6 +95,10 @@ export default function appForegroundTests(): void {
       await settle();
       expect(received.indexOf('app_foreground_detected')).assertEqual(-1);
       expect(received.indexOf('app_background')).assertEqual(-1);
+      // Neither said: the state stays unknown until a callback says it.
+      expect(core.isAppStateKnown()).assertFalse();
+      (app.callback as ApplicationStateChangeCallback).onApplicationForeground();
+      expect(core.isAppStateKnown()).assertTrue();
       core.stop();
     });
 
@@ -101,6 +108,8 @@ export default function appForegroundTests(): void {
       const core: FlashcatCore = build(app, received);
       await settle();
       expect(core.isAppInForeground()).assertFalse();
+      // Said: background, not unknown.
+      expect(core.isAppStateKnown()).assertTrue();
       expect(received.indexOf('app_foreground_detected')).assertEqual(-1);
       // Announced like a move to the background: the process can be frozen.
       expect(received.filter((t: string) => t === 'app_background').length).assertEqual(1);

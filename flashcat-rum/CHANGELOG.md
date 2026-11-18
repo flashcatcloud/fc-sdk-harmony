@@ -1,5 +1,20 @@
 # Changelog
 
+## Unreleased
+
+- Every crash and freeze reports whether the app was in the foreground at the
+  fault (`view.in_foreground`) and whether its session was drawn by the sample
+  rate (`session.sampled`): `true` when drawn or forced, `false` when kept only
+  because it errored. Both are recorded when the fault happens and reported as
+  recorded, also when the next launch reports it. `view.in_foreground` is left
+  out when the state is unknown — early in a launch, before the system has
+  said, or for a crash of an earlier version — and when the error has no view;
+  `session.sampled` is left out for a crash of an earlier version. Neither is
+  set on jank or on any other error.
+- A freeze (`error.category = "ANR"`) no longer counts in its view's
+  `view.crash.count`; it still counts in `view.error.count` and stays
+  `is_crash = true`. Crash counts leave freezes out; the ANR rate counts them.
+
 ## 0.8.0
 
 - New: per-view performance vitals, with the same field names and units as

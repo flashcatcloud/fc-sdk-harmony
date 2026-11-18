@@ -506,6 +506,13 @@ export class CrashIncidentRecord {
    * at replay time inflated that session's crash count and skewed crash-free
    * rate by ~1/sampleRate. Legacy records without the field parse as true. */
   readonly originSampled: boolean;
+  /** Whether the app was in the foreground at the crash; undefined when the SDK
+   * did not know yet, and for records written before this was recorded. */
+  readonly inForeground: boolean | undefined;
+  /** Whether the crashed run's session was drawn by the sample rate (or forced),
+   * as opposed to kept only because it errored; undefined without a session, and
+   * for records written before this was recorded. */
+  readonly sessionSampled: boolean | undefined;
 
   constructor(
     incidentId: string,
@@ -520,7 +527,9 @@ export class CrashIncidentRecord {
     viewId: string,
     viewName: string,
     viewUrl: string = '',
-    originSampled: boolean = true
+    originSampled: boolean = true,
+    inForeground: boolean | undefined = undefined,
+    sessionSampled: boolean | undefined = undefined
   ) {
     this.incidentId = incidentId;
     this.timestampMs = timestampMs;
@@ -535,6 +544,8 @@ export class CrashIncidentRecord {
     this.viewName = viewName;
     this.viewUrl = viewUrl;
     this.originSampled = originSampled;
+    this.inForeground = inForeground;
+    this.sessionSampled = sessionSampled;
   }
 
   serialize(): string {
@@ -553,6 +564,12 @@ export class CrashIncidentRecord {
       'view_url': this.viewUrl,
       'origin_sampled': this.originSampled
     };
+    if (this.inForeground !== undefined) {
+      record['in_foreground'] = this.inForeground;
+    }
+    if (this.sessionSampled !== undefined) {
+      record['session_sampled'] = this.sessionSampled;
+    }
     return JSON.stringify(record);
   }
 
@@ -587,7 +604,9 @@ export class CrashIncidentRecord {
         CrashIncidentRecord.stringValue(record['view_id']),
         CrashIncidentRecord.stringValue(record['view_name']),
         CrashIncidentRecord.stringValue(record['view_url']),
-        record['origin_sampled'] !== false);
+        record['origin_sampled'] !== false,
+        CrashIncidentRecord.booleanValue(record['in_foreground']),
+        CrashIncidentRecord.booleanValue(record['session_sampled']));
     } catch (_error) {
       return null;
     }
@@ -608,6 +627,10 @@ export class CrashIncidentRecord {
 
   private static stringValue(value: Object | undefined): string {
     return typeof value === 'string' ? value : '';
+  }
+
+  private static booleanValue(value: Object | undefined): boolean | undefined {
+    return typeof value === 'boolean' ? value : undefined;
   }
 
   private static numberValue(value: Object | undefined): number {

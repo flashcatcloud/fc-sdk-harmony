@@ -64,6 +64,9 @@ class FakeCore implements SdkCore {
   /** What getContext reports for this launch: change them to model an app update or a sign-out. */
   appVersion: string = '1.0.0';
   user: UserInfo = {};
+  /** What the system has said about the app's state: unknown until `stateKnown`. */
+  foreground: boolean = false;
+  stateKnown: boolean = true;
 
   registerFeature(_feature: Feature): void {}
   getFeature(featureName: string): FeatureScope | null {
@@ -95,7 +98,10 @@ class FakeCore implements SdkCore {
     return true;
   }
   isAppInForeground(): boolean {
-    return false;
+    return this.foreground;
+  }
+  isAppStateKnown(): boolean {
+    return this.stateKnown;
   }
   setUserInfo(_user: UserInfo): void {}
   clearUserInfo(): void {}
@@ -498,6 +504,23 @@ function viewNameOf(event: Record<string, Object>): string {
   return (event['view'] as Record<string, Object>)['name'] as string;
 }
 
+/** `view.in_foreground` of an error: undefined when it has none (or no view). */
+function inForegroundOf(event: Record<string, Object>): Object | undefined {
+  const view: Object | undefined = event['view'];
+  return view === undefined ? undefined : (view as Record<string, Object>)['in_foreground'];
+}
+
+function errorCountOf(event: Record<string, Object>): number {
+  return ((event['view'] as Record<string, Object>)['error'] as Record<string, Object>)['count'] as number;
+}
+
+/** Neither marker leaks into the custom attributes. */
+function markersStayOutOfTheContext(event: Record<string, Object>): void {
+  const context: Record<string, Object> = event['context'] as Record<string, Object>;
+  expect(context['view.in_foreground']).assertUndefined();
+  expect(context['session.sampled']).assertUndefined();
+}
+
 function crashCountOf(event: Record<string, Object>): number {
   return ((event['view'] as Record<string, Object>)['crash'] as Record<string, Object>)['count'] as number;
 }
@@ -783,11 +806,15 @@ export default function sessionOnErrorTests(): void {
           expect(errorView['name']).assertEqual('ApplicationLaunch');
           expect(view['date']).assertEqual(crashedAtMs);
           expect(viewBody['is_active']).assertEqual(false);
-          expect((viewBody['crash'] as Record<string, Object>)['count']).assertEqual(1);
+          // A freeze is an error of the view, not one of its crashes.
+          expect((viewBody['crash'] as Record<string, Object>)['count'])
+            .assertEqual(kind['crash_kind'] === 'freeze' ? 0 : 1);
           expect((viewBody['error'] as Record<string, Object>)['count']).assertEqual(1);
           // Marked as a session kept on error: it exists only because of the crash.
           expect(sessionOf(view)['sampled_for_error']).assertEqual(true);
           expect(sampleRateOf(view)).assertEqual(0);
+          // Not drawn: the crash says so.
+          expect(sessionOf(error)['sampled']).assertEqual(false);
         }
       });
 
@@ -2160,7 +2187,7 @@ export default function sessionOnErrorTests(): void {
           const snapshot: Record<string, Object> = (LastViewSnapshot.read() as LastView).view;
           expect(snapshot['type']).assertEqual('view'); // ...but the local snapshot is kept
           // What a native crash replays next launch: the crash-marked view keeps the markers.
-          const crashed: Record<string, Object> = RumFeature.viewEventWithCrash(snapshot);
+          const crashed: Record<string, Object> = RumFeature.viewEventWithCrash(snapshot, true);
           expect(sessionOf(crashed)['sampled_for_error']).assertEqual(true);
           expect(sampleRateOf(crashed)).assertEqual(0);
           expect(sessionOf(crashed)['id']).assertEqual(app.getCurrentSessionId() as string);
@@ -3597,7 +3624,7 @@ export default function sessionOnErrorTests(): void {
         launchVital(featureWith(core, scope, 100, false));
         const crashed: string = core.featureContext['session.id'] as string;
         const background: CapturingScope = nextLaunch(core, scope.lastView, 100, false,
-          nativeCrash(Date.now(), process.pid, { 'in_background': true }));
+          nativeCrash(Date.now(), process.pid, { 'in_foreground': false }));
         const error: Record<string, Object> = background.ofType('error')[0];
         expect(sessionOf(error)['id']).assertEqual(crashed);
         expect(viewNameOf(error)).assertEqual('Background');
@@ -3986,6 +4013,214 @@ export default function sessionOnErrorTests(): void {
         const ended: Record<string, Object> = (JSON.parse(scope.lastView) as Record<string, Object>)['session'] as Record<string, Object>;
         expect(ended['id']).assertEqual(started['id'] as string);
         expect((ended['ended_at'] as number) > 0).assertTrue();
+      });
+  });
+
+  describe('rum-crash-foreground-and-sampled', (): void => {
+    it('aCrashInItsViewSaysWhetherTheAppWasInTheForeground',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        const replay = (extra: Record<string, Object>): Record<string, Object> => {
+          const core: FakeCore = new FakeCore();
+          const scope: CapturingScope = new CapturingScope();
+          featureWith(core, scope, 100, false).startView('home', 'home');
+          const error: Record<string, Object> =
+            nextLaunch(core, scope.lastView, 100, false, nativeCrash(Date.now(), process.pid, extra)).ofType('error')[0];
+          expect(viewNameOf(error)).assertEqual('home');
+          markersStayOutOfTheContext(error);
+          return error;
+        };
+        expect(inForegroundOf(replay({ 'in_foreground': true }))).assertEqual(true);
+        expect(inForegroundOf(replay({ 'in_foreground': false }))).assertEqual(false);
+        // Negative control: the system did not say — nothing, not false.
+        expect(inForegroundOf(replay({}))).assertUndefined();
+      });
+
+    it('aCrashSaysWhetherItsSessionWasDrawnWhereverItIsWritten',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        // In the session's view, and in a session that had no view yet: drawn by the rate.
+        const inView = (rate: number, onError: boolean): Record<string, Object> => {
+          const core: FakeCore = new FakeCore();
+          const scope: CapturingScope = new CapturingScope();
+          featureWith(core, scope, rate, onError).startView('home', 'home');
+          return nextLaunch(core, scope.lastView, 100, false, nativeCrash(Date.now())).ofType('error')[0];
+        };
+        const withoutView = (rate: number, onError: boolean): Record<string, Object> => {
+          const core: FakeCore = new FakeCore();
+          const scope: CapturingScope = new CapturingScope();
+          launchVital(featureWith(core, scope, rate, onError));
+          return nextLaunch(core, scope.lastView, 100, false,
+            nativeCrash(Date.now(), process.pid, { 'in_foreground': false })).ofType('error')[0];
+        };
+        expect(sessionOf(inView(100, false))['sampled']).assertEqual(true);
+        const background: Record<string, Object> = withoutView(100, false);
+        expect(sessionOf(background)['sampled']).assertEqual(true);
+        expect(viewNameOf(background)).assertEqual('Background');
+        expect(inForegroundOf(background)).assertEqual(false);
+        // Kept only because it errored: collected, not drawn.
+        expect(sessionOf(inView(0, true))['sampled']).assertEqual(false);
+        expect(sessionOf(withoutView(0, true))['sampled']).assertEqual(false);
+        // A session of its own, drawn now (the kept-on-error case is in the draw tests).
+        const core: FakeCore = new FakeCore();
+        const scope: CapturingScope = new CapturingScope();
+        crashFeature(core, scope, 100, false).startView('home', 'home');
+        replayCrash(core, launchCrash(Date.now() - 5000));
+        const own: Record<string, Object> = scope.ofType('error')[0];
+        expect(viewNameOf(own)).assertEqual('ApplicationLaunch');
+        expect(sessionOf(own)['sampled']).assertEqual(true);
+        markersStayOutOfTheContext(own);
+      });
+
+    it('aReplayedJsCrashReportsWhatItsRunRecorded',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        const replay = (extra: Record<string, Object>): Record<string, Object> => {
+          const core: FakeCore = new FakeCore();
+          const scope: CapturingScope = new CapturingScope();
+          crashFeature(core, scope, 100, false).startView('home', 'home');
+          const crash: Record<string, Object> = launchCrash(Date.now() - 5000);
+          crash['crash_type'] = 'JsError';
+          crash['original_session_id'] = 'crashed-session';
+          crash['original_view_id'] = 'crashed-view';
+          crash['original_view_name'] = 'cart';
+          for (const key of Object.keys(extra)) {
+            crash[key] = extra[key];
+          }
+          replayCrash(core, crash);
+          const error: Record<string, Object> = scope.ofType('error')[0];
+          expect(sessionOf(error)['id']).assertEqual('crashed-session');
+          markersStayOutOfTheContext(error);
+          return error;
+        };
+        // Not judged again by the replaying launch (drawn, in the foreground): as recorded.
+        const kept: Record<string, Object> = replay({ 'in_foreground': false, 'session_sampled': false });
+        expect(inForegroundOf(kept)).assertEqual(false);
+        expect(sessionOf(kept)['sampled']).assertEqual(false);
+        const drawn: Record<string, Object> = replay({ 'in_foreground': true, 'session_sampled': true });
+        expect(inForegroundOf(drawn)).assertEqual(true);
+        expect(sessionOf(drawn)['sampled']).assertEqual(true);
+        // Negative control: an incident of an earlier version recorded neither.
+        const legacy: Record<string, Object> = replay({});
+        expect(inForegroundOf(legacy)).assertUndefined();
+        expect(sessionOf(legacy)['sampled']).assertUndefined();
+      });
+
+    it('aCrashTooOldForItsSessionSaysHowItsOwnSessionWasDrawn',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        // A JS incident past the intake's window goes to a session of its own: that session's
+        // draw, not the one the incident recorded for the session it can no longer join.
+        const replay = (rate: number, onError: boolean, recorded: boolean): Record<string, Object> => {
+          const core: FakeCore = new FakeCore();
+          const scope: CapturingScope = new CapturingScope();
+          crashFeature(core, scope, rate, onError).startView('home', 'home');
+          const crash: Record<string, Object> = launchCrash(Date.now() - 25 * 60 * 60 * 1000);
+          crash['crash_type'] = 'JsError';
+          crash['original_session_id'] = 'crashed-session';
+          crash['in_foreground'] = true;
+          crash['session_sampled'] = recorded;
+          replayCrash(core, crash);
+          const error: Record<string, Object> = scope.ofType('error')[0];
+          expect(sessionOf(error)['id'] === 'crashed-session').assertFalse();
+          // The state at the fault is a fact of the fault: it stays.
+          expect(inForegroundOf(error)).assertEqual(true);
+          return error;
+        };
+        expect(sessionOf(replay(0, true, true))['sampled']).assertEqual(false);
+        // Negative control: drawn now, though the incident's session was kept only on error.
+        expect(sessionOf(replay(100, false, false))['sampled']).assertEqual(true);
+      });
+
+    it('aLiveCrashSaysWhereTheAppIsUnlessTheSystemHasNotSaidYet',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        const live = (known: boolean, foreground: boolean, rate: number, onError: boolean): Record<string, Object> => {
+          const core: FakeCore = new FakeCore();
+          core.crashScope = new FakeCrashScope(core);
+          core.crashScope.policy = 'report_and_continue';
+          core.stateKnown = known;
+          core.foreground = foreground;
+          const scope: CapturingScope = new CapturingScope();
+          featureWith(core, scope, rate, onError).startView('home', 'home');
+          fireUnhandledException(CRASH_TEXT);
+          const errors: Array<Record<string, Object>> = scope.ofType('error');
+          expect(errors.length).assertEqual(1);
+          expect((errors[0]['error'] as Record<string, Object>)['is_crash']).assertEqual(true);
+          markersStayOutOfTheContext(errors[0]);
+          return errors[0];
+        };
+        const foreground: Record<string, Object> = live(true, true, 100, false);
+        expect(inForegroundOf(foreground)).assertEqual(true);
+        expect(sessionOf(foreground)['sampled']).assertEqual(true);
+        expect(inForegroundOf(live(true, false, 100, false))).assertEqual(false);
+        expect(sessionOf(live(true, true, 0, true))['sampled']).assertEqual(false);
+        // Negative control: early in a launch the system has not said — unknown, not background.
+        const early: Record<string, Object> = live(false, false, 100, false);
+        expect(inForegroundOf(early)).assertUndefined();
+        expect(sessionOf(early)['sampled']).assertEqual(true);
+      });
+
+    it('aFreezeIsAnErrorOfItsViewButNotACrashOfIt',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        const replay = (kind: string, withView: boolean): CapturingScope => {
+          const core: FakeCore = new FakeCore();
+          const scope: CapturingScope = new CapturingScope();
+          const monitor: DefaultRumMonitor = featureWith(core, scope, 100, false);
+          if (withView) {
+            monitor.startView('home', 'home');
+          } else {
+            launchVital(monitor);
+          }
+          const crash: Record<string, Object> = nativeCrash(Date.now(), process.pid, { 'in_foreground': true });
+          crash['crash_kind'] = kind;
+          return nextLaunch(core, scope.lastView, 100, false, crash);
+        };
+        for (const withView of [true, false]) {
+          const freeze: CapturingScope = replay('freeze', withView);
+          const error: Record<string, Object> = freeze.ofType('error')[0];
+          const errorBody: Record<string, Object> = error['error'] as Record<string, Object>;
+          expect(errorBody['is_crash']).assertEqual(true);
+          expect(errorBody['category']).assertEqual('ANR');
+          // Fatal: it carries both markers.
+          expect(inForegroundOf(error)).assertEqual(true);
+          expect(sessionOf(error)['sampled']).assertEqual(true);
+          const view: Record<string, Object> = freeze.ofType('view')[0];
+          expect(crashCountOf(view)).assertEqual(0);
+          expect(errorCountOf(view)).assertEqual(1);
+          // Negative control: a crash of the same view counts as one.
+          const crash: Record<string, Object> = replay('crash', withView).ofType('view')[0];
+          expect(crashCountOf(crash)).assertEqual(1);
+          expect(errorCountOf(crash)).assertEqual(1);
+        }
+      });
+
+    it('neitherAJankNorAnErrorCarriesTheMarkers',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        const core: FakeCore = new FakeCore();
+        core.foreground = true;
+        const scope: CapturingScope = new CapturingScope();
+        const monitor: DefaultRumMonitor = crashFeature(core, scope, 100, false);
+        monitor.startView('home', 'home');
+        replayCrash(core, {
+          'type': 'crash_report', 'crash_kind': 'jank', 'message': 'jank', 'stack': '#00 pc',
+          'in_foreground': true, 'session_sampled': true
+        } as Record<string, Object>);
+        monitor.addError('handled', RumErrorSource.SOURCE);
+        const errors: Array<Record<string, Object>> = scope.ofType('error');
+        expect(errors.length).assertEqual(2);
+        for (const error of errors) {
+          expect((error['error'] as Record<string, Object>)['is_crash']).assertEqual(false);
+          expect(inForegroundOf(error)).assertUndefined();
+          expect(sessionOf(error)['sampled']).assertUndefined();
+          markersStayOutOfTheContext(error);
+        }
+      });
+
+    it('theSessionSaysWhetherItIsKeptOnlyOnError',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        // What the crash module records at a JS crash.
+        const drawn: FakeCore = new FakeCore();
+        featureWith(drawn, new CapturingScope(), 100, true).startView('home', 'home');
+        expect(drawn.featureContext['session.sampled_for_error']).assertEqual(false);
+        const kept: FakeCore = new FakeCore();
+        featureWith(kept, new CapturingScope(), 0, true).startView('home', 'home');
+        expect(kept.featureContext['session.sampled_for_error']).assertEqual(true);
       });
   });
 }

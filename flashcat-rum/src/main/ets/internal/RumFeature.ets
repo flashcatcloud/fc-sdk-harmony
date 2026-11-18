@@ -639,7 +639,7 @@ export class RumFeature implements Feature, FeatureEventReceiver {
       draw: new DrawnConfiguration(session.rcVersion, session.sessionSampleRate, session.sessionOnError),
       sampledForError: session.sampledForError
     };
-    const viewName: string = event['in_background'] === true ? BACKGROUND_VIEW : APPLICATION_LAUNCH_VIEW;
+    const viewName: string = event['in_foreground'] === false ? BACKGROUND_VIEW : APPLICATION_LAUNCH_VIEW;
     const attributes: Record<string, Object> = RumFeature.crashAttributes(event);
     event['delivered'] = this.writeCrashInViewOfItsOwn(event, attributes, false, drawn,
       m !== null ? m.getAttributes() : {}, session.id, viewName);
@@ -724,7 +724,13 @@ export class RumFeature implements Feature, FeatureEventReceiver {
     for (const key of Object.keys(crashAttributes)) {
       errorAttributes[key] = crashAttributes[key];
     }
+    // This session's draw, whatever the incident recorded: an incident too old for its own
+    // session recorded the draw of that session, not of this one.
+    errorAttributes['session.sampled'] = !drawn.sampledForError;
     const counted: number = alreadyCounted ? 0 : 1;
+    // A freeze is an error of the view, not one of its crashes: crash counts leave
+    // freezes out, which the ANR rate counts.
+    const crashCounted: number = RumFeature.isFreeze(event) ? 0 : counted;
     const applicationId: string = this.configuration.applicationId;
     let delivered: boolean = false;
     scope.withWriteContext((context: FlashcatContext, writer: EventWriter) => {
@@ -744,7 +750,7 @@ export class RumFeature implements Feature, FeatureEventReceiver {
       // it as the last view would attribute this launch's own crash to it.
       const view: Record<string, Object> | null = RumEventMapperHolder.apply(RumEventAssembler.view(
         context, applicationId, sessionId, viewId, viewName, dateMs, 0,
-        0, counted, 0, counted, 1, false, viewAttributes, drawn.draw, drawn.sampledForError));
+        0, counted, 0, crashCounted, 1, false, viewAttributes, drawn.draw, drawn.sampledForError));
       // A mapper that drops a view it has never heard of still keeps the crash:
       // losing the crash would be worse than a session without its view.
       if (view !== null && !writer.write(view, false)) {
@@ -942,7 +948,10 @@ export class RumFeature implements Feature, FeatureEventReceiver {
     const faultAtMs: number | undefined = RumFeature.optionalPositiveNumber(event['timestamp_ms']);
     const viewName: string = RumFeature.asString(view['name']);
     const crashedAtMs: number = faultAtMs ?? Date.now();
-    const attributes: Record<string, Object> = RumFeature.crashAttributes(event);
+    // A view document is written only by a collected session; it says so when the
+    // session was kept only because it errored.
+    const attributes: Record<string, Object> = RumEventAssembler.withSessionSampled(
+      RumFeature.crashAttributes(event), session['sampled_for_error'] !== true);
     const viewUrl: string = RumFeature.asString(view['url']);
     if (viewUrl.length > 0) {
       attributes['view.url'] = viewUrl;
@@ -970,7 +979,7 @@ export class RumFeature implements Feature, FeatureEventReceiver {
       // process was already gone, so there was no live view scope to bump.
       // Deliberately NOT via writeMapped: the snapshot is already post-mapper,
       // and re-recording would make the crash-marked doc the next snapshot.
-      const crashedView: Record<string, Object> = RumFeature.viewEventWithCrash(snapshot);
+      const crashedView: Record<string, Object> = RumFeature.viewEventWithCrash(snapshot, !RumFeature.isFreeze(event));
       // Both writes must land before the incident may be dropped. If only the
       // error persisted, the crash is visible but the session still reads
       // crash-free — retaining the incident lets the next launch retry.
@@ -1053,8 +1062,11 @@ export class RumFeature implements Feature, FeatureEventReceiver {
    * the intake derives the session total from this counter as a delta, the
    * session under-reports its errors for good. (Note this diverges from the
    * Android SDK's updateViewEvent, which bumps crash alone.)
+   *
+   * `countsAsCrash` false (a freeze): the error count alone, like any other error
+   * of the view — crash counts leave freezes out.
    */
-  static viewEventWithCrash(snapshot: Record<string, Object>): Record<string, Object> {
+  static viewEventWithCrash(snapshot: Record<string, Object>, countsAsCrash: boolean): Record<string, Object> {
     const updated: Record<string, Object> = {};
     for (const key of Object.keys(snapshot)) {
       updated[key] = snapshot[key];
@@ -1067,7 +1079,7 @@ export class RumFeature implements Feature, FeatureEventReceiver {
     const crash: Record<string, Object> = RumFeature.recordValue(sourceView['crash']);
     const crashCount: number = RumFeature.optionalPositiveNumber(crash['count']) ?? 0;
     const nextCrash: Record<string, Object> = {};
-    nextCrash['count'] = crashCount + 1;
+    nextCrash['count'] = countsAsCrash ? crashCount + 1 : crashCount;
     view['crash'] = nextCrash;
     // The crash is delivered as an is_crash ERROR event, so it counts as an
     // error too — exactly what RumViewScope does on the live path.
@@ -1161,7 +1173,22 @@ export class RumFeature implements Feature, FeatureEventReceiver {
       }
     }
     RumFeature.copyNonEmptyString(event, attributes, 'freeze.reason', 'freeze.reason');
+    // A fatal error's state at the fault, as recorded then. A jank is not fatal.
+    if (kind !== 'jank') {
+      const inForeground: Object | undefined = event['in_foreground'];
+      if (typeof inForeground === 'boolean') {
+        attributes['view.in_foreground'] = inForeground;
+      }
+      const sessionSampled: Object | undefined = event['session_sampled'];
+      if (typeof sessionSampled === 'boolean') {
+        attributes['session.sampled'] = sessionSampled;
+      }
+    }
     return attributes;
+  }
+
+  private static isFreeze(event: Record<string, Object>): boolean {
+    return event['crash_kind'] === 'freeze';
   }
 
   private onNetworkRequestStarted(event: Record<string, Object>): void {
@@ -1387,8 +1414,12 @@ export class RumFeature implements Feature, FeatureEventReceiver {
       return;
     }
     FlashcatLog.d(`rum.crash: report live crash message="${message}"`);
+    const fault: Record<string, Object> = { 'error_type': type };
+    if (this.core.isAppStateKnown()) {
+      fault['in_foreground'] = this.core.isAppInForeground();
+    }
     m.reportError(message, RumErrorSource.SOURCE, RumFeature.stackFramesOnly(stackText), true, 'unhandled',
-      RumFeature.crashAttributes({ 'error_type': type }));
+      RumFeature.crashAttributes(fault));
     // The policy keeps the process alive, but another observer of the same
     // exception may still end it (e.g. a crash reporter exiting from its own
     // onException): what the session held leaves now, not after a jitter.

@@ -54,6 +54,14 @@ export interface SdkCore {
   isAppInForeground(): boolean;
 
   /**
+   * Whether the system has said yet if the app is in the foreground or the
+   * background. Until it has (the first moments of a launch, or a launch whose
+   * state the system never reports), `isAppInForeground()` false means unknown,
+   * not background.
+   */
+  isAppStateKnown(): boolean;
+
+  /**
    * Intake host + client token, for a feature that calls an endpoint of its own
    * (the RUM remote-configuration endpoint) rather than the batch pipeline.
    */

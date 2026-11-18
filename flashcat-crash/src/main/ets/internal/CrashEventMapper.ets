@@ -334,6 +334,13 @@ export class CrashEventMapper {
     event['original_view_id'] = incident.viewId;
     event['original_view_name'] = incident.viewName;
     event['original_view_url'] = incident.viewUrl;
+    // As recorded at the crash; an incident written before they were recorded has neither.
+    if (incident.inForeground !== undefined) {
+      event['in_foreground'] = incident.inForeground;
+    }
+    if (incident.sessionSampled !== undefined) {
+      event['session_sampled'] = incident.sessionSampled;
+    }
     if (incident.policy === JsCrashPolicy.REPORT_AND_RECOVER) {
       event['crash.recovered'] = true;
     }
@@ -412,10 +419,13 @@ export class CrashEventMapper {
     if (typeof pid === 'number' && pid > 0) {
       event['process_id'] = pid;
     }
-    // The system says whether the app was in the foreground at the fault: a fault in the
-    // background of a session with no view is reported in its Background view.
-    if (params['foreground'] === false) {
-      event['in_background'] = true;
+    // The system says whether the app was in the foreground at the fault. Reported as
+    // view.in_foreground, and a fault in the background of a session with no view is
+    // reported in its Background view. Without the field the state is unknown: nothing
+    // is set rather than a guess.
+    const foreground: Object | undefined = params['foreground'];
+    if (typeof foreground === 'boolean') {
+      event['in_foreground'] = foreground;
     }
     // The faulting address differs between occurrences of one fault, so it is a
     // field of its own, never part of the message.

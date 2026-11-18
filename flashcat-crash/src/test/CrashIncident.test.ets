@@ -43,6 +43,36 @@ export default function crashIncidentTests(): void {
       expect(live).assertEqual(watcher);
     });
 
+    it('roundTripsTheStateRecordedAtTheCrash', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+      const record = (inForeground: boolean | undefined, sampled: boolean | undefined): CrashIncidentRecord | null =>
+        CrashIncidentRecord.parse(new CrashIncidentRecord(
+          'inc-1', 1000, 'Error', 'boom', 'Error: boom\n    at f (a.ets:1:1)', 'fp-1',
+          JsCrashPolicy.REPORT_THEN_EXIT, '0.8.1', 's-1', 'v-1', 'Home', 'pages/Home', true,
+          inForeground, sampled).serialize());
+      const background: CrashIncidentRecord | null = record(false, false);
+      expect(background?.inForeground).assertEqual(false);
+      expect(background?.sessionSampled).assertEqual(false);
+      const foreground: CrashIncidentRecord | null = record(true, true);
+      expect(foreground?.inForeground).assertEqual(true);
+      expect(foreground?.sessionSampled).assertEqual(true);
+      // Negative controls: unknown stays unknown — not written, read back as undefined, not false.
+      const unknown: CrashIncidentRecord = new CrashIncidentRecord(
+        'inc-1', 1000, 'Error', 'boom', 's', 'fp-1', JsCrashPolicy.REPORT_THEN_EXIT, '0.8.1', '', '', '');
+      const serialized: Record<string, Object> = JSON.parse(unknown.serialize()) as Record<string, Object>;
+      expect(serialized['in_foreground']).assertUndefined();
+      expect(serialized['session_sampled']).assertUndefined();
+      expect(record(undefined, undefined)?.inForeground).assertUndefined();
+      expect(record(undefined, undefined)?.sessionSampled).assertUndefined();
+      // A record of an earlier version has neither: both unknown.
+      const legacy: CrashIncidentRecord | null = CrashIncidentRecord.parse(
+        '{"incident_id":"inc-2","timestamp_ms":1,"exception_name":"Error","message":"m",' +
+        '"stack":"s","fingerprint":"fp","policy":"REPORT_THEN_EXIT","sdk_version":"0.8.0",' +
+        '"session_id":"s","view_id":"v","view_name":"n","origin_sampled":true}');
+      expect(legacy !== null).assertTrue();
+      expect(legacy?.inForeground).assertUndefined();
+      expect(legacy?.sessionSampled).assertUndefined();
+    });
+
     it('roundTripsViewUrlThroughSerialization', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
       const record: CrashIncidentRecord = new CrashIncidentRecord(
         'inc-1', 1000, 'Error', 'boom', 'Error: boom\n    at f (a.ets:1:1)', 'fp-1',

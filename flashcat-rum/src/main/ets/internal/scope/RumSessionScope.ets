@@ -93,6 +93,9 @@ export class RumSessionScope implements RumScope {
     // reported into it (with the last view it wrote), even if nothing it held
     // made it out before the process died.
     update['session.sampled'] = this.sampled;
+    // Kept only because it errored, not drawn: what a crash of this session records
+    // as `session.sampled` false.
+    update['session.sampled_for_error'] = this.sampledOnError;
     this.core.updateFeatureContext('rum', update);
     // The same for a fault the next launch reports (native crash, freeze): it is this
     // session's from now on, with this draw, even before the session has a view.
@@ -500,7 +503,9 @@ export class RumSessionScope implements RumScope {
       const event: Record<string, Object> = RumEventAssembler.error(
         context, this.applicationId, this.sessionId, undefined, undefined,
         raw.errorMessage ?? '', raw.errorSource ?? 'source', raw.errorStack,
-        raw.isCrash ?? false, raw.errorHandling ?? 'handled', raw.timestampMs, raw.attributes);
+        raw.isCrash ?? false, raw.errorHandling ?? 'handled', raw.timestampMs,
+        raw.isCrash === true ? RumEventAssembler.withSessionSampled(raw.attributes, !this.sampledOnError) :
+          raw.attributes);
       writeMapped(writer, event, true);
     });
   }
