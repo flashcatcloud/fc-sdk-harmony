@@ -202,8 +202,11 @@ export class RumConfigurationBuilder {
   /**
    * How often the memory and CPU of the app are sampled while it is in the
    * foreground, for the view that is open: `view.memory_average` /
-   * `view.memory_max` (bytes) and `view.cpu_ticks_count` /
-   * `view.cpu_ticks_per_second`. Same values as the Android SDK.
+   * `view.memory_max` (bytes), `view.cpu_ticks_count` /
+   * `view.cpu_ticks_per_second` (same values as the Android SDK), and
+   * `view.cpu_usage_average` / `view.cpu_usage_max` (percent of all cores) and
+   * `view.main_thread_cpu_usage_average` / `view.main_thread_cpu_usage_max`
+   * (percent of one core), as the iOS SDK reports them.
    * Drawn frames (see `FlashcatRum.startViewTracking`) have no period, only
    * this switch: any value but `NEVER` measures them.
    * `NEVER` measures nothing. A field the device cannot read is left out of the

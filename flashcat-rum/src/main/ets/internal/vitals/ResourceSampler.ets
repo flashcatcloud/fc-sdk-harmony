@@ -1,5 +1,5 @@
 import { FlashcatLog } from '@flashcatcloud/core';
-import { ViewVitals } from './ViewVitals';
+import { CpuReading, ViewVitals } from './ViewVitals';
 import { VitalsCollector } from './VitalsCollector';
 
 /**
@@ -11,8 +11,8 @@ import { VitalsCollector } from './VitalsCollector';
 export interface ResourceReaders {
   /** Resident memory of the process, in bytes. */
   readonly memoryBytes: (() => Promise<number | null>) | null;
-  /** Cumulative user-mode CPU time of the process, in clock ticks. */
-  readonly cpuTicks: (() => number | null) | null;
+  /** The CPU times of the process; null when they cannot be read. */
+  readonly cpu: (() => CpuReading | null) | null;
 }
 
 /** The sampler's clock. Injected so a test can tick it by hand. */
@@ -48,7 +48,7 @@ class SystemSamplerTimer implements SamplerTimer {
  */
 export class ResourceSampler implements VitalsCollector {
   private memoryReader: (() => Promise<number | null>) | null;
-  private cpuReader: (() => number | null) | null;
+  private cpuReader: (() => CpuReading | null) | null;
   private readonly periodOf: () => number;
   private readonly timer: SamplerTimer;
   private readonly views: Set<ViewVitals> = new Set<ViewVitals>();
@@ -64,7 +64,7 @@ export class ResourceSampler implements VitalsCollector {
    * frequency the console publishes applies without rebuilding the sampler. */
   constructor(readers: ResourceReaders, periodOf: () => number, timer: SamplerTimer = new SystemSamplerTimer()) {
     this.memoryReader = readers.memoryBytes;
-    this.cpuReader = readers.cpuTicks;
+    this.cpuReader = readers.cpu;
     this.periodOf = periodOf;
     this.timer = timer;
   }
@@ -150,24 +150,32 @@ export class ResourceSampler implements VitalsCollector {
     this.readMemory();
   }
 
+  /**
+   * Readings are passed with the run they belong to (`generation`): two readings of
+   * one run have nothing but foreground time between them, while a halt (background,
+   * no view open, a new sampling period) separates two runs, and the time between them
+   * is not counted for the view.
+   */
   private readCpu(): void {
-    const reader: (() => number | null) | null = this.cpuReader;
+    const reader: (() => CpuReading | null) | null = this.cpuReader;
     if (reader === null) {
       return;
     }
-    let ticks: number | null = null;
+    let cpu: CpuReading | null = null;
     try {
-      ticks = reader();
+      cpu = reader();
     } catch (_e) {
-      ticks = null;
+      cpu = null;
     }
-    if (!ResourceSampler.isReading(ticks)) {
+    if (cpu === null || !ResourceSampler.isReading(cpu.processTicks) || !ResourceSampler.isReading(cpu.userTicks)
+      || !ResourceSampler.isReading(cpu.atNs)) {
       this.cpuReader = null;
       FlashcatLog.d('rum.vitals: CPU time is not readable on this device; views carry no CPU fields');
       return;
     }
-    const value: number = ticks as number;
-    this.deliver((v: ViewVitals): void => v.onCpuSample(value));
+    const value: CpuReading = cpu;
+    const run: number = this.generation;
+    this.deliver((v: ViewVitals): void => v.onCpuSample(value, run));
   }
 
   private readMemory(): void {
