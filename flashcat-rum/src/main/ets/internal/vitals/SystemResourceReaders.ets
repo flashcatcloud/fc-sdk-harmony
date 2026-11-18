@@ -16,7 +16,7 @@ const PROC_CHUNK_BYTES: number = 4096;
 const PROC_MAX_BYTES: number = 65536;
 // Fields 14 and 15 of /proc/<pid>/stat; fields 3.. follow the ")" that closes field 2.
 export const UTIME_FIELD: number = 14;
-export const STIME_FIELD: number = 15;
+const STIME_FIELD: number = 15;
 const FIRST_FIELD_AFTER_COMM: number = 3;
 
 const VMRSS_KEY: string = 'VmRSS:';

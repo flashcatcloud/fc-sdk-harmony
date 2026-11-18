@@ -5,8 +5,8 @@ const CLOCK_TICKS_PER_SECOND: number = 100;
 // iOS parity (CPUUsageInfo): no usage until the view has this much foreground time
 // between its readings, and peaks over intervals at least this long, so one
 // clock tick in a very short interval does not read as a spike.
-export const MIN_CPU_USAGE_NS: number = 900_000_000;
-export const MIN_CPU_PEAK_NS: number = 250_000_000;
+const MIN_CPU_USAGE_NS: number = 900_000_000;
+const MIN_CPU_PEAK_NS: number = 250_000_000;
 
 /**
  * One reading of CPU time, cumulative since the process (or thread) started, in
@@ -132,7 +132,7 @@ export class ViewVitals {
         }
         this.startPeakInterval(cpu);
       }
-    } else if (run !== this.cpuRun) {
+    } else {
       this.startPeakInterval(cpu);
     }
     this.cpuRun = run;
@@ -187,9 +187,9 @@ export class ViewVitals {
    * `view.*` keys for a view that has been open `durationNs`: memory in bytes,
    * CPU in ticks since the view's first reading, ticks per second once the view
    * has lasted a full second (Android parity: a shorter view gives a rate
-   * dominated by one sample's rounding). CPU usage as a percentage, the process of
-   * all its cores and the main thread of one core, once the view has 0.9 s of
-   * foreground time between readings (iOS parity).
+   * dominated by one sample's rounding). It also carries CPU usage as a percentage
+   * (the process of all its cores, the main thread of one core) once the view has
+   * 0.9 s of foreground time between readings (iOS parity).
    *
    * Frame keys come with the first frame. The two rates are on every document
    * (not only the last, as on Android), so whichever write closes the view
