@@ -384,14 +384,13 @@ export class RumViewScope implements RumScope {
   }
 
   private writeError(raw: RumRawEvent): void {
+    const attributes: Record<string, Object> = this.viewAttributes(raw.attributes);
     this.featureScope.withWriteContext((context: FlashcatContext, writer: EventWriter) => {
       const event: Record<string, Object> = RumEventAssembler.error(
         context, this.applicationId, this.sessionId, this.viewId, this.viewName,
         raw.errorMessage ?? '', raw.errorSource ?? 'source', raw.errorStack,
         raw.isCrash ?? false, raw.errorHandling ?? 'handled', raw.timestampMs,
-        raw.isCrash === true ?
-          RumEventAssembler.withSessionSampled(this.viewAttributes(raw.attributes), !this.sampledForError) :
-          this.viewAttributes(raw.attributes));
+        raw.isCrash === true ? RumEventAssembler.withSessionSampled(attributes, !this.sampledForError) : attributes);
       // Error/crash events are force-flushed so they upload promptly (not after the
       // 5s/512KB batch threshold).
       writeMapped(writer, event, true);

@@ -120,7 +120,8 @@ export class RumEventAssembler {
       event['build_id'] = buildId;
     }
     event['application'] = RumEventAssembler.idObj(applicationId);
-    event['session'] = RumEventAssembler.session(sessionId);
+    const session: Record<string, Object> = RumEventAssembler.session(sessionId);
+    event['session'] = session;
     if (viewId !== undefined) {
       const view: Record<string, Object> = {};
       view['id'] = viewId;
@@ -185,7 +186,7 @@ export class RumEventAssembler {
       }
       const sampled: Object | undefined = attributes[SESSION_SAMPLED_ATTRIBUTE];
       if (typeof sampled === 'boolean') {
-        (event['session'] as Record<string, Object>)['sampled'] = sampled;
+        session['sampled'] = sampled;
       }
     }
 
