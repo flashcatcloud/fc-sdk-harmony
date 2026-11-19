@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.8.1
 
 - `SdkCore.isAppStateKnown()`: whether the system has said yet if the app is
   in the foreground or the background. Until it has, `isAppInForeground()`

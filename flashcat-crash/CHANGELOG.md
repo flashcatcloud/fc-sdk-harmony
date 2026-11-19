@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.8.1
 
 - Crash and freeze reports carry the system's foreground state at the fault
   as `in_foreground` (`true` or `false`, absent when the system does not say),
