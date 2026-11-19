@@ -274,7 +274,8 @@ const NS_PER_MS: number = 1_000_000;
 // The /proc reads cost about 0.4–0.6 ms each when the sampler wakes for them, against
 // tens of microseconds for the process's CPU time from the runtime: they are taken
 // about once a second (every other reading at the default period), the rest of the
-// readings carry the process's time alone.
+// readings carry the process's time alone. A sampling period of 0.9 s or more reads
+// them on every reading.
 const PROC_READ_EVERY_NS: number = 900_000_000;
 let lastProcReadNs: number = -1;
 // Read once: the CPUs a process may use do not change while it runs in the foreground.

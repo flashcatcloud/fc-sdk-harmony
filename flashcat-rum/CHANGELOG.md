@@ -11,27 +11,30 @@
   carries the global attributes, not the triggering event's own.
   Nothing opens between two views, or in a launch the system reported in the
   background; those events are still dropped, as before.
-- CPU sampling costs less than in 0.8.0.
-  - The process's CPU time now comes from the runtime (`process.getPastCpuTime`),
-    which costs tens of microseconds, instead of a `/proc/self/stat` read, which
-    costs about half a millisecond when the sampler wakes for it.
-  - `/proc/self/stat` (for the user-time tick fields) and the main thread's stat
-    are read about once a second: every other reading at the default period.
-  - Main-thread usage and its peaks run from one main-thread reading to the next.
+- CPU sampling costs less than in 0.8.0. The process's CPU time comes from the
+  runtime (`process.getPastCpuTime`, all threads, millisecond precision), which
+  costs tens of microseconds, instead of a `/proc/self/stat` read, which costs
+  about half a millisecond when the sampler wakes for it. `/proc/self/stat` is
+  now read at most about once a second (every other reading at the default
+  500 ms period), for the user-time tick fields only. So
+  `view.cpu_ticks_count` / `view.cpu_ticks_per_second` run from the view's
+  first `/proc` reading to its last: a view shorter than about two seconds may
+  carry neither, and a short view's ticks per second can read slightly low.
 - New: CPU usage per view as a percentage, with the same field names and
   meaning as the iOS SDK, so the two platforms can be compared.
   - `view.cpu_usage_average` / `view.cpu_usage_max`: the process's CPU time
     (user and system, all threads) as a percentage of all the cores it may run
     on.
   - `view.main_thread_cpu_usage_average` / `view.main_thread_cpu_usage_max`:
-    the main thread's, as a percentage of one core.
+    the main thread's, as a percentage of one core. Its stat is read at most
+    about once a second, so its peaks are taken over about a second.
   - Only foreground time between consecutive readings counts; a stay in the
     background in the middle of a view is left out.
   - Peaks are taken over intervals of at least 0.25 s and are never below the
     average.
   - Reported once the view has 0.9 s of foreground time.
-  - `view.cpu_ticks_count` / `view.cpu_ticks_per_second` are unchanged (user
-    time, Android parity).
+  - `view.cpu_ticks_count` / `view.cpu_ticks_per_second` keep their meaning
+    (user time, Android parity).
 - Every crash and freeze reports whether the app was in the foreground at the
   fault (`view.in_foreground`) and whether its session was drawn by the sample
   rate (`session.sampled`): `true` when drawn or forced, `false` when kept only

@@ -203,7 +203,7 @@ export class ViewVitals {
 
   /**
    * `view.*` keys for a view that has been open `durationNs`: memory in bytes,
-   * CPU in ticks since the view's first reading, ticks per second once the view
+   * CPU in ticks since the view's first /proc reading, ticks per second once the view
    * has lasted a full second (Android parity: a shorter view gives a rate
    * dominated by one sample's rounding). It also carries CPU usage as a percentage
    * (the process of all its cores, the main thread of one core) once the view has
