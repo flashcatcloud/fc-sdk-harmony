@@ -1,4 +1,28 @@
 const NS_PER_SECOND: number = 1e9;
+// iOS parity (CPUUsageInfo): no usage until the view has this much foreground time
+// between its readings, and peaks over intervals at least this long, so one
+// clock tick in a very short interval does not read as a spike.
+const MIN_CPU_USAGE_NS: number = 900_000_000;
+const MIN_CPU_PEAK_NS: number = 250_000_000;
+
+/**
+ * One reading of CPU time, cumulative since the process (or thread) started. A reader
+ * may hand out the same object every time: whoever takes a reading copies what it
+ * needs before the next one. The /proc values are not read every time: -1 when this
+ * reading has none.
+ */
+export interface CpuReading {
+  /** User-mode time of the process, in clock ticks (/proc); -1 when not read. */
+  userTicks: number;
+  /** CPU time of the process, all threads, in nanoseconds. */
+  processCpuNs: number;
+  /** CPU time of the main thread, in nanoseconds; -1 when not read. */
+  mainThreadCpuNs: number;
+  /** The CPUs the process may run on; 0 when unknown. */
+  cores: number;
+  /** When it was read: a monotonic clock, in nanoseconds. */
+  atNs: number;
+}
 
 /** What one drawn frame took, as a frame source measured it. */
 export interface FrameSample {
@@ -38,6 +62,27 @@ export class ViewVitals {
   private cpuSamples: number = 0;
   private cpuBaselineTicks: number = 0;
   private cpuLatestTicks: number = 0;
+  // CPU usage: what the process (and its main thread) used over the foreground time
+  // between consecutive readings of one sampler run. A run ends when sampling halts
+  // (background): the time to the next run's first reading is not counted.
+  private cpuRun: number = -1;
+  private cores: number = 0;
+  private lastAtNs: number = 0;
+  private lastProcessNs: number = 0;
+  // The main thread is read less often than the process (not on every reading): its
+  // usage runs from one main-thread reading to the next, on its own clock.
+  private lastMainCpuNs: number = -1;
+  private lastMainAtNs: number = 0;
+  private processNs: number = 0;
+  private processCpuNs: number = 0;
+  private mainNs: number = 0;
+  private mainCpuNs: number = 0;
+  private peakFromNs: number = 0;
+  private peakFromProcessCpuNs: number = 0;
+  private mainPeakFromNs: number = 0;
+  private mainPeakFromCpuNs: number = -1;
+  private processPeak: number = -1;
+  private mainPeak: number = -1;
   private frames: number = 0;
   private fpsSum: number = 0;
   private fpsMin: number = MAX_FPS;
@@ -53,14 +98,77 @@ export class ViewVitals {
     this.memoryMaxBytes = Math.max(this.memoryMaxBytes, bytes);
   }
 
-  onCpuSample(ticks: number): void {
-    if (this.cpuSamples === 0) {
-      this.cpuBaselineTicks = ticks;
-      this.cpuLatestTicks = ticks;
-    } else {
-      this.cpuLatestTicks = Math.max(this.cpuLatestTicks, ticks);
+  /** A CPU reading of sampler run `run`; `cpu` may be reused by the reader after this returns. */
+  onCpuSample(cpu: CpuReading, run: number): void {
+    const ticks: number = cpu.userTicks;
+    if (ticks >= 0) {
+      if (this.cpuSamples === 0) {
+        this.cpuBaselineTicks = ticks;
+        this.cpuLatestTicks = ticks;
+      } else {
+        this.cpuLatestTicks = Math.max(this.cpuLatestTicks, ticks);
+      }
+      this.cpuSamples += 1;
     }
-    this.cpuSamples += 1;
+    if (cpu.cores > 0) {
+      this.cores = cpu.cores;
+    }
+    const main: number = cpu.mainThreadCpuNs;
+    if (run === this.cpuRun && cpu.atNs <= this.lastAtNs) {
+      return; // no time since the last reading: what it adds is counted with the next one
+    }
+    if (run === this.cpuRun) {
+      this.processNs += cpu.atNs - this.lastAtNs;
+      this.processCpuNs += Math.max(0, cpu.processCpuNs - this.lastProcessNs);
+      const peakNs: number = cpu.atNs - this.peakFromNs;
+      if (peakNs >= MIN_CPU_PEAK_NS) {
+        if (this.cores > 0) {
+          this.processPeak = Math.max(this.processPeak,
+            ViewVitals.usage(cpu.processCpuNs - this.peakFromProcessCpuNs, peakNs, this.cores));
+        }
+        this.startPeakInterval(cpu);
+      }
+    } else {
+      this.startPeakInterval(cpu);
+      this.lastMainCpuNs = -1; // a new run: the main thread's time since its last reading is not the view's
+      this.mainPeakFromCpuNs = -1;
+    }
+    if (main >= 0) {
+      this.onMainThreadReading(main, cpu.atNs);
+    }
+    this.cpuRun = run;
+    this.lastAtNs = cpu.atNs;
+    this.lastProcessNs = cpu.processCpuNs;
+  }
+
+  /** A main-thread reading of the current run (the run's first one starts the count). */
+  private onMainThreadReading(cpuNs: number, atNs: number): void {
+    if (this.lastMainCpuNs >= 0 && atNs > this.lastMainAtNs) {
+      this.mainNs += atNs - this.lastMainAtNs;
+      this.mainCpuNs += Math.max(0, cpuNs - this.lastMainCpuNs);
+    }
+    if (this.mainPeakFromCpuNs < 0) {
+      this.mainPeakFromNs = atNs;
+      this.mainPeakFromCpuNs = cpuNs;
+    } else if (atNs - this.mainPeakFromNs >= MIN_CPU_PEAK_NS) {
+      this.mainPeak = Math.max(this.mainPeak,
+        ViewVitals.usage(cpuNs - this.mainPeakFromCpuNs, atNs - this.mainPeakFromNs, 1));
+      this.mainPeakFromNs = atNs;
+      this.mainPeakFromCpuNs = cpuNs;
+    }
+    this.lastMainCpuNs = cpuNs;
+    this.lastMainAtNs = atNs;
+  }
+
+  private startPeakInterval(cpu: CpuReading): void {
+    this.peakFromNs = cpu.atNs;
+    this.peakFromProcessCpuNs = cpu.processCpuNs;
+  }
+
+  /** Percent of `cores` cores that `cpuNs` of CPU time took over `ns`, within 0..100. */
+  private static usage(cpuNs: number, ns: number, cores: number): number {
+    const percent: number = cpuNs / (ns * cores) * 100;
+    return Math.min(100, Math.max(0, percent));
   }
 
   /**
@@ -95,9 +203,11 @@ export class ViewVitals {
 
   /**
    * `view.*` keys for a view that has been open `durationNs`: memory in bytes,
-   * CPU in ticks since the view's first reading, ticks per second once the view
+   * CPU in ticks since the view's first /proc reading, ticks per second once the view
    * has lasted a full second (Android parity: a shorter view gives a rate
-   * dominated by one sample's rounding).
+   * dominated by one sample's rounding). It also carries CPU usage as a percentage
+   * (the process of all its cores, the main thread of one core) once the view has
+   * 0.9 s of foreground time between readings (iOS parity).
    *
    * Frame keys come with the first frame. The two rates are on every document
    * (not only the last, as on Android), so whichever write closes the view
@@ -115,6 +225,19 @@ export class ViewVitals {
       if (durationNs >= NS_PER_SECOND) {
         fields['cpu_ticks_per_second'] = ticks * NS_PER_SECOND / durationNs;
       }
+    }
+    // iOS parity: the average over the view's foreground time, and a peak that is at
+    // least the average (a busy trailing interval shorter than a peak interval still
+    // counts in the average).
+    if (this.processNs >= MIN_CPU_USAGE_NS && this.cores > 0) {
+      const average: number = ViewVitals.usage(this.processCpuNs, this.processNs, this.cores);
+      fields['cpu_usage_average'] = average;
+      fields['cpu_usage_max'] = Math.max(this.processPeak, average);
+    }
+    if (this.mainNs >= MIN_CPU_USAGE_NS) {
+      const average: number = ViewVitals.usage(this.mainCpuNs, this.mainNs, 1);
+      fields['main_thread_cpu_usage_average'] = average;
+      fields['main_thread_cpu_usage_max'] = Math.max(this.mainPeak, average);
     }
     if (this.frames > 0) {
       const average: number = this.fpsSum / this.frames;

@@ -241,6 +241,12 @@ export class CrashFeature implements Feature, FeatureEventReceiver {
     const originViewId: string = sessionSampled ? CrashFeature.stringValue(rumContext['view.id']) : '';
     const originViewName: string = sessionSampled ? CrashFeature.stringValue(rumContext['view.name']) : '';
     const originViewUrl: string = sessionSampled ? CrashFeature.stringValue(rumContext['view.url']) : '';
+    // Recorded now, reported as they were: the replay must not judge them again.
+    // Unknown stays unknown (undefined) rather than defaulting to false.
+    const inForeground: boolean | undefined = this.core.isAppStateKnown() ? this.core.isAppInForeground() : undefined;
+    const sampledForError: Object | undefined = rumContext['session.sampled_for_error'];
+    const originDrawn: boolean | undefined = originSessionId.length > 0 && typeof sampledForError === 'boolean' ?
+      !sampledForError : undefined;
     const incidentId: string = util.generateRandomUUID(true);
     // Persist a conservative exit outcome first. Recovery policy is written to
     // the same incident only after loop history is durable and restart is allowed,
@@ -260,7 +266,9 @@ export class CrashFeature implements Feature, FeatureEventReceiver {
       originViewId,
       originViewName,
       originViewUrl,
-      sessionSampled);
+      sessionSampled,
+      inForeground,
+      originDrawn);
 
     let written: boolean = this.persistPendingIncident(incident);
     if (this.activePolicy === JsCrashPolicy.REPORT_AND_RECOVER) {
@@ -292,7 +300,9 @@ export class CrashFeature implements Feature, FeatureEventReceiver {
           originViewId,
           originViewName,
           originViewUrl,
-          sessionSampled);
+          sessionSampled,
+          inForeground,
+          originDrawn);
         // A failed rewrite must not flip `written` back to false: the atomic
         // tmp+rename write leaves the earlier conservative incident intact on
         // disk, and reporting "not written" would make RUM emit the async live
@@ -361,7 +371,9 @@ export class CrashFeature implements Feature, FeatureEventReceiver {
       incident.viewId,
       incident.viewName,
       incident.viewUrl,
-      incident.originSampled);
+      incident.originSampled,
+      incident.inForeground,
+      incident.sessionSampled);
     if (!this.persistPendingIncident(downgraded)) {
       FlashcatLog.e('crash.recovery: downgrade write failed; replay may over-report recovery');
     }

@@ -1,5 +1,53 @@
 # Changelog
 
+## 0.8.1
+
+- Fixed: actions and resources recorded before the first view were dropped.
+  This happened when RUM was enabled while the app's first page was already on
+  screen, for example after a consent prompt. An action, a resource or an error
+  in a session that has never had a view now opens the `ApplicationLaunch` view
+  and is recorded in it, as on Android and iOS. Such an error used to be sent
+  without a view. The app's first view replaces `ApplicationLaunch`. The view
+  carries the global attributes, not the triggering event's own.
+  Nothing opens between two views, or in a launch the system reported in the
+  background; those events are still dropped, as before.
+- CPU sampling costs less than in 0.8.0. The process's CPU time comes from the
+  runtime (`process.getPastCpuTime`, all threads, millisecond precision), which
+  costs tens of microseconds, instead of a `/proc/self/stat` read, which costs
+  about half a millisecond when the sampler wakes for it. `/proc/self/stat` is
+  now read at most about once a second (every other reading at the default
+  500 ms period), for the user-time tick fields only. So
+  `view.cpu_ticks_count` / `view.cpu_ticks_per_second` run from the view's
+  first `/proc` reading to its last: a view shorter than about two seconds may
+  carry neither, and a short view's ticks per second can read slightly low.
+- New: CPU usage per view as a percentage, with the same field names and
+  meaning as the iOS SDK, so the two platforms can be compared.
+  - `view.cpu_usage_average` / `view.cpu_usage_max`: the process's CPU time
+    (user and system, all threads) as a percentage of all the cores it may run
+    on.
+  - `view.main_thread_cpu_usage_average` / `view.main_thread_cpu_usage_max`:
+    the main thread's, as a percentage of one core. Its stat is read at most
+    about once a second, so its peaks are taken over about a second.
+  - Only foreground time between consecutive readings counts; a stay in the
+    background in the middle of a view is left out.
+  - Peaks are taken over intervals of at least 0.25 s and are never below the
+    average.
+  - Reported once the view has 0.9 s of foreground time.
+  - `view.cpu_ticks_count` / `view.cpu_ticks_per_second` keep their meaning
+    (user time, Android parity).
+- Every crash and freeze reports whether the app was in the foreground at the
+  fault (`view.in_foreground`) and whether its session was drawn by the sample
+  rate (`session.sampled`): `true` when drawn or forced, `false` when kept only
+  because it errored. Both are recorded when the fault happens and reported as
+  recorded, also when the next launch reports it. `view.in_foreground` is left
+  out when the state is unknown — early in a launch, before the system has
+  said, or for a crash of an earlier version — and when the error has no view;
+  `session.sampled` is left out for a crash of an earlier version. Neither is
+  set on jank or on any other error.
+- A freeze (`error.category = "ANR"`) no longer counts in its view's
+  `view.crash.count`; it still counts in `view.error.count` and stays
+  `is_crash = true`. Crash counts leave freezes out; the ANR rate counts them.
+
 ## 0.8.0
 
 - New: per-view performance vitals, with the same field names and units as

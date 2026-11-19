@@ -645,16 +645,20 @@ export class DefaultRumMonitor implements RumMonitor {
   }
 
   private raw(kind: string, attributes?: Record<string, Object>): RumRawEvent {
-    const attrs: Record<string, Object> = {};
+    const globals: Record<string, Object> = {};
     this.globalAttributes.forEach((v: Object, k: string) => {
-      attrs[k] = v;
+      globals[k] = v;
     });
+    const attrs: Record<string, Object> = {};
+    for (const k of Object.keys(globals)) {
+      attrs[k] = globals[k];
+    }
     // Untyped callers can pass null where attributes are optional.
     if (attributes !== undefined && attributes !== null) {
       for (const k of Object.keys(attributes)) {
         attrs[k] = attributes[k];
       }
     }
-    return { kind, attributes: attrs, timestampMs: Date.now() };
+    return { kind, attributes: attrs, globalAttributes: globals, timestampMs: Date.now() };
   }
 }

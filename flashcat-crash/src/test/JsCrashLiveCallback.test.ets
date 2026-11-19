@@ -46,8 +46,14 @@ class FakeCore implements SdkCore {
   isActive(): boolean {
     return true;
   }
+  foreground: boolean = false;
+  stateKnown: boolean = true;
+
   isAppInForeground(): boolean {
-    return false;
+    return this.foreground;
+  }
+  isAppStateKnown(): boolean {
+    return this.stateKnown;
   }
   getIntakeTarget(): IntakeTarget {
     return { host: 'https://intake.example.com', clientToken: 'token' };
@@ -63,7 +69,7 @@ class FakeCore implements SdkCore {
 /** A core a persisting policy can snapshot (the keep-alive policies never ask). */
 class PersistingCore extends FakeCore {
   getContext(): FlashcatContext {
-    return { featureContext: {}, sdkVersion: '0.8.0' } as Object as FlashcatContext;
+    return { featureContext: {}, sdkVersion: '0.8.1' } as Object as FlashcatContext;
   }
 }
 
@@ -71,7 +77,7 @@ class PersistingCore extends FakeCore {
 class RumContextCore extends FakeCore {
   rum: Record<string, Object> = {};
   getContext(): FlashcatContext {
-    return { featureContext: { 'rum': this.rum }, sdkVersion: '0.8.0' } as Object as FlashcatContext;
+    return { featureContext: { 'rum': this.rum }, sdkVersion: '0.8.1' } as Object as FlashcatContext;
   }
 }
 
@@ -209,6 +215,44 @@ export default function jsCrashLiveCallbackTests(): void {
         expect(control['should_exit']).assertEqual(true);
         expect(control['pending_written']).assertEqual(true);
         expect(core.crashScope.ofType('crash_storage_write').length).assertEqual(1);
+      });
+
+    it('anIncidentRecordsWhetherTheAppWasInTheForeground',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        const run = (known: boolean, foreground: boolean): Record<string, Object> => {
+          const core: RumContextCore = new RumContextCore();
+          core.rum = { 'session.id': 's-1', 'session.sampled': true, 'session.sampled_for_error': false };
+          core.stateKnown = known;
+          core.foreground = foreground;
+          liveCallback(featureWith(core, JsCrashPolicy.REPORT_THEN_EXIT), 'unhandled');
+          return persistedIncident(core);
+        };
+        expect(run(true, true)['in_foreground']).assertEqual(true);
+        expect(run(true, false)['in_foreground']).assertEqual(false);
+        // Negative control: the system has not said yet — unknown, not background.
+        expect(run(false, false)['in_foreground']).assertUndefined();
+      });
+
+    it('anIncidentRecordsWhetherItsSessionWasDrawn',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        const run = (rum: Record<string, Object>): Record<string, Object> => {
+          const core: RumContextCore = new RumContextCore();
+          core.rum = rum;
+          liveCallback(featureWith(core, JsCrashPolicy.REPORT_THEN_EXIT), 'unhandled');
+          return persistedIncident(core);
+        };
+        // Drawn by the rate (or forced).
+        expect(run({ 'session.id': 's-1', 'session.sampled': true, 'session.sampled_for_error': false })
+          ['session_sampled']).assertEqual(true);
+        // Kept only because it errored: collected, but not drawn.
+        const kept: Record<string, Object> =
+          run({ 'session.id': 's-1', 'session.sampled': true, 'session.sampled_for_error': true });
+        expect(kept['session_sampled']).assertEqual(false);
+        expect(kept['origin_sampled']).assertEqual(true);
+        // Negative controls: no session (the replay draws one for the crash), or a context
+        // that does not say — unknown.
+        expect(run({ 'session.id': '', 'session.sampled_for_error': false })['session_sampled']).assertUndefined();
+        expect(run({ 'session.id': 's-1', 'session.sampled': true })['session_sampled']).assertUndefined();
       });
 
     it('aCrashWithNoSessionIsNotTakenForOneSampledOut',

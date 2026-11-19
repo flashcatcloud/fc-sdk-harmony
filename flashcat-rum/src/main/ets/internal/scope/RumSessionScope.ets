@@ -93,6 +93,9 @@ export class RumSessionScope implements RumScope {
     // reported into it (with the last view it wrote), even if nothing it held
     // made it out before the process died.
     update['session.sampled'] = this.sampled;
+    // Kept only because it errored, not drawn: what a crash of this session records
+    // as `session.sampled` false.
+    update['session.sampled_for_error'] = this.sampledOnError;
     this.core.updateFeatureContext('rum', update);
     // The same for a fault the next launch reports (native crash, freeze): it is this
     // session's from now on, with this draw, even before the session has a view.
@@ -217,6 +220,22 @@ export class RumSessionScope implements RumScope {
       return this;
     }
 
+    // An action, a request or an error in a session that has never had a view
+    // (the app's first page was on screen before RUM was enabled, say) opens the
+    // ApplicationLaunch view, as on Android and iOS. Without it the action and
+    // the request were dropped, and the error went out in a session the backend
+    // never builds. Nothing opens between two views (lastStoppedView set), nor
+    // in a launch the system reported in the background (Android drops those
+    // too). A state not known yet is not the background: a late-enabled SDK
+    // learns its foreground asynchronously, after the app's first calls.
+    const knownInBackground: boolean = this.core.isAppStateKnown() && !this.core.isAppInForeground();
+    if (this.activeView === null && this.lastStoppedView === null && !knownInBackground &&
+      (event.kind === 'addAction' || event.kind === 'startResource' || event.kind === 'addError')) {
+      // Not before the session: a timed action is stamped at its start, which can
+      // precede the session its stop minted.
+      this.startLaunchView(Math.max(event.timestampMs, this.startedAtMs), event.globalAttributes ?? {});
+    }
+
     if (this.activeView !== null) {
       const result: RumScope | null = this.activeView.handleEvent(event);
       if (result === null) {
@@ -240,13 +259,13 @@ export class RumSessionScope implements RumScope {
       // session_crash_count.
       this.lastStoppedView.handleEvent(event);
     } else if (event.kind === 'addError') {
-      this.writeViewlessError(event); // error before any view started
+      this.writeViewlessError(event); // between two views, or before any view in the background
     } else if (event.kind === 'addViewLoadingTime' && event.loadingTimeAuto !== true) {
       FlashcatLog.usage('addViewLoadingTime ignored: no view is open');
     } else if (event.kind === 'addAction' || event.kind === 'startResource') {
       // Surfaced so integrators can see why their data is missing — previously
       // these were dropped with no trace at any log level.
-      FlashcatLog.d(`rum.session: dropped viewless ${event.kind} — no active view (missing startView?)`);
+      FlashcatLog.d(`rum.session: dropped viewless ${event.kind} — no active view (between views or in the background)`);
     }
     if (event.kind === 'markCrash' && this.withheld !== null) {
       // The process is about to exit: what was held — the document counting this
@@ -289,10 +308,14 @@ export class RumSessionScope implements RumScope {
     if (!this.sampled) {
       return;
     }
+    this.startLaunchView(event.timestampMs, event.attributes);
+  }
+
+  private startLaunchView(atMs: number, attributes: Record<string, Object>): void {
     this.activeView = new RumViewScope(
       this.featureScope, this.core, this.applicationId, this.sessionId,
-      APPLICATION_LAUNCH_VIEW, APPLICATION_LAUNCH_VIEW, util.generateRandomUUID(true), event.timestampMs,
-      event.attributes, this.draw, this.sampledOnError, this.collector);
+      APPLICATION_LAUNCH_VIEW, APPLICATION_LAUNCH_VIEW, util.generateRandomUUID(true), atMs,
+      attributes, this.draw, this.sampledOnError, this.collector);
   }
 
   /** Keep a closed view alive (bounded) while it still owns in-flight resources,
@@ -500,7 +523,9 @@ export class RumSessionScope implements RumScope {
       const event: Record<string, Object> = RumEventAssembler.error(
         context, this.applicationId, this.sessionId, undefined, undefined,
         raw.errorMessage ?? '', raw.errorSource ?? 'source', raw.errorStack,
-        raw.isCrash ?? false, raw.errorHandling ?? 'handled', raw.timestampMs, raw.attributes);
+        raw.isCrash ?? false, raw.errorHandling ?? 'handled', raw.timestampMs,
+        raw.isCrash === true ? RumEventAssembler.withSessionSampled(raw.attributes, !this.sampledOnError) :
+          raw.attributes);
       writeMapped(writer, event, true);
     });
   }

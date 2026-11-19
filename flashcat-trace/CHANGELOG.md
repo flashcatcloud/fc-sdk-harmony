@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.8.1
+
+- No changes; released together with `@flashcatcloud/core`, `crash`, `rum` and `axios` 0.8.1.
+
 ## 0.8.0
 
 - `FlashcatHttp` and the rcp interceptor hand the network kit's timing of each

@@ -209,7 +209,7 @@ export default function crashEventMapperTests(): void {
         'TypeError: boom\n    at run (Index.ets:1:2)',
         'fp-1',
         JsCrashPolicy.REPORT_THEN_EXIT,
-        '0.8.0',
+        '0.8.1',
         'session-1',
         'view-1',
         'Home');
@@ -235,7 +235,7 @@ export default function crashEventMapperTests(): void {
         'TypeError: boom\n    at run (Index.ets:1:2)',
         'fp-recovered',
         JsCrashPolicy.REPORT_AND_RECOVER,
-        '0.8.0',
+        '0.8.1',
         'session-1',
         'view-1',
         'Home');
@@ -422,18 +422,37 @@ export default function crashEventMapperTests(): void {
       expect(CrashEventMapper.fromAppCrash({ 'crash_type': 'JsError' })['process_id']).assertUndefined();
     });
 
-    it('saysWhenTheFaultHappenedInTheBackground', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
-      // The system's `foreground` flag: RUM reports a background fault of a session with no
-      // view in its Background view.
+    it('aReplayedIncidentCarriesTheStateRecordedAtTheCrash', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+      const incident = (inForeground: boolean | undefined, sampled: boolean | undefined): CrashIncidentRecord =>
+        new CrashIncidentRecord('inc-1', 1000, 'Error', 'boom', 's', 'fp-1', JsCrashPolicy.REPORT_THEN_EXIT,
+          '0.8.1', 's-1', 'v-1', 'Home', '', true, inForeground, sampled);
+      const background: Record<string, Object> = CrashEventMapper.fromPendingIncident(incident(false, false));
+      expect(background['in_foreground']).assertEqual(false);
+      expect(background['session_sampled']).assertEqual(false);
+      const foreground: Record<string, Object> = CrashEventMapper.fromPendingIncident(incident(true, true));
+      expect(foreground['in_foreground']).assertEqual(true);
+      expect(foreground['session_sampled']).assertEqual(true);
+      // Negative control: unknown at the crash, nothing on the replay.
+      const unknown: Record<string, Object> = CrashEventMapper.fromPendingIncident(incident(undefined, undefined));
+      expect(unknown['in_foreground']).assertUndefined();
+      expect(unknown['session_sampled']).assertUndefined();
+    });
+
+    it('saysWhetherTheFaultHappenedInTheForeground', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+      // The system's `foreground` flag, as it says it, for crashes and freezes alike.
       const background: Record<string, Object> = nativeCrashWithThreads();
       background['foreground'] = false;
-      expect(CrashEventMapper.fromAppCrash(background)['in_background']).assertEqual(true);
-      expect(CrashEventMapper.fromAppFreeze(background)['in_background']).assertEqual(true);
-      // Negative controls: in the foreground, or not said at all, it is not in the background.
+      expect(CrashEventMapper.fromAppCrash(background)['in_foreground']).assertEqual(false);
+      expect(CrashEventMapper.fromAppFreeze(background)['in_foreground']).assertEqual(false);
       const foreground: Record<string, Object> = nativeCrashWithThreads();
       foreground['foreground'] = true;
-      expect(CrashEventMapper.fromAppCrash(foreground)['in_background']).assertUndefined();
-      expect(CrashEventMapper.fromAppCrash(nativeCrashWithThreads())['in_background']).assertUndefined();
+      expect(CrashEventMapper.fromAppCrash(foreground)['in_foreground']).assertEqual(true);
+      expect(CrashEventMapper.fromAppFreeze(foreground)['in_foreground']).assertEqual(true);
+      // Negative controls: not said, or not a boolean — unknown, so nothing is set (not false).
+      expect(CrashEventMapper.fromAppCrash(nativeCrashWithThreads())['in_foreground']).assertUndefined();
+      const odd: Record<string, Object> = nativeCrashWithThreads();
+      odd['foreground'] = 'false';
+      expect(CrashEventMapper.fromAppCrash(odd)['in_foreground']).assertUndefined();
     });
 
     it('namesANativeCrashBySignalAndCode', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {

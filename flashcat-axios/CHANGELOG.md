@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.8.1
+
+- No changes; released together with `@flashcatcloud/core`, `crash`, `rum` and `trace` 0.8.1.
+
 ## 0.8.0
 
 - No changes; released together with `@flashcatcloud/core`, `crash`, `rum` and `trace` 0.8.0.

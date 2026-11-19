@@ -644,7 +644,7 @@ export default function frameVitalsTests(): void {
       const factory: FakeFactory = new FakeFactory();
       const frames: FrameObserver = observerWith(factory);
       const collectors: VitalsCollectors = new VitalsCollectors([
-        new ResourceSampler({ memoryBytes: null, cpuTicks: null }, (): number => 500, new NoTimer()), frames]);
+        new ResourceSampler({ memoryBytes: null, cpu: null }, (): number => 500, new NoTimer()), frames]);
       const monitor: DefaultRumMonitor = new DefaultRumMonitor(core, scope, configuration, null, null, collectors);
       monitor.stopKeepAlive();
       feature.attachMonitor(monitor, collectors);

@@ -47,6 +47,9 @@ export class FlashcatCore implements SdkCore {
   private appForeground: boolean = false;
   // Set by the first state callback, which then outranks the startup probe.
   private appStateObserved: boolean = false;
+  // Whether the system has said foreground or background yet (a callback, or a
+  // probe answer of either): until then `appForeground` false means unknown.
+  private appStateKnown: boolean = false;
   private active: boolean = true;
   private readonly backgroundProcess: boolean;
   // Extension-process upload-only pipelines (no Feature object): built by
@@ -127,6 +130,7 @@ export class FlashcatCore implements SdkCore {
       this.appStateCallback = {
         onApplicationForeground: () => {
           this.appStateObserved = true;
+          this.appStateKnown = true;
           this.appForeground = true;
           // The only moment a feature can trust that time has passed: an
           // in-process timer may not have run for hours while backgrounded.
@@ -136,6 +140,7 @@ export class FlashcatCore implements SdkCore {
         },
         onApplicationBackground: () => {
           this.appStateObserved = true;
+          this.appStateKnown = true;
           this.appForeground = false;
           // Before the flush: what stops sampling in the background has to stop
           // before the flush writes the view documents that close this stretch. From
@@ -202,11 +207,13 @@ export class FlashcatCore implements SdkCore {
             }
             if (info.state === appManager.ProcessState.STATE_FOREGROUND
               || info.state === appManager.ProcessState.STATE_ACTIVE) {
+              this.appStateKnown = true;
               this.appForeground = true;
               // Not app_foreground: this is no return from the background, and
               // nothing that reacts to one (a configuration refresh) should run.
               this.bus.send(RUM_FEATURE_NAME, { 'type': 'app_foreground_detected' } as Record<string, Object>);
             } else if (info.state === appManager.ProcessState.STATE_BACKGROUND) {
+              this.appStateKnown = true;
               // Launched in the background: it can be frozen like a backgrounded app.
               this.bus.send(RUM_FEATURE_NAME, { 'type': 'app_background' } as Record<string, Object>);
             }
@@ -301,6 +308,10 @@ export class FlashcatCore implements SdkCore {
 
   isAppInForeground(): boolean {
     return this.appForeground;
+  }
+
+  isAppStateKnown(): boolean {
+    return this.appStateKnown;
   }
 
   /**

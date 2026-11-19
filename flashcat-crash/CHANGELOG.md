@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.8.1
+
+- Crash and freeze reports carry the system's foreground state at the fault
+  as `in_foreground` (`true` or `false`, absent when the system does not say),
+  replacing `in_background`.
+- A persisted JS crash records whether the app was in the foreground and
+  whether its session was drawn by the sample rate, so the next launch reports
+  them as they were at the crash. Incidents written by an earlier version
+  replay without them.
+
 ## 0.8.0
 
 - New: main-thread jank is reported as a handled RUM error in the current
