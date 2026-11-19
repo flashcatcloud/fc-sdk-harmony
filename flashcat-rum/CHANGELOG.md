@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.8.1
 
 - Fixed: actions and resources recorded before the first view were dropped.
   This happened when RUM was enabled while the app's first page was already on

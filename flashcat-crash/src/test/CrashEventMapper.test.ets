@@ -209,7 +209,7 @@ export default function crashEventMapperTests(): void {
         'TypeError: boom\n    at run (Index.ets:1:2)',
         'fp-1',
         JsCrashPolicy.REPORT_THEN_EXIT,
-        '0.8.0',
+        '0.8.1',
         'session-1',
         'view-1',
         'Home');
@@ -235,7 +235,7 @@ export default function crashEventMapperTests(): void {
         'TypeError: boom\n    at run (Index.ets:1:2)',
         'fp-recovered',
         JsCrashPolicy.REPORT_AND_RECOVER,
-        '0.8.0',
+        '0.8.1',
         'session-1',
         'view-1',
         'Home');
