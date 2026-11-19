@@ -167,8 +167,7 @@ export class ResourceSampler implements VitalsCollector {
     } catch (_e) {
       cpu = null;
     }
-    if (cpu === null || !ResourceSampler.isReading(cpu.processTicks) || !ResourceSampler.isReading(cpu.userTicks)
-      || !ResourceSampler.isReading(cpu.atNs)) {
+    if (cpu === null || !ResourceSampler.isReading(cpu.processCpuNs) || !ResourceSampler.isReading(cpu.atNs)) {
       this.cpuReader = null;
       FlashcatLog.d('rum.vitals: CPU time is not readable on this device; views carry no CPU fields');
       return;

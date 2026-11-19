@@ -266,20 +266,24 @@ const status: ProcFile = new ProcFile(STATUS_PATH);
 const mainThreadStat: ProcFile = new ProcFile(`/proc/self/task/${process.pid}/stat`);
 
 // One reading for the life of the process, filled in place: a sample allocates nothing.
-const reading: CpuReading = { userTicks: 0, processTicks: 0, mainThreadTicks: -1, cores: 0, atNs: 0 };
-let utimeTicks: number = 0;
+const reading: CpuReading = { userTicks: -1, processCpuNs: 0, mainThreadCpuNs: -1, cores: 0, atNs: 0 };
+// The unit of the CPU times in /proc (USER_HZ), fixed by the kernel ABI on the
+// architectures HarmonyOS runs on.
+const NS_PER_CLOCK_TICK: number = 10_000_000;
+const NS_PER_MS: number = 1_000_000;
+// The /proc reads cost about 0.4–0.6 ms each when the sampler wakes for them, against
+// tens of microseconds for the process's CPU time from the runtime: they are taken
+// about once a second (every other reading at the default period), the rest of the
+// readings carry the process's time alone. A sampling period of 0.9 s or more reads
+// them on every reading.
+const PROC_READ_EVERY_NS: number = 900_000_000;
+let lastProcReadNs: number = -1;
 // Read once: the CPUs a process may use do not change while it runs in the foreground.
 let coresRead: boolean = false;
 let mainThreadReadable: boolean = true;
 
-function parseProcessTimes(bytes: Uint8Array, length: number): number | null {
-  const utime: number | null = parseStatField(bytes, length, UTIME_FIELD);
-  const stime: number | null = parseStatField(bytes, length, STIME_FIELD);
-  if (utime === null || stime === null) {
-    return null;
-  }
-  utimeTicks = utime;
-  return utime + stime;
+function parseUtime(bytes: Uint8Array, length: number): number | null {
+  return parseStatField(bytes, length, UTIME_FIELD);
 }
 
 function parseThreadTimes(bytes: Uint8Array, length: number): number | null {
@@ -289,24 +293,32 @@ function parseThreadTimes(bytes: Uint8Array, length: number): number | null {
 }
 
 /**
- * The process's CPU time (user + system, and user alone), the main thread's, and when
- * they were read; null when the process's own is unreadable. A main thread or a CPU
- * count that cannot be read leaves only its own fields out (-1, 0).
+ * The process's CPU time (all threads, from the runtime) and when it was read, and —
+ * about once a second — its user time and the main thread's CPU time from /proc (-1
+ * on the other readings, or when unreadable). Null when the process's own CPU time is
+ * unreadable. A CPU count that cannot be read is 0.
  */
 function readCpu(): CpuReading | null {
-  const processTicks: number | null = stat.read(parseProcessTimes);
-  if (processTicks === null) {
+  const pastMs: number = process.getPastCpuTime();
+  if (!Number.isFinite(pastMs) || pastMs < 0) {
     return null;
   }
-  reading.atNs = systemDateTime.getUptime(systemDateTime.TimeType.ACTIVE, true);
-  reading.processTicks = processTicks;
-  reading.userTicks = utimeTicks;
-  reading.mainThreadTicks = -1;
-  if (mainThreadReadable) {
-    try {
-      reading.mainThreadTicks = mainThreadStat.read(parseThreadTimes) ?? -1;
-    } catch (_e) {
-      mainThreadReadable = false;
+  const atNs: number = systemDateTime.getUptime(systemDateTime.TimeType.ACTIVE, true);
+  reading.atNs = atNs;
+  reading.processCpuNs = pastMs * NS_PER_MS;
+  reading.userTicks = -1;
+  reading.mainThreadCpuNs = -1;
+  // A clock earlier than the last read (one that was reset) reads again rather than never.
+  if (lastProcReadNs < 0 || atNs < lastProcReadNs || atNs - lastProcReadNs >= PROC_READ_EVERY_NS) {
+    lastProcReadNs = atNs;
+    reading.userTicks = stat.read(parseUtime) ?? -1;
+    if (mainThreadReadable) {
+      try {
+        const ticks: number | null = mainThreadStat.read(parseThreadTimes);
+        reading.mainThreadCpuNs = ticks === null ? -1 : ticks * NS_PER_CLOCK_TICK;
+      } catch (_e) {
+        mainThreadReadable = false;
+      }
     }
   }
   if (!coresRead) {

@@ -1,5 +1,6 @@
 import { describe, expect, it, Level, Size, TestType } from '@ohos/hypium';
 import { process } from '@kit.ArkTS';
+import { systemDateTime } from '@kit.BasicServicesKit';
 import {
   FlashcatContext, FeatureScope, EventWriter, SdkCore, TrackingConsent,
   Feature, FeatureEventReceiver, UserInfo, IntakeTarget
@@ -252,12 +253,35 @@ function utimeTicks(text: string): number | null {
 
 /** A reading at `ms` of `processTicks` ticks (all of them user time) and `main` main-thread ticks, on `cores` cores. */
 function cpuAt(ms: number, processTicks: number, main: number, cores: number = 4): CpuReading {
-  return { userTicks: processTicks, processTicks: processTicks, mainThreadTicks: main, cores: cores, atNs: ms * 1_000_000 };
+  return {
+    userTicks: processTicks, processCpuNs: processTicks * TICK_NS, mainThreadCpuNs: main < 0 ? -1 : main * TICK_NS,
+    cores: cores, atNs: ms * 1_000_000
+  };
 }
 
 /** A reading of `ticks` of user time alone, at no particular time: what the tick fields count. */
 function ticksAt(ticks: number, atNs: number = 0): CpuReading {
-  return { userTicks: ticks, processTicks: ticks, mainThreadTicks: -1, cores: 0, atNs: atNs };
+  return { userTicks: ticks, processCpuNs: ticks * TICK_NS, mainThreadCpuNs: -1, cores: 0, atNs: atNs };
+}
+
+// A clock tick (USER_HZ 100) in nanoseconds: the tests count CPU time in ticks.
+const TICK_NS: number = 10_000_000;
+
+function procShim(): Record<string, Object> {
+  return process as Object as Record<string, Object>;
+}
+
+/** Moves the readers' clock on by `ms`, past the throttle on the /proc reads by default. */
+// Only ever moves forward, across tests too: the readers remember when they last read.
+let clockMs: number = 1_000_000;
+
+function advanceClock(ms: number = 1000): void {
+  clockMs += ms;
+  (systemDateTime as Object as Record<string, Object>)['elapsedMs'] = clockMs;
+}
+
+function resetClock(): void {
+  (systemDateTime as Object as Record<string, Object>)['elapsedMs'] = null as Object;
 }
 
 class FakeFetcher implements RemoteConfigFetcher {
@@ -396,6 +420,36 @@ export default function viewVitalsTests(): void {
       expect(b['cpu_usage_average']).assertEqual(25);
     });
 
+    it('theMainThreadAndUserTimeReadOnEveryOtherReadingStillAddUp', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+      // As the readers take them: process time every 0.5 s, the /proc values every second.
+      const at = (ms: number, processTicks: number, main: number, user: number): CpuReading => ({
+        userTicks: user, processCpuNs: processTicks * TICK_NS, mainThreadCpuNs: main < 0 ? -1 : main * TICK_NS,
+        cores: 4, atNs: ms * 1_000_000
+      });
+      const vitals: ViewVitals = new ViewVitals();
+      vitals.onCpuSample(at(0, 0, 0, 0), 1);
+      vitals.onCpuSample(at(500, 120, -1, -1), 1);
+      vitals.onCpuSample(at(1000, 160, 90, 150), 1);
+      vitals.onCpuSample(at(1500, 180, -1, -1), 1);
+      vitals.onCpuSample(at(2000, 200, 100, 190), 1);
+      const fields: Record<string, Object> = vitals.toFields(2 * SECOND_NS);
+      // 100 main-thread ticks over 2 s; the first second's 90 is its peak.
+      expect(fields['main_thread_cpu_usage_average']).assertEqual(50);
+      expect(fields['main_thread_cpu_usage_max']).assertEqual(90);
+      // The process keeps its half-second peaks: 120 ticks in the first 0.5 s of 4 cores.
+      expect(fields['cpu_usage_average']).assertEqual(25);
+      expect(fields['cpu_usage_max']).assertEqual(60);
+      // User time from the readings that have it.
+      expect(fields['cpu_ticks_count']).assertEqual(190);
+      // Negative control: one main-thread reading is no usage.
+      const once: ViewVitals = new ViewVitals();
+      once.onCpuSample(at(0, 0, 0, 0), 1);
+      once.onCpuSample(at(500, 50, -1, -1), 1);
+      once.onCpuSample(at(1000, 100, -1, -1), 1);
+      expect(once.toFields(SECOND_NS)['main_thread_cpu_usage_average']).assertUndefined();
+      expect(once.toFields(SECOND_NS)['cpu_usage_average']).assertEqual(25);
+    });
+
     it('aReadingAtTheSameInstantLosesNoTicks', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
       // Two views' timers can land on one clock reading: what the second adds is counted with the next.
       const vitals: ViewVitals = new ViewVitals();
@@ -457,9 +511,11 @@ export default function viewVitalsTests(): void {
       try {
         expect(fileIo.readTextSync('/proc/self/stat')).assertEqual(''); // the trap the reader must avoid
         const read: (() => CpuReading | null) | null = systemResourceReaders().cpu;
+        advanceClock();
         expect(read === null ? null : read()?.userTicks).assertEqual(4242);
       } finally {
         pseudo.delete('/proc/self/stat');
+        resetClock();
       }
     });
 
@@ -492,20 +548,74 @@ export default function viewVitalsTests(): void {
         pseudo.set(mainPath, `${STAT_LINE.replace(' 4242 77 ', ' 300 20 ')}\n`);
         pseudo.set('/proc/self/status', `${STATUS_TEXT}Cpus_allowed_list:\t0-8\n`);
         const read: (() => CpuReading | null) | null = systemResourceReaders().cpu;
+        procShim()['pastCpuMs'] = 1234;
+        advanceClock();
         const cpu: CpuReading | null = read === null ? null : read();
         expect(cpu?.userTicks).assertEqual(4242);
-        expect(cpu?.processTicks).assertEqual(4242 + 77);
-        expect(cpu?.mainThreadTicks).assertEqual(320);
+        expect(cpu?.processCpuNs).assertEqual(1234 * 1_000_000);
+        expect(cpu?.mainThreadCpuNs).assertEqual(320 * TICK_NS);
         expect((cpu?.atNs ?? 0) > 0).assertTrue();
         // Negative control: an unreadable main thread leaves only its own value out.
         pseudo.set(mainPath, 'not a stat line\n');
+        advanceClock();
         const without: CpuReading | null = read === null ? null : read();
-        expect(without?.processTicks).assertEqual(4242 + 77);
-        expect(without?.mainThreadTicks).assertEqual(-1);
+        expect(without?.processCpuNs).assertEqual(1234 * 1_000_000);
+        expect(without?.mainThreadCpuNs).assertEqual(-1);
+      } finally {
+        pseudo.delete('/proc/self/stat');
+        resetClock();
+        pseudo.delete(mainPath);
+        pseudo.delete('/proc/self/status');
+      }
+    });
+
+    it('theProcFilesAreReadAboutOnceASecond', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+      // Each costs about half a millisecond when the sampler wakes for it; the runtime's
+      // process time costs tens of microseconds and is read every time.
+      const io: Record<string, Object> = fileIo as Object as Record<string, Object>;
+      const pseudo: Map<string, string> = io['pseudoFiles'] as Map<string, string>;
+      const calls: Record<string, number> = io['calls'] as Record<string, number>;
+      const mainPath: string = `/proc/self/task/${process.pid}/stat`;
+      try {
+        pseudo.set('/proc/self/stat', `${STAT_LINE}\n`);
+        pseudo.set(mainPath, `${STAT_LINE}\n`);
+        const read: (() => CpuReading | null) | null = systemResourceReaders().cpu;
+        advanceClock();
+        procShim()['pastCpuMs'] = 100;
+        expect(read === null ? null : read()?.userTicks).assertEqual(4242);
+        const reads: number = calls['readSync'];
+        advanceClock(500);
+        procShim()['pastCpuMs'] = 150;
+        const half: CpuReading | null = read === null ? null : read();
+        expect(half?.processCpuNs).assertEqual(150 * 1_000_000);
+        expect(half?.userTicks).assertEqual(-1);
+        expect(half?.mainThreadCpuNs).assertEqual(-1);
+        expect(calls['readSync']).assertEqual(reads);
+        // Negative control: a second on, both files are read again.
+        advanceClock(500);
+        const full: CpuReading | null = read === null ? null : read();
+        expect(full?.userTicks).assertEqual(4242);
+        expect((full?.mainThreadCpuNs ?? -1) >= 0).assertTrue();
+        expect(calls['readSync'] - reads).assertEqual(2);
       } finally {
         pseudo.delete('/proc/self/stat');
         pseudo.delete(mainPath);
-        pseudo.delete('/proc/self/status');
+        resetClock();
+      }
+    });
+
+    it('anUnreadableProcessTimeIsNoReading', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+      const read: (() => CpuReading | null) | null = systemResourceReaders().cpu;
+      try {
+        procShim()['pastCpuMs'] = Number.NaN;
+        expect(read === null ? null : read()).assertNull();
+        procShim()['pastCpuMs'] = -1;
+        expect(read === null ? null : read()).assertNull();
+        // Negative control: a real value is a reading.
+        procShim()['pastCpuMs'] = 5;
+        expect(read === null ? null : read()?.processCpuNs).assertEqual(5 * 1_000_000);
+      } finally {
+        procShim()['pastCpuMs'] = 0;
       }
     });
 
@@ -515,11 +625,15 @@ export default function viewVitalsTests(): void {
       try {
         const read: (() => CpuReading | null) | null = systemResourceReaders().cpu;
         pseudo.set('/proc/self/stat', STAT_LINE);
+        advanceClock();
         expect(read === null ? null : read()?.userTicks).assertEqual(4242);
         pseudo.set('/proc/self/stat', '1234 (app) S 1 2 3');
-        expect(read === null ? null : read()).assertNull();
+        advanceClock();
+        // The process's time comes from the runtime: an unreadable stat costs the tick fields alone.
+        expect(read === null ? null : read()?.userTicks).assertEqual(-1);
       } finally {
         pseudo.delete('/proc/self/stat');
+        resetClock();
       }
     });
 
@@ -531,10 +645,12 @@ export default function viewVitalsTests(): void {
       try {
         const read: (() => CpuReading | null) | null = systemResourceReaders().cpu;
         pseudo.set('/proc/self/stat', `${STAT_LINE}\n`);
+        advanceClock();
         expect(read === null ? null : read()?.userTicks).assertEqual(4242);
         const opens: number = calls['openSync'];
         const reads: number = calls['readSync'];
         pseudo.set('/proc/self/stat', `${STAT_LINE.replace(' 4242 ', ' 5000 ')}\n`);
+        advanceClock();
         expect(read === null ? null : read()?.userTicks).assertEqual(5000);
         expect(calls['openSync']).assertEqual(opens);
         // A whole line in the first read is the whole file: no read on to the empty one at the end.
@@ -542,6 +658,7 @@ export default function viewVitalsTests(): void {
         expect(calls['readSync'] - reads).assertEqual(2);
       } finally {
         pseudo.delete('/proc/self/stat');
+        resetClock();
       }
     });
 

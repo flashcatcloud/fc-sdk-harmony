@@ -8,11 +8,12 @@ class ProcessManager {
   exit() { processShim.exitRequests += 1; }
   kill() {}
 }
-// uptimeSeconds / startRealtimeMs: what the process clock answers; tests set them.
+// uptimeSeconds / startRealtimeMs / pastCpuMs: what the process clock answers; tests set them.
 const processShim = {
   ProcessManager, exitRequests: 0, pid: process.pid,
-  uptimeSeconds: 0, startRealtimeMs: 0,
+  uptimeSeconds: 0, startRealtimeMs: 0, pastCpuMs: 0,
   uptime() { return processShim.uptimeSeconds; },
+  getPastCpuTime() { return processShim.pastCpuMs; },
   getStartRealtime() { return processShim.startRealtimeMs; }
 };
 // Runs the task in-thread; counts executions so tests can tell the path.
