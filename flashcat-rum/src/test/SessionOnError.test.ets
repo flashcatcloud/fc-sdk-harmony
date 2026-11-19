@@ -3506,6 +3506,151 @@ export default function sessionOnErrorTests(): void {
         expect((core.featureContext['view.id'] ?? '') as string).assertEqual('');
       });
   });
+  describe('rum-events-before-first-view', (): void => {
+    /** RUM enabled while the app's first page is already on screen: no view has started. */
+    const foregroundFeature = (core: FakeCore, scope: CapturingScope): DefaultRumMonitor => {
+      core.foreground = true;
+      core.stateKnown = true;
+      return featureWith(core, scope, 100, false);
+    };
+    const viewOf = (event: Record<string, Object>): Record<string, Object> =>
+      event['view'] as Record<string, Object>;
+    const launchViewsOf = (scope: CapturingScope): Array<Record<string, Object>> =>
+      scope.ofType('view').filter((v: Record<string, Object>) => viewOf(v)['url'] === 'ApplicationLaunch');
+    const contextOf = (event: Record<string, Object>): Record<string, Object> =>
+      (event['context'] ?? {}) as Record<string, Object>;
+
+    it('anActionBeforeAnyViewIsWrittenInTheLaunchView',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        const core: FakeCore = new FakeCore();
+        const scope: CapturingScope = new CapturingScope();
+        const monitor: DefaultRumMonitor = foregroundFeature(core, scope);
+        monitor.addAction(RumActionType.CUSTOM, 'login_start');
+        monitor.addAction(RumActionType.CUSTOM, 'login_failed');
+        const actions: Array<Record<string, Object>> = scope.ofType('action');
+        expect(actions.length).assertEqual(2);
+        const launch: Array<Record<string, Object>> = launchViewsOf(scope);
+        expect(launch.length > 0).assertTrue();
+        const launchViewId: Object = viewOf(launch[launch.length - 1])['id'];
+        for (const action of actions) {
+          expect(viewOf(action)['id']).assertEqual(launchViewId);
+          expect(sessionOf(action)['id']).assertEqual(core.featureContext['session.id']);
+        }
+        expect((viewOf(launch[launch.length - 1])['action'] as Record<string, Object>)['count']).assertEqual(2);
+      });
+
+    it('anActionIsKeptWhileTheForegroundIsNotKnownYet',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        // A late-enabled SDK learns its foreground asynchronously, after the app's first calls.
+        const core: FakeCore = new FakeCore();
+        core.stateKnown = false;
+        const scope: CapturingScope = new CapturingScope();
+        const monitor: DefaultRumMonitor = featureWith(core, scope, 100, false);
+        monitor.addAction(RumActionType.TAP, 'tap');
+        expect(scope.ofType('action').length).assertEqual(1);
+        expect(launchViewsOf(scope).length > 0).assertTrue();
+      });
+
+    it('aRequestAndAnErrorBeforeAnyViewJoinTheLaunchView',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        const core: FakeCore = new FakeCore();
+        const scope: CapturingScope = new CapturingScope();
+        const monitor: DefaultRumMonitor = foregroundFeature(core, scope);
+        monitor.startResource('r1', RumResourceMethod.POST, 'https://api.example.com/login');
+        monitor.stopResource('r1', 401, 12, RumResourceKind.NATIVE);
+        monitor.addError('login failed', RumErrorSource.SOURCE);
+        const launch: Array<Record<string, Object>> = launchViewsOf(scope);
+        expect(launch.length > 0).assertTrue();
+        const launchViewId: Object = viewOf(launch[launch.length - 1])['id'];
+        expect(scope.ofType('resource').length).assertEqual(1);
+        expect(viewOf(scope.ofType('resource')[0])['id']).assertEqual(launchViewId);
+        expect(scope.ofType('error').length).assertEqual(1);
+        expect(viewOf(scope.ofType('error')[0])['id']).assertEqual(launchViewId);
+      });
+
+    it('theLaunchViewCarriesTheGlobalAttributesButNotTheActionsOwn',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        const core: FakeCore = new FakeCore();
+        const scope: CapturingScope = new CapturingScope();
+        const monitor: DefaultRumMonitor = foregroundFeature(core, scope);
+        monitor.addAttribute('channel', 'store');
+        monitor.addAction(RumActionType.CUSTOM, 'login_start', { 'step': 'submit' });
+        monitor.addAction(RumActionType.CUSTOM, 'login_failed');
+        const launch: Array<Record<string, Object>> = launchViewsOf(scope);
+        const view: Record<string, Object> = launch[launch.length - 1];
+        expect(contextOf(view)['channel']).assertEqual('store');
+        expect(contextOf(view)['step']).assertUndefined();
+        const second: Record<string, Object> = scope.ofType('action')[1];
+        expect(contextOf(second)['step']).assertUndefined();
+      });
+
+    it('theFirstViewOfTheAppReplacesTheLaunchView',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        const core: FakeCore = new FakeCore();
+        const scope: CapturingScope = new CapturingScope();
+        const monitor: DefaultRumMonitor = foregroundFeature(core, scope);
+        monitor.addAction(RumActionType.TAP, 'before');
+        monitor.startView('home', 'home');
+        monitor.addAction(RumActionType.TAP, 'after');
+        const launch: Array<Record<string, Object>> = launchViewsOf(scope);
+        expect(viewOf(launch[launch.length - 1])['is_active']).assertEqual(false);
+        const after: Record<string, Object> = scope.ofType('action')[1];
+        expect(viewOf(after)['url']).assertEqual('home');
+      });
+
+    it('aTimedActionBeforeAnyViewDoesNotDateTheLaunchViewBeforeItsSession',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        const core: FakeCore = new FakeCore();
+        const scope: CapturingScope = new CapturingScope();
+        const monitor: DefaultRumMonitor = foregroundFeature(core, scope);
+        const startedMs: number = Date.now();
+        monitor.startAction(RumActionType.CUSTOM, 'login');
+        waitPast(startedMs + 5);
+        monitor.stopAction(RumActionType.CUSTOM, 'login');
+        const action: Record<string, Object> = scope.ofType('action')[0];
+        const launch: Array<Record<string, Object>> = launchViewsOf(scope);
+        const viewDate: number = launch[launch.length - 1]['date'] as number;
+        // The action keeps its start time; the session, minted at the stop, is later.
+        expect((action['date'] as number) < viewDate).assertTrue();
+        expect(viewDate > startedMs).assertTrue();
+      });
+
+    it('nothingOpensBetweenTwoViews',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        const core: FakeCore = new FakeCore();
+        const scope: CapturingScope = new CapturingScope();
+        const monitor: DefaultRumMonitor = foregroundFeature(core, scope);
+        monitor.startView('home', 'home');
+        monitor.stopView('home');
+        monitor.addAction(RumActionType.TAP, 'between');
+        expect(scope.ofType('action').length).assertEqual(0);
+        expect(launchViewsOf(scope).length).assertEqual(0);
+      });
+
+    it('nothingOpensInALaunchTheSystemReportedInTheBackground',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        const core: FakeCore = new FakeCore();
+        core.foreground = false;
+        core.stateKnown = true;
+        const scope: CapturingScope = new CapturingScope();
+        const monitor: DefaultRumMonitor = featureWith(core, scope, 100, false);
+        monitor.addAction(RumActionType.TAP, 'background');
+        expect(scope.ofType('action').length).assertEqual(0);
+        expect(launchViewsOf(scope).length).assertEqual(0);
+      });
+
+    it('anUnsampledSessionOpensNothing',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        const core: FakeCore = new FakeCore();
+        core.foreground = true;
+        const scope: CapturingScope = new CapturingScope();
+        const monitor: DefaultRumMonitor = featureWith(core, scope, 0, false);
+        monitor.addAction(RumActionType.TAP, 'tap');
+        expect(scope.written.filter((e: Record<string, Object>) =>
+          e['type'] === 'view' || e['type'] === 'action').length).assertEqual(0);
+      });
+  });
+
   describe('rum-crash-session-record', (): void => {
     it('aNativeCrashAfterARenewalBeforeTheFirstViewIsTheNewSessions',
       TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
