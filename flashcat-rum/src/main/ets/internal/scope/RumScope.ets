@@ -17,10 +17,14 @@ export interface RumRawEvent {
                                 // writing an error event (the error itself is delivered by the
                                 // durable pending-incident replay at next launch).
                                 // openLaunchView: a JS fault is about to be handled; a session
-                                // that has never had a view opens the ApplicationLaunch view for it.
+                                // that has never had a view opens the ApplicationLaunch view for it
+                                // (an action, a resource or an error does the same on its own).
   key?: string;                 // view key, or resource key
   name?: string;
   attributes: Record<string, Object>;
+  // The global attributes alone, as they were at the call: what a view opened
+  // for this event carries (its own attributes stay on the event).
+  globalAttributes?: Record<string, Object>;
   timestampMs: number;          // epoch ms
 
   // action specifics (kind === 'addAction')

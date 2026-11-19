@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- Fixed: actions and resources recorded before the first view were dropped.
+  This happened when RUM was enabled while the app's first page was already on
+  screen, for example after a consent prompt. An action, a resource or an error
+  in a session that has never had a view now opens the `ApplicationLaunch` view
+  and is recorded in it, as on Android and iOS. Such an error used to be sent
+  without a view. The app's first view replaces `ApplicationLaunch`. The view
+  carries the global attributes, not the triggering event's own.
+  Nothing opens between two views, or in a launch the system reported in the
+  background; those events are still dropped, as before.
 - CPU sampling costs less than in 0.8.0.
   - The process's CPU time now comes from the runtime (`process.getPastCpuTime`),
     which costs tens of microseconds, instead of a `/proc/self/stat` read, which
