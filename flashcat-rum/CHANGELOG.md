@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- CPU sampling costs less than in 0.8.0.
+  - The process's CPU time now comes from the runtime (`process.getPastCpuTime`),
+    which costs tens of microseconds, instead of a `/proc/self/stat` read, which
+    costs about half a millisecond when the sampler wakes for it.
+  - `/proc/self/stat` (for the user-time tick fields) and the main thread's stat
+    are read about once a second: every other reading at the default period.
+  - Main-thread usage and its peaks run from one main-thread reading to the next.
 - New: CPU usage per view as a percentage, with the same field names and
   meaning as the iOS SDK, so the two platforms can be compared.
   - `view.cpu_usage_average` / `view.cpu_usage_max`: the process's CPU time
