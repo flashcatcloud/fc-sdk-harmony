@@ -23,8 +23,31 @@ permissions:
   contents: read
 
 jobs:
+  release-notes:
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Extract release notes
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          bash .github/scripts/extract-release-notes.sh \
+            --changelog hvigor-plugin/CHANGELOG.md --version "${TAG#hvigor-plugin-v}" \
+            --level 2 --output release-notes.md
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: hvigor-plugin-release-notes
+          path: release-notes.md
+          if-no-files-found: error
+
   publish:
     name: Publish hvigor-plugin to npm
+    needs: release-notes
+    if: ${{ !cancelled() && ((github.ref_type == 'tag' && needs.release-notes.result == 'success') || (github.event_name == 'workflow_dispatch' && needs.release-notes.result == 'skipped')) }}
     runs-on: ubuntu-latest
     environment: Production
     defaults:
@@ -97,6 +120,29 @@ jobs:
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
+  github-release:
+    needs: [publish, release-notes]
+    if: ${{ github.ref_type == 'tag' && needs.publish.result == 'success' && needs.release-notes.result == 'success' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: hvigor-plugin-release-notes
+
+      - name: Create or update GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          if gh release view "$TAG" > /dev/null 2>&1; then
+            gh release edit "$TAG" --notes-file release-notes.md
+          else
+            gh release create "$TAG" --title "$TAG" --notes-file release-notes.md --verify-tag
+          fi
+
   # Mirrors the notification jobs in publish-ohpm.yml. ignoreError keeps a broken
   # webhook from marking a release that already reached npm as failed.
   notify-success:
@@ -153,7 +199,7 @@ jobs:
             }
 
   notify-failure:
-    needs: publish
+    needs: [release-notes, publish]
     runs-on: ubuntu-latest
     if: failure()
     steps:
