@@ -31,10 +31,16 @@ GlobalRumMonitor.get().startView('home', 'Home');
   instrumented paths: the rcp interceptor (`FlashcatTrace.interceptor()`), the
   `FlashcatHttp.request` wrapper, or manual `startResource`/`stopResource`.
   Plain `@ohos.net.http` calls are NOT hooked automatically.
-- **View auto-tracking** (`setTrackNavigation(true)` + `startViewTracking(ctx)`)
-  covers `router`-based navigation only; `Navigation`/`NavDestination` apps
-  should emit views manually. Pair every `startViewTracking(ctx)` with
-  `stopViewTracking(ctx)` in the ability's `onDestroy`.
+- **Frames and app launch timing** need no call: the SDK hooks each ability's
+  window when its window stage is created, before its first frame, and lets it
+  go when the window stage is destroyed. Initialize the SDK and enable RUM in
+  `AbilityStage.onCreate` so the first window is not missed. Apps that already
+  call `startViewTracking(ctx)` / `stopViewTracking(ctx)` keep working; the same
+  ability is never hooked twice. Call `startViewTracking(this.getUIContext())`
+  yourself only when the SDK is initialized after the window came up.
+- **View auto-tracking** with `setTrackNavigation(true)` covers `router`-based
+  navigation only; `Navigation`/`NavDestination` apps should emit views
+  manually.
 - **Tap tracking** is semi-manual: wrap click handlers with
   `FlashcatRum.trackTap(...)` — there is no zero-touch AOP capture yet.
 

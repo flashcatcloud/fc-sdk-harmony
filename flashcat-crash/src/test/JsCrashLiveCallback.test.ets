@@ -55,6 +55,10 @@ class FakeCore implements SdkCore {
   isAppStateKnown(): boolean {
     return this.stateKnown;
   }
+
+  liveWindowContexts(): Array<Object> {
+    return [];
+  }
   getIntakeTarget(): IntakeTarget {
     return { host: 'https://intake.example.com', clientToken: 'token' };
   }

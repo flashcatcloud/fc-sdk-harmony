@@ -42,6 +42,9 @@ export class FlashcatCore implements SdkCore {
   private readonly deferredUploadRegistrar: DeferredUploadWorkRegistrar = new DeferredUploadWorkRegistrar();
   private appStateCallback: ApplicationStateChangeCallback | null = null;
   private abilityLifecycleId: number = -1;
+  // The context of every ability whose window stage is alive, in creation order:
+  // RUM enabled after the windows came up still learns of them.
+  private readonly windowContexts: Set<Object> = new Set<Object>();
   // False until the app is known to be in front of the user: a launch the
   // system started in the background (an extension, a wake-up) stays false.
   private appForeground: boolean = false;
@@ -161,8 +164,12 @@ export class FlashcatCore implements SdkCore {
 
   /**
    * RUM times app launches from ability creation, and features receive no
-   * context of their own to subscribe with. Only creation and destruction are
-   * forwarded: whether that makes a launch is RUM's to decide.
+   * context of their own to subscribe with. Creation and destruction are
+   * forwarded: whether that makes a launch is RUM's to decide. So is each
+   * ability's window stage, with the ability's context: RUM hooks the frames
+   * of that window itself, before its first one is drawn (the system calls
+   * this after the ability's own onWindowStageCreate, whose loadContent draws
+   * nothing until that call returns).
    */
   private observeAbilities(): void {
     const ignore = (): void => {};
@@ -170,13 +177,22 @@ export class FlashcatCore implements SdkCore {
       onAbilityCreate: (_ability: UIAbility): void => {
         this.bus.send(RUM_FEATURE_NAME, { 'type': 'ability_created' } as Record<string, Object>);
       },
-      onAbilityDestroy: (_ability: UIAbility): void => {
+      onAbilityDestroy: (ability: UIAbility): void => {
+        // A window stage the system tore down without telling goes with its ability.
+        this.windowStageGone(ability);
         this.bus.send(RUM_FEATURE_NAME, { 'type': 'ability_destroyed' } as Record<string, Object>);
       },
-      onWindowStageCreate: (_ability: UIAbility, _stage: window.WindowStage): void => ignore(),
+      onWindowStageCreate: (ability: UIAbility, _stage: window.WindowStage): void => {
+        const context: Object | undefined = ability.context as Object | undefined;
+        if (context === undefined || this.windowContexts.has(context)) {
+          return;
+        }
+        this.windowContexts.add(context);
+        this.bus.send(RUM_FEATURE_NAME, { 'type': 'window_stage_created', 'context': context } as Record<string, Object>);
+      },
       onWindowStageActive: (_ability: UIAbility, _stage: window.WindowStage): void => ignore(),
       onWindowStageInactive: (_ability: UIAbility, _stage: window.WindowStage): void => ignore(),
-      onWindowStageDestroy: (_ability: UIAbility, _stage: window.WindowStage): void => ignore(),
+      onWindowStageDestroy: (ability: UIAbility, _stage: window.WindowStage): void => this.windowStageGone(ability),
       onAbilityForeground: (_ability: UIAbility): void => ignore(),
       onAbilityBackground: (_ability: UIAbility): void => ignore(),
       onAbilityContinue: (_ability: UIAbility): void => ignore()
@@ -308,6 +324,19 @@ export class FlashcatCore implements SdkCore {
 
   isAppInForeground(): boolean {
     return this.appForeground;
+  }
+
+  liveWindowContexts(): Array<Object> {
+    return Array.from(this.windowContexts);
+  }
+
+  /** `ability`'s window stage is gone: RUM lets go of its window. Once per stage. */
+  private windowStageGone(ability: UIAbility): void {
+    const context: Object | undefined = ability.context as Object | undefined;
+    if (context === undefined || !this.windowContexts.delete(context)) {
+      return;
+    }
+    this.bus.send(RUM_FEATURE_NAME, { 'type': 'window_stage_destroyed', 'context': context } as Record<string, Object>);
   }
 
   isAppStateKnown(): boolean {
@@ -481,6 +510,7 @@ export class FlashcatCore implements SdkCore {
       }
       this.abilityLifecycleId = -1;
     }
+    this.windowContexts.clear();
   }
 
   flush(): void {

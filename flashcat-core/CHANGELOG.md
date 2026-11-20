@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.8.2
+
+- `SdkCore.liveWindowContexts()`: the context of every ability whose window
+  stage is alive. The core now forwards window stage creation and destruction
+  to RUM, with the ability's context, so RUM hooks each window itself.
+
 ## 0.8.1
 
 - `SdkCore.isAppStateKnown()`: whether the system has said yet if the app is

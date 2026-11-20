@@ -56,6 +56,14 @@ const MAX_REJECTION_REASON_CHARS: number = 500;
 // The two error callbacks of one fault are delivered back to back.
 const SAME_FAULT_WINDOW_MS: number = 2000;
 
+/** Hooks an ability's window (frames, launch timing, router pages) and lets it
+ * go: what `FlashcatRum.startViewTracking` / `stopViewTracking` do, for the
+ * windows the core reports. */
+export interface WindowTracking {
+  track: (context: Object) => void;
+  untrack: (context: Object) => void;
+}
+
 export class RumFeature implements Feature, FeatureEventReceiver {
   readonly name: string = RUM_FEATURE_NAME;
   private readonly core: SdkCore;
@@ -76,6 +84,7 @@ export class RumFeature implements Feature, FeatureEventReceiver {
   private collector: VitalsCollector | null = null;
   // Times app launches and router page loads; fed the app's lifecycle from here.
   private launch: AppLaunchTracker | null = null;
+  private windows: WindowTracking | null = null;
   /** The process that wrote previousRunView, -1 when unknown. */
   private previousRunPid: number = -1;
   /** The session that process was in (null in a file of an earlier version), and when the file was written. */
@@ -90,10 +99,11 @@ export class RumFeature implements Feature, FeatureEventReceiver {
 
   /** Set by FlashcatRum.enable once the monitor is built (after registration). */
   attachMonitor(monitor: DefaultRumMonitor, collector: VitalsCollector | null = null,
-    launch: AppLaunchTracker | null = null): void {
+    launch: AppLaunchTracker | null = null, windows: WindowTracking | null = null): void {
     this.monitor = monitor;
     this.collector = collector;
     this.launch = launch;
+    this.windows = windows;
     FlashcatLog.d('rum: monitor attached');
     // RUM enabled after the core already learned it is in the foreground: no
     // foreground message is coming. Sampling starts now, and an ability created
@@ -104,6 +114,14 @@ export class RumFeature implements Feature, FeatureEventReceiver {
       }
       if (launch !== null) {
         launch.onForegroundDetected();
+      }
+    }
+    // RUM enabled after windows came up (after a consent prompt, say): no
+    // window_stage_created is coming for them. Their launch is over by now;
+    // their frames and pages are not.
+    if (windows !== null) {
+      for (const context of this.core.liveWindowContexts()) {
+        windows.track(context);
       }
     }
     // If the crash feature was enabled BEFORE RUM, its startup replay found no
@@ -424,6 +442,15 @@ export class RumFeature implements Feature, FeatureEventReceiver {
     } else if (type === 'ability_destroyed') {
       if (this.launch !== null) {
         this.launch.onAbilityDestroyed();
+      }
+    } else if (type === 'window_stage_created' || type === 'window_stage_destroyed') {
+      const context: Object | undefined = event['context'];
+      if (this.windows !== null && context !== undefined) {
+        if (type === 'window_stage_created') {
+          this.windows.track(context);
+        } else {
+          this.windows.untrack(context);
+        }
       }
     } else if (type === 'drain_pending') {
       // The user or the consent is about to change: queued events go out under the current ones.
