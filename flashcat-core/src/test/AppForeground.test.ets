@@ -2,6 +2,7 @@ import { describe, expect, it, Level, Size, TestType } from '@ohos/hypium';
 import { common, appManager, ApplicationStateChangeCallback, AbilityLifecycleCallback, UIAbility } from '@kit.AbilityKit';
 import { process } from '@kit.ArkTS';
 import { window } from '@kit.ArkUI';
+import { deviceInfo } from '@kit.BasicServicesKit';
 import { ConfigurationBuilder } from '../main/ets/config/Configuration';
 import { TrackingConsent } from '../main/ets/privacy/TrackingConsent';
 import { FlashcatCore } from '../main/ets/internal/FlashcatCore';
@@ -91,6 +92,12 @@ function hostOfLastWindow(context: Object): void {
 
 function resetWindowShim(): void {
   (windowShim()['resetFakes'] as () => void)();
+  apiVersion(12);
+}
+
+/** The device's API level the core reads (the shim's `deviceInfo`). */
+function apiVersion(level: number): void {
+  (deviceInfo as Object as Record<string, Object>)['sdkApiVersion'] = level;
 }
 
 function settle(): Promise<void> {
@@ -224,6 +231,7 @@ export default function appForegroundTests(): void {
     it('aCoreInitializedAfterTheWindowCameUpFindsIt', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, async (): Promise<void> => {
       const context: Object = { 'name': 'entry' };
       hostOfLastWindow(context);
+      apiVersion(14);
       const events: Array<Record<string, Object>> = [];
       const app: FakeApp = new FakeApp(appManager.ProcessState.STATE_FOREGROUND);
       const core: FlashcatCore = buildCapturing(app, events);
@@ -252,8 +260,19 @@ export default function appForegroundTests(): void {
       core.stop();
     });
 
+    it('aCoreOnApi13DoesNotLookForAWindow', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, async (): Promise<void> => {
+      hostOfLastWindow({ 'name': 'entry' } as Object);
+      apiVersion(13);
+      const core: FlashcatCore = buildCapturing(new FakeApp(appManager.ProcessState.STATE_FOREGROUND), []);
+      await settle();
+      expect(core.liveWindowContexts().length).assertEqual(0);
+      core.stop();
+      resetWindowShim();
+    });
+
     it('aCoreStoppedBeforeTheLookupAnswersKeepsNoWindow', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, async (): Promise<void> => {
       hostOfLastWindow({ 'name': 'entry' } as Object);
+      apiVersion(14);
       const core: FlashcatCore = buildCapturing(new FakeApp(appManager.ProcessState.STATE_FOREGROUND), []);
       core.stop();
       await settle();

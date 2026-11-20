@@ -1,6 +1,7 @@
 import { common, bundleManager, appManager, ApplicationStateChangeCallback, AbilityLifecycleCallback,
   UIAbility } from '@kit.AbilityKit';
-import { window } from '@kit.ArkUI';
+import { window, display } from '@kit.ArkUI';
+import { deviceInfo } from '@kit.BasicServicesKit';
 import { process } from '@kit.ArkTS';
 import { fileIo as fs } from '@kit.CoreFileKit';
 import { preferences } from '@kit.ArkData';
@@ -29,6 +30,9 @@ const SETTING_PREFIX: string = 'setting.';
  * Default SdkCore implementation. Owns the context provider, message bus, and the
  * per-feature storage → upload pipelines. Equivalent to Android's DatadogCore.
  */
+/** `window.getWindowsByCoordinate`, the lookup of a window already up without its ability's context. */
+const WINDOWS_BY_DISPLAY_API: number = 14;
+
 export class FlashcatCore implements SdkCore {
   readonly name: string;
   private readonly context: common.Context;
@@ -336,27 +340,35 @@ export class FlashcatCore implements SdkCore {
 
   /**
    * A core initialized after the app's window came up (once a consent prompt
-   * was answered, say) heard of no window stage. The window on top is looked up
-   * once, and its ability counts as one whose window stage is up: that launch
-   * is over, its frames and pages are not. A core initialized before any window
-   * finds none, and hears of each from the system.
+   * was answered, say) heard of no window stage. The app's window on top is
+   * looked up once, and its ability counts as one whose window stage is up:
+   * that launch is over, its frames and pages are not. A core initialized
+   * before any window finds none, and hears of each from the system.
+   *
+   * By display, not by context: the context the app initializes with is often
+   * the application's or the ability stage's, which own no window
+   * (`getLastWindow` finds none for them). The lookup needs API 14; on API
+   * 12–13 such a window is not hooked.
    */
   private findWindowAlreadyUp(): void {
+    if (deviceInfo.sdkApiVersion < WINDOWS_BY_DISPLAY_API) {
+      return;
+    }
     try {
-      window.getLastWindow(this.context.getApplicationContext())
-        .then((win: window.Window) => {
-          if (!this.active) {
+      window.getWindowsByCoordinate(display.getDefaultDisplaySync().id)
+        .then((windows: Array<window.Window>) => {
+          if (!this.active || windows.length === 0) {
             return;
           }
-          // The window's ability: the same object as its UIAbility.context, so a
-          // window the system reports as well is hooked once.
-          this.windowStageUp(win.getUIContext().getHostContext() as Object | undefined);
+          // Topmost first. Its ability: the same object as UIAbility.context,
+          // so a window the system reports as well is hooked once.
+          this.windowStageUp(windows[0].getUIContext().getHostContext() as Object | undefined);
         })
         .catch((_e: Object) => {
-          // No window yet: the system reports it when it comes.
+          // No window: the system reports it when it comes.
         });
     } catch (_e) {
-      // API unavailable: windows are hooked as the system reports them.
+      // 801 on a device without the API: windows are hooked as the system reports them.
     }
   }
 
