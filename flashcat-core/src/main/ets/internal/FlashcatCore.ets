@@ -159,6 +159,7 @@ export class FlashcatCore implements SdkCore {
       // Lifecycle hook unavailable — uploads still drain on the normal cadence.
     }
     this.observeAbilities();
+    this.findWindowAlreadyUp();
     this.probeForeground();
   }
 
@@ -182,14 +183,8 @@ export class FlashcatCore implements SdkCore {
         this.windowStageGone(ability);
         this.bus.send(RUM_FEATURE_NAME, { 'type': 'ability_destroyed' } as Record<string, Object>);
       },
-      onWindowStageCreate: (ability: UIAbility, _stage: window.WindowStage): void => {
-        const context: Object | undefined = ability.context as Object | undefined;
-        if (context === undefined || this.windowContexts.has(context)) {
-          return;
-        }
-        this.windowContexts.add(context);
-        this.bus.send(RUM_FEATURE_NAME, { 'type': 'window_stage_created', 'context': context } as Record<string, Object>);
-      },
+      onWindowStageCreate: (ability: UIAbility, _stage: window.WindowStage): void =>
+        this.windowStageUp(ability.context as Object | undefined),
       onWindowStageActive: (_ability: UIAbility, _stage: window.WindowStage): void => ignore(),
       onWindowStageInactive: (_ability: UIAbility, _stage: window.WindowStage): void => ignore(),
       onWindowStageDestroy: (ability: UIAbility, _stage: window.WindowStage): void => this.windowStageGone(ability),
@@ -328,6 +323,41 @@ export class FlashcatCore implements SdkCore {
 
   liveWindowContexts(): Array<Object> {
     return Array.from(this.windowContexts);
+  }
+
+  /** The window stage of the ability whose context this is is up: RUM hooks its window. Once per stage. */
+  private windowStageUp(context: Object | undefined): void {
+    if (context === undefined || this.windowContexts.has(context)) {
+      return;
+    }
+    this.windowContexts.add(context);
+    this.bus.send(RUM_FEATURE_NAME, { 'type': 'window_stage_created', 'context': context } as Record<string, Object>);
+  }
+
+  /**
+   * A core initialized after the app's window came up (once a consent prompt
+   * was answered, say) heard of no window stage. The window on top is looked up
+   * once, and its ability counts as one whose window stage is up: that launch
+   * is over, its frames and pages are not. A core initialized before any window
+   * finds none, and hears of each from the system.
+   */
+  private findWindowAlreadyUp(): void {
+    try {
+      window.getLastWindow(this.context.getApplicationContext())
+        .then((win: window.Window) => {
+          if (!this.active) {
+            return;
+          }
+          // The window's ability: the same object as its UIAbility.context, so a
+          // window the system reports as well is hooked once.
+          this.windowStageUp(win.getUIContext().getHostContext() as Object | undefined);
+        })
+        .catch((_e: Object) => {
+          // No window yet: the system reports it when it comes.
+        });
+    } catch (_e) {
+      // API unavailable: windows are hooked as the system reports them.
+    }
   }
 
   /** `ability`'s window stage is gone: RUM lets go of its window. Once per stage. */

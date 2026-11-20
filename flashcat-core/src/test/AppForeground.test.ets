@@ -78,6 +78,21 @@ function buildCapturing(app: FakeApp, events: Array<Record<string, Object>>): Fl
   return core;
 }
 
+/** The test double of `window` (scripts/unit-node/shims/kit-arkui.js). */
+function windowShim(): Record<string, Object> {
+  return window as Object as Record<string, Object>;
+}
+
+/** The app's window on top belongs to the ability whose context is `context`. */
+function hostOfLastWindow(context: Object): void {
+  const host: Record<string, Object> = { 'getHostContext': (): Object => context };
+  (windowShim()['fake'] as Record<string, Object>)['getUIContext'] = (): Object => host;
+}
+
+function resetWindowShim(): void {
+  (windowShim()['resetFakes'] as () => void)();
+}
+
 function settle(): Promise<void> {
   return new Promise<void>((resolve: () => void) => setTimeout(resolve, 5));
 }
@@ -204,6 +219,46 @@ export default function appForegroundTests(): void {
       (app.abilities as AbilityLifecycleCallback).onWindowStageCreate(ability, {} as Object as window.WindowStage);
       core.stop();
       expect(core.liveWindowContexts().length).assertEqual(0);
+    });
+
+    it('aCoreInitializedAfterTheWindowCameUpFindsIt', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, async (): Promise<void> => {
+      const context: Object = { 'name': 'entry' };
+      hostOfLastWindow(context);
+      const events: Array<Record<string, Object>> = [];
+      const app: FakeApp = new FakeApp(appManager.ProcessState.STATE_FOREGROUND);
+      const core: FlashcatCore = buildCapturing(app, events);
+      await settle();
+      expect(core.liveWindowContexts().length).assertEqual(1);
+      expect(core.liveWindowContexts()[0] === context).assertTrue();
+      const created: Array<Record<string, Object>> =
+        events.filter((e: Record<string, Object>) => e['type'] === 'window_stage_created');
+      expect(created.length).assertEqual(1);
+      expect(created[0]['context'] === context).assertTrue();
+      // The system reporting the same ability's window stage later hooks nothing twice.
+      const ability: UIAbility = { 'context': context } as Record<string, Object> as Object as UIAbility;
+      (app.abilities as AbilityLifecycleCallback).onWindowStageCreate(ability, {} as Object as window.WindowStage);
+      expect(core.liveWindowContexts().length).assertEqual(1);
+      core.stop();
+      resetWindowShim();
+    });
+
+    it('aCoreInitializedBeforeAnyWindowFindsNone', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, async (): Promise<void> => {
+      resetWindowShim(); // a window with no ability behind it, as before content is loaded
+      const events: Array<Record<string, Object>> = [];
+      const core: FlashcatCore = buildCapturing(new FakeApp(appManager.ProcessState.STATE_BACKGROUND), events);
+      await settle();
+      expect(core.liveWindowContexts().length).assertEqual(0);
+      expect(events.some((e: Record<string, Object>) => e['type'] === 'window_stage_created')).assertFalse();
+      core.stop();
+    });
+
+    it('aCoreStoppedBeforeTheLookupAnswersKeepsNoWindow', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, async (): Promise<void> => {
+      hostOfLastWindow({ 'name': 'entry' } as Object);
+      const core: FlashcatCore = buildCapturing(new FakeApp(appManager.ProcessState.STATE_FOREGROUND), []);
+      core.stop();
+      await settle();
+      expect(core.liveWindowContexts().length).assertEqual(0);
+      resetWindowShim();
     });
 
     it('abilityCreationAndDestructionReachRum', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {

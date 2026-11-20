@@ -205,15 +205,13 @@ export class FlashcatRum {
    * host context and are not observed separately.
    *
    * The SDK does this itself for every ability's window: when the window
-   * stage is created (before its first frame, so launch timing sees it) and,
-   * for windows already up, when RUM is enabled; and it lets the window go
-   * when the window stage is destroyed. Calling it as well is harmless: the
-   * ability is hooked once. Call it yourself, in the first page's
-   * `aboutToAppear` with `this.getUIContext()`, only when the SDK was
-   * initialized after the window came up and so never heard of it. App launch
-   * timing (time to initial display, cold / warm / hot) ends at the first
-   * frame drawn after the window was hooked; a launch whose first frame was
-   * missed is not reported. Launch timing does not depend on
+   * stage is created (before its first frame, so launch timing sees it); for
+   * an SDK initialized after the window came up, the window on top at
+   * initialization; and it lets the window go when the window stage is
+   * destroyed. Calling it as well is harmless: the ability is hooked once.
+   * App launch timing (time to initial display, cold / warm / hot) ends at
+   * the first frame drawn after the window was hooked; a launch whose first
+   * frame was missed (the SDK initialized after it) is not reported. Launch timing does not depend on
    * `VitalsUpdateFrequency`: `NEVER` does not turn it off.
    *
    * A context handed over here is held until `stopViewTracking(context)` or

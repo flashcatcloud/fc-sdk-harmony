@@ -33,11 +33,12 @@ GlobalRumMonitor.get().startView('home', 'Home');
   Plain `@ohos.net.http` calls are NOT hooked automatically.
 - **Frames and app launch timing** need no call: the SDK hooks each ability's
   window when its window stage is created, before its first frame, and lets it
-  go when the window stage is destroyed. Initialize the SDK and enable RUM in
-  `AbilityStage.onCreate` so the first window is not missed. Apps that already
-  call `startViewTracking(ctx)` / `stopViewTracking(ctx)` keep working; the same
-  ability is never hooked twice. Call `startViewTracking(this.getUIContext())`
-  yourself only when the SDK is initialized after the window came up.
+  go when the window stage is destroyed. An SDK initialized after the window
+  came up (once a consent prompt is answered, say) hooks the window on top at
+  initialization; that launch's timing is not reported. Initialize the SDK and
+  enable RUM in `AbilityStage.onCreate` for every launch to be timed. Apps that
+  already call `startViewTracking(ctx)` / `stopViewTracking(ctx)` keep working;
+  the same ability is never hooked twice.
 - **View auto-tracking** with `setTrackNavigation(true)` covers `router`-based
   navigation only; `Navigation`/`NavDestination` apps should emit views
   manually.

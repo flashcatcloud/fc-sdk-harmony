@@ -4,7 +4,9 @@
 
 - `SdkCore.liveWindowContexts()`: the context of every ability whose window
   stage is alive. The core now forwards window stage creation and destruction
-  to RUM, with the ability's context, so RUM hooks each window itself.
+  to RUM, with the ability's context, so RUM hooks each window itself. A core
+  initialized after the app's window came up looks up the window on top once
+  and counts its ability's window stage as up.
 
 ## 0.8.1
 
