@@ -11,7 +11,7 @@ import {
   AppLaunchTracker, AppLaunchSink, StartupType, FrameHookFactory
 } from '../main/ets/internal/startup/AppLaunchTracker';
 import { systemFrameHooks, systemProcessAgeMs, systemElapsedMs } from '../main/ets/internal/startup/SystemLaunchHooks';
-import { RumFeature } from '../main/ets/internal/RumFeature';
+import { RumFeature, WindowTracking } from '../main/ets/internal/RumFeature';
 import { RumNavigationTracker } from '../main/ets/internal/RumNavigationTracker';
 import { RumAutoInstrumentation } from '../main/ets/internal/RumAutoInstrumentation';
 import { FlashcatRum } from '../main/ets/FlashcatRum';
@@ -88,6 +88,12 @@ class FakeCore implements SdkCore {
   }
   isAppStateKnown(): boolean {
     return true;
+  }
+
+  windows: Array<Object> = [];
+
+  liveWindowContexts(): Array<Object> {
+    return this.windows;
   }
   setUserInfo(_user: UserInfo): void {}
   clearUserInfo(): void {}
@@ -1065,6 +1071,96 @@ export default function appLaunchTests(): void {
       expect(b.live()).assertEqual(1);
       feature.onStop();
       expect(b.live()).assertEqual(0);
+    });
+
+    it('rumHooksEachWindowTheCoreReportsAndLetsItGo', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+      const core: FakeCore = new FakeCore();
+      const configuration: RumConfiguration = new RumConfigurationBuilder('app-1').build();
+      const feature: RumFeature = new RumFeature(core, configuration);
+      feature.onInitialize();
+      const calls: string[] = [];
+      const windows: WindowTracking = {
+        track: (context: Object): void => {
+          calls.push(`track:${context as string}`);
+        },
+        untrack: (context: Object): void => {
+          calls.push(`untrack:${context as string}`);
+        },
+        untrackAll: (): void => {
+          calls.push('untrackAll');
+        }
+      };
+      // Before RUM is attached nothing is hooked: there is nothing to hook into yet.
+      feature.onReceive({ 'type': 'window_stage_created', 'context': 'early' });
+      feature.attachMonitor(raw(core, configuration, new CapturingScope()), null, null, windows);
+      feature.onReceive({ 'type': 'window_stage_created', 'context': 'main' });
+      feature.onReceive({ 'type': 'window_stage_created' }); // no context: nothing to hook
+      feature.onReceive({ 'type': 'window_stage_destroyed', 'context': 'main' });
+      expect(calls.join(',')).assertEqual('track:main,untrack:main');
+    });
+
+    it('rumEnabledAfterTheWindowsCameUpHooksThemOnAttach', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+      const core: FakeCore = new FakeCore();
+      core.windows = ['first', 'second'];
+      const configuration: RumConfiguration = new RumConfigurationBuilder('app-1').build();
+      const feature: RumFeature = new RumFeature(core, configuration);
+      feature.onInitialize();
+      const tracked: string[] = [];
+      const windows: WindowTracking = {
+        track: (context: Object): void => {
+          tracked.push(context as string);
+        },
+        untrack: (_context: Object): void => {},
+        untrackAll: (): void => {}
+      };
+      feature.attachMonitor(raw(core, configuration, new CapturingScope()), null, null, windows);
+      expect(tracked.join(',')).assertEqual('first,second');
+    });
+
+    it('aWindowThatCannotBeHookedCostsOnlyItsOwnFrames', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+      const core: FakeCore = new FakeCore();
+      core.windows = ['gone', 'alive'];
+      const configuration: RumConfiguration = new RumConfigurationBuilder('app-1').build();
+      const feature: RumFeature = new RumFeature(core, configuration);
+      feature.onInitialize();
+      const tracked: string[] = [];
+      const windows: WindowTracking = {
+        track: (context: Object): void => {
+          if (context === 'gone') {
+            throw new Error('window is gone');
+          }
+          tracked.push(context as string);
+        },
+        untrack: (_context: Object): void => {
+          throw new Error('window is gone');
+        },
+        untrackAll: (): void => {}
+      };
+      feature.attachMonitor(raw(core, configuration, new CapturingScope()), null, null, windows);
+      feature.onReceive({ 'type': 'window_stage_created', 'context': 'gone' });
+      feature.onReceive({ 'type': 'window_stage_destroyed', 'context': 'alive' });
+      feature.onReceive({ 'type': 'window_stage_created', 'context': 'next' });
+      expect(tracked.join(',')).assertEqual('alive,next');
+    });
+
+    it('stoppingRumLetsEveryWindowGo', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+      const core: FakeCore = new FakeCore();
+      const configuration: RumConfiguration = new RumConfigurationBuilder('app-1').build();
+      const feature: RumFeature = new RumFeature(core, configuration);
+      feature.onInitialize();
+      const calls: string[] = [];
+      const windows: WindowTracking = {
+        track: (_context: Object): void => {},
+        untrack: (_context: Object): void => {},
+        untrackAll: (): void => {
+          calls.push('untrackAll');
+        }
+      };
+      feature.attachMonitor(raw(core, configuration, new CapturingScope()), null, null, windows);
+      feature.onStop();
+      feature.onStop(); // a second stop holds nothing to let go of
+      feature.onReceive({ 'type': 'window_stage_created', 'context': 'late' });
+      expect(calls.join(',')).assertEqual('untrackAll');
     });
 
     it('rumTellsTheTrackerAboutAnAppFoundInTheForeground', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {

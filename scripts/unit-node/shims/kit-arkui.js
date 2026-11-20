@@ -39,6 +39,8 @@ const window = {
   lookups: [],
   findWindow(name) { window.lookups.push(`find:${name}`); return window.fake; },
   getLastWindow(_ctx) { window.lookups.push('last'); return Promise.resolve(window.fake); },
+  // The app's visible windows on a display, topmost first: the fake one.
+  getWindowsByCoordinate(_displayId) { return Promise.resolve([window.fake]); },
   resetFakes() {
     window.fake = new Recorder();
     window.fake.getUIContext = () => new UIContext();
@@ -55,4 +57,6 @@ class UIContext {
 UIContext.observer = new Recorder();
 window.resetFakes();
 
-module.exports = { uiObserver, window, UIContext };
+const display = { getDefaultDisplaySync() { return { id: 0 }; } };
+
+module.exports = { uiObserver, window, UIContext, display };

@@ -103,6 +103,10 @@ class FakeCore implements SdkCore {
   isAppStateKnown(): boolean {
     return this.stateKnown;
   }
+
+  liveWindowContexts(): Array<Object> {
+    return [];
+  }
   setUserInfo(_user: UserInfo): void {}
   clearUserInfo(): void {}
   getIntakeTarget(): IntakeTarget {
