@@ -62,6 +62,8 @@ const SAME_FAULT_WINDOW_MS: number = 2000;
 export interface WindowTracking {
   track: (context: Object) => void;
   untrack: (context: Object) => void;
+  /** Let every window go: RUM stops. */
+  untrackAll: () => void;
 }
 
 export class RumFeature implements Feature, FeatureEventReceiver {
@@ -121,7 +123,7 @@ export class RumFeature implements Feature, FeatureEventReceiver {
     // their frames and pages are not.
     if (windows !== null) {
       for (const context of this.core.liveWindowContexts()) {
-        windows.track(context);
+        this.trackWindow(context, true);
       }
     }
     // If the crash feature was enabled BEFORE RUM, its startup replay found no
@@ -307,8 +309,37 @@ export class RumFeature implements Feature, FeatureEventReceiver {
     // onReceive). TODO phase 2: navigation auto-tracking, compile-time AOP.
   }
 
+  /** Hook or let go of one window. A window the system will not give up (it
+   * went away, say) costs that window its frames, never RUM's start or another
+   * window's hook. */
+  private trackWindow(context: Object, track: boolean): void {
+    const windows: WindowTracking | null = this.windows;
+    if (windows === null) {
+      return;
+    }
+    try {
+      if (track) {
+        windows.track(context);
+      } else {
+        windows.untrack(context);
+      }
+    } catch (e) {
+      FlashcatLog.d(`rum: window not ${track ? 'hooked' : 'released'} (${RumFeature.errorText(e)})`);
+    }
+  }
+
   onStop(): void {
     this.core.removeEventReceiver(RUM_FEATURE_NAME);
+    if (this.windows !== null) {
+      // The contexts held for each ability go with RUM: a later enable hooks
+      // the windows alive then, from the core.
+      try {
+        this.windows.untrackAll();
+      } catch (e) {
+        FlashcatLog.d(`rum: windows not released (${RumFeature.errorText(e)})`);
+      }
+      this.windows = null;
+    }
     if (this.errorObserverId !== -1) {
       try {
         // Callback overload: the promise overload's rejection (invalid id) is
@@ -445,12 +476,8 @@ export class RumFeature implements Feature, FeatureEventReceiver {
       }
     } else if (type === 'window_stage_created' || type === 'window_stage_destroyed') {
       const context: Object | undefined = event['context'];
-      if (this.windows !== null && context !== undefined) {
-        if (type === 'window_stage_created') {
-          this.windows.track(context);
-        } else {
-          this.windows.untrack(context);
-        }
+      if (context !== undefined) {
+        this.trackWindow(context, type === 'window_stage_created');
       }
     } else if (type === 'drain_pending') {
       // The user or the consent is about to change: queued events go out under the current ones.

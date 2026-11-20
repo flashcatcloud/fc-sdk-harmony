@@ -159,7 +159,8 @@ export class FlashcatRum {
     RumAutoInstrumentation.configure(configuration);
     const windows: WindowTracking = {
       track: (context: Object): void => FlashcatRum.startViewTracking(context as NavContext),
-      untrack: (context: Object): void => FlashcatRum.stopViewTracking(context as NavContext)
+      untrack: (context: Object): void => FlashcatRum.stopViewTracking(context as NavContext),
+      untrackAll: (): void => FlashcatRum.stopViewTracking()
     };
     feature.attachMonitor(monitor, collectors, launch, windows);
     GlobalRumMonitor.register(monitor);

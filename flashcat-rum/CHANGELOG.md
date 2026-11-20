@@ -13,7 +13,9 @@
   yourself only when the SDK is initialized after the window came up.
 - With `setTrackNavigation(true)`, `router` pages are now tracked without a
   `startViewTracking()` call. Before, an app that turned the option on but
-  never made that call tracked no `router` pages.
+  never made that call tracked no `router` pages. An app that starts its views
+  itself (a `Navigation` app, say) should leave `setTrackNavigation` off, or
+  its `router` pages are recorded on top of its own views.
 
 ## 0.8.1
 
