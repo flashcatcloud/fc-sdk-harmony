@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.8.2
+
+- No changes; released together with `@flashcatcloud/core`, `rum`, `trace` and `axios` 0.8.2.
+
 ## 0.8.1
 
 - Crash and freeze reports carry the system's foreground state at the fault
