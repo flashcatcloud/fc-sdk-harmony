@@ -47,7 +47,7 @@ export default function crashIncidentTests(): void {
       const record = (inForeground: boolean | undefined, sampled: boolean | undefined): CrashIncidentRecord | null =>
         CrashIncidentRecord.parse(new CrashIncidentRecord(
           'inc-1', 1000, 'Error', 'boom', 'Error: boom\n    at f (a.ets:1:1)', 'fp-1',
-          JsCrashPolicy.REPORT_THEN_EXIT, '0.8.1', 's-1', 'v-1', 'Home', 'pages/Home', true,
+          JsCrashPolicy.REPORT_THEN_EXIT, '0.8.2', 's-1', 'v-1', 'Home', 'pages/Home', true,
           inForeground, sampled).serialize());
       const background: CrashIncidentRecord | null = record(false, false);
       expect(background?.inForeground).assertEqual(false);
@@ -57,7 +57,7 @@ export default function crashIncidentTests(): void {
       expect(foreground?.sessionSampled).assertEqual(true);
       // Negative controls: unknown stays unknown — not written, read back as undefined, not false.
       const unknown: CrashIncidentRecord = new CrashIncidentRecord(
-        'inc-1', 1000, 'Error', 'boom', 's', 'fp-1', JsCrashPolicy.REPORT_THEN_EXIT, '0.8.1', '', '', '');
+        'inc-1', 1000, 'Error', 'boom', 's', 'fp-1', JsCrashPolicy.REPORT_THEN_EXIT, '0.8.2', '', '', '');
       const serialized: Record<string, Object> = JSON.parse(unknown.serialize()) as Record<string, Object>;
       expect(serialized['in_foreground']).assertUndefined();
       expect(serialized['session_sampled']).assertUndefined();
@@ -76,7 +76,7 @@ export default function crashIncidentTests(): void {
     it('roundTripsViewUrlThroughSerialization', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
       const record: CrashIncidentRecord = new CrashIncidentRecord(
         'inc-1', 1000, 'Error', 'boom', 'Error: boom\n    at f (a.ets:1:1)', 'fp-1',
-        JsCrashPolicy.REPORT_THEN_EXIT, '0.8.1', 's-1', 'v-1', 'Home', 'pages/Home');
+        JsCrashPolicy.REPORT_THEN_EXIT, '0.8.2', 's-1', 'v-1', 'Home', 'pages/Home');
 
       const parsed: CrashIncidentRecord | null = CrashIncidentRecord.parse(record.serialize());
 
@@ -231,7 +231,7 @@ export default function crashIncidentTests(): void {
         'TypeError: boom\n    at run (Index.ets:1:2)',
         'fp-1',
         JsCrashPolicy.REPORT_THEN_EXIT,
-        '0.8.1',
+        '0.8.2',
         'session-1',
         'view-1',
         'Home');
@@ -247,7 +247,7 @@ export default function crashIncidentTests(): void {
         expect(parsed.stack.indexOf('Index.ets')).assertLarger(-1);
         expect(parsed.fingerprint).assertEqual('fp-1');
         expect(parsed.policy).assertEqual(JsCrashPolicy.REPORT_THEN_EXIT);
-        expect(parsed.sdkVersion).assertEqual('0.8.1');
+        expect(parsed.sdkVersion).assertEqual('0.8.2');
         expect(parsed.sessionId).assertEqual('session-1');
         expect(parsed.viewId).assertEqual('view-1');
         expect(parsed.viewName).assertEqual('Home');
