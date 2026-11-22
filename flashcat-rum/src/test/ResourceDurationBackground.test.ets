@@ -19,7 +19,7 @@ function testContext(): FlashcatContext {
     version: '1.0.0',
     bundleId: 'com.example.demo',
     source: 'harmony',
-    sdkVersion: '0.8.1',
+    sdkVersion: '0.8.2',
     device: {
       brand: 'HUAWEI', model: 'Pura', osName: 'HarmonyOS', osVersion: 'NEXT',
       apiVersion: 18, deviceType: 'phone'
@@ -79,6 +79,10 @@ class FakeCore implements SdkCore {
   }
   isAppStateKnown(): boolean {
     return true;
+  }
+
+  liveWindowContexts(): Array<Object> {
+    return [];
   }
   setUserInfo(_user: UserInfo): void {}
   clearUserInfo(): void {}

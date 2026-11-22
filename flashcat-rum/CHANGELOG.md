@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.8.2
+
+- Frame rate, slow and frozen frames, and app launch timing no longer need
+  `FlashcatRum.startViewTracking()`. The SDK hooks each ability's window when
+  its window stage is created, before the first frame, and lets it go when the
+  window stage is destroyed, so `stopViewTracking()` is no longer needed either.
+  An SDK initialized after the window came up (once a consent prompt is
+  answered, say) hooks the window on top at initialization, and RUM enabled
+  later hooks the windows already up; that launch's timing is not reported, as
+  before. Apps that call `startViewTracking()` / `stopViewTracking()` keep
+  working, and an ability is never hooked twice. Those calls can now be
+  removed: making them still costs about 2 ms at app start (taking the page's
+  `UIContext` and its ability), for nothing the SDK does not already do.
+- With `setTrackNavigation(true)`, `router` pages are now tracked without a
+  `startViewTracking()` call. Before, an app that turned the option on but
+  never made that call tracked no `router` pages. An app that starts its views
+  itself (a `Navigation` app, say) should leave `setTrackNavigation` off, or
+  its `router` pages are recorded on top of its own views.
+
 ## 0.8.1
 
 - Fixed: actions and resources recorded before the first view were dropped.

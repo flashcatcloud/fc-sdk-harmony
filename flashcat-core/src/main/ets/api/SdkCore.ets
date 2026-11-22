@@ -62,6 +62,13 @@ export interface SdkCore {
   isAppStateKnown(): boolean;
 
   /**
+   * The context of every ability whose window stage is alive, oldest first: the
+   * windows that came up before a feature was enabled. Empty when the core was
+   * initialized after them, and the system told it of none.
+   */
+  liveWindowContexts(): Array<Object>;
+
+  /**
    * Intake host + client token, for a feature that calls an endpoint of its own
    * (the RUM remote-configuration endpoint) rather than the batch pipeline.
    */

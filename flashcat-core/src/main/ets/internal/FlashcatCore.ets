@@ -1,6 +1,7 @@
 import { common, bundleManager, appManager, ApplicationStateChangeCallback, AbilityLifecycleCallback,
   UIAbility } from '@kit.AbilityKit';
-import { window } from '@kit.ArkUI';
+import { window, display } from '@kit.ArkUI';
+import { deviceInfo } from '@kit.BasicServicesKit';
 import { process } from '@kit.ArkTS';
 import { fileIo as fs } from '@kit.CoreFileKit';
 import { preferences } from '@kit.ArkData';
@@ -29,6 +30,9 @@ const SETTING_PREFIX: string = 'setting.';
  * Default SdkCore implementation. Owns the context provider, message bus, and the
  * per-feature storage → upload pipelines. Equivalent to Android's DatadogCore.
  */
+/** `window.getWindowsByCoordinate`, the lookup of a window already up without its ability's context. */
+const WINDOWS_BY_DISPLAY_API: number = 14;
+
 export class FlashcatCore implements SdkCore {
   readonly name: string;
   private readonly context: common.Context;
@@ -42,6 +46,9 @@ export class FlashcatCore implements SdkCore {
   private readonly deferredUploadRegistrar: DeferredUploadWorkRegistrar = new DeferredUploadWorkRegistrar();
   private appStateCallback: ApplicationStateChangeCallback | null = null;
   private abilityLifecycleId: number = -1;
+  // The context of every ability whose window stage is alive, in creation order:
+  // RUM enabled after the windows came up still learns of them.
+  private readonly windowContexts: Set<Object> = new Set<Object>();
   // False until the app is known to be in front of the user: a launch the
   // system started in the background (an extension, a wake-up) stays false.
   private appForeground: boolean = false;
@@ -156,13 +163,18 @@ export class FlashcatCore implements SdkCore {
       // Lifecycle hook unavailable — uploads still drain on the normal cadence.
     }
     this.observeAbilities();
+    this.findWindowAlreadyUp();
     this.probeForeground();
   }
 
   /**
    * RUM times app launches from ability creation, and features receive no
-   * context of their own to subscribe with. Only creation and destruction are
-   * forwarded: whether that makes a launch is RUM's to decide.
+   * context of their own to subscribe with. Creation and destruction are
+   * forwarded: whether that makes a launch is RUM's to decide. So is each
+   * ability's window stage, with the ability's context: RUM hooks the frames
+   * of that window itself, before its first one is drawn (the system calls
+   * this after the ability's own onWindowStageCreate, whose loadContent draws
+   * nothing until that call returns).
    */
   private observeAbilities(): void {
     const ignore = (): void => {};
@@ -170,13 +182,16 @@ export class FlashcatCore implements SdkCore {
       onAbilityCreate: (_ability: UIAbility): void => {
         this.bus.send(RUM_FEATURE_NAME, { 'type': 'ability_created' } as Record<string, Object>);
       },
-      onAbilityDestroy: (_ability: UIAbility): void => {
+      onAbilityDestroy: (ability: UIAbility): void => {
+        // A window stage the system tore down without telling goes with its ability.
+        this.windowStageGone(ability);
         this.bus.send(RUM_FEATURE_NAME, { 'type': 'ability_destroyed' } as Record<string, Object>);
       },
-      onWindowStageCreate: (_ability: UIAbility, _stage: window.WindowStage): void => ignore(),
+      onWindowStageCreate: (ability: UIAbility, _stage: window.WindowStage): void =>
+        this.windowStageUp(ability.context as Object | undefined),
       onWindowStageActive: (_ability: UIAbility, _stage: window.WindowStage): void => ignore(),
       onWindowStageInactive: (_ability: UIAbility, _stage: window.WindowStage): void => ignore(),
-      onWindowStageDestroy: (_ability: UIAbility, _stage: window.WindowStage): void => ignore(),
+      onWindowStageDestroy: (ability: UIAbility, _stage: window.WindowStage): void => this.windowStageGone(ability),
       onAbilityForeground: (_ability: UIAbility): void => ignore(),
       onAbilityBackground: (_ability: UIAbility): void => ignore(),
       onAbilityContinue: (_ability: UIAbility): void => ignore()
@@ -308,6 +323,62 @@ export class FlashcatCore implements SdkCore {
 
   isAppInForeground(): boolean {
     return this.appForeground;
+  }
+
+  liveWindowContexts(): Array<Object> {
+    return Array.from(this.windowContexts);
+  }
+
+  /** The window stage of the ability whose context this is is up: RUM hooks its window. Once per stage. */
+  private windowStageUp(context: Object | undefined): void {
+    if (context === undefined || this.windowContexts.has(context)) {
+      return;
+    }
+    this.windowContexts.add(context);
+    this.bus.send(RUM_FEATURE_NAME, { 'type': 'window_stage_created', 'context': context } as Record<string, Object>);
+  }
+
+  /**
+   * A core initialized after the app's window came up (once a consent prompt
+   * was answered, say) heard of no window stage. The app's window on top is
+   * looked up once, and its ability counts as one whose window stage is up:
+   * that launch is over, its frames and pages are not. A core initialized
+   * before any window finds none, and hears of each from the system.
+   *
+   * By display, not by context: the context the app initializes with is often
+   * the application's or the ability stage's, which own no window
+   * (`getLastWindow` finds none for them). The lookup needs API 14; on API
+   * 12–13 such a window is not hooked.
+   */
+  private findWindowAlreadyUp(): void {
+    if (deviceInfo.sdkApiVersion < WINDOWS_BY_DISPLAY_API) {
+      return;
+    }
+    try {
+      window.getWindowsByCoordinate(display.getDefaultDisplaySync().id)
+        .then((windows: Array<window.Window>) => {
+          if (!this.active || windows.length === 0) {
+            return;
+          }
+          // Topmost first. Its ability: the same object as UIAbility.context,
+          // so a window the system reports as well is hooked once.
+          this.windowStageUp(windows[0].getUIContext().getHostContext() as Object | undefined);
+        })
+        .catch((_e: Object) => {
+          // No window: the system reports it when it comes.
+        });
+    } catch (_e) {
+      // 801 on a device without the API: windows are hooked as the system reports them.
+    }
+  }
+
+  /** `ability`'s window stage is gone: RUM lets go of its window. Once per stage. */
+  private windowStageGone(ability: UIAbility): void {
+    const context: Object | undefined = ability.context as Object | undefined;
+    if (context === undefined || !this.windowContexts.delete(context)) {
+      return;
+    }
+    this.bus.send(RUM_FEATURE_NAME, { 'type': 'window_stage_destroyed', 'context': context } as Record<string, Object>);
   }
 
   isAppStateKnown(): boolean {
@@ -481,6 +552,7 @@ export class FlashcatCore implements SdkCore {
       }
       this.abilityLifecycleId = -1;
     }
+    this.windowContexts.clear();
   }
 
   flush(): void {

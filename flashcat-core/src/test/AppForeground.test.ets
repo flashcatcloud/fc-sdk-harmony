@@ -1,6 +1,8 @@
 import { describe, expect, it, Level, Size, TestType } from '@ohos/hypium';
 import { common, appManager, ApplicationStateChangeCallback, AbilityLifecycleCallback, UIAbility } from '@kit.AbilityKit';
 import { process } from '@kit.ArkTS';
+import { window } from '@kit.ArkUI';
+import { deviceInfo } from '@kit.BasicServicesKit';
 import { ConfigurationBuilder } from '../main/ets/config/Configuration';
 import { TrackingConsent } from '../main/ets/privacy/TrackingConsent';
 import { FlashcatCore } from '../main/ets/internal/FlashcatCore';
@@ -61,6 +63,41 @@ function build(app: FakeApp, received: string[],
   core.setEventReceiver(RUM_FEATURE_NAME, receiver);
   core.initialize();
   return core;
+}
+
+/** Like `build`, keeping each event RUM receives whole. */
+function buildCapturing(app: FakeApp, events: Array<Record<string, Object>>): FlashcatCore {
+  const core: FlashcatCore = new FlashcatCore(`fg-${instanceSeq++}`, app.context(),
+    new ConfigurationBuilder('token', 'prod').build(), TrackingConsent.GRANTED, false);
+  const receiver: FeatureEventReceiver = {
+    onReceive: (event: Record<string, Object>): void => {
+      events.push(event);
+    }
+  };
+  core.setEventReceiver(RUM_FEATURE_NAME, receiver);
+  core.initialize();
+  return core;
+}
+
+/** The test double of `window` (scripts/unit-node/shims/kit-arkui.js). */
+function windowShim(): Record<string, Object> {
+  return window as Object as Record<string, Object>;
+}
+
+/** The app's window on top belongs to the ability whose context is `context`. */
+function hostOfLastWindow(context: Object): void {
+  const host: Record<string, Object> = { 'getHostContext': (): Object => context };
+  (windowShim()['fake'] as Record<string, Object>)['getUIContext'] = (): Object => host;
+}
+
+function resetWindowShim(): void {
+  (windowShim()['resetFakes'] as () => void)();
+  apiVersion(12);
+}
+
+/** The device's API level the core reads (the shim's `deviceInfo`). */
+function apiVersion(level: number): void {
+  (deviceInfo as Object as Record<string, Object>)['sdkApiVersion'] = level;
 }
 
 function settle(): Promise<void> {
@@ -142,6 +179,105 @@ export default function appForegroundTests(): void {
       (app.callback as ApplicationStateChangeCallback).onApplicationBackground();
       expect(received.join(',')).assertEqual('app_background,keep_alive');
       core.stop();
+    });
+
+    it('windowStagesReachRumWithTheirAbilitysContext', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+      const events: Array<Record<string, Object>> = [];
+      const app: FakeApp = new FakeApp(appManager.ProcessState.STATE_BACKGROUND);
+      const core: FlashcatCore = buildCapturing(app, events);
+      const abilities: AbilityLifecycleCallback = app.abilities as AbilityLifecycleCallback;
+      const context: Object = { 'name': 'entry' };
+      const ability: UIAbility = { 'context': context } as Record<string, Object> as Object as UIAbility;
+      const stage: window.WindowStage = {} as Object as window.WindowStage;
+      events.length = 0;
+      abilities.onWindowStageCreate(ability, stage);
+      abilities.onWindowStageCreate(ability, stage); // the same stage again: one hook
+      expect(core.liveWindowContexts().length).assertEqual(1);
+      expect(core.liveWindowContexts()[0] === context).assertTrue();
+      abilities.onWindowStageDestroy(ability, stage);
+      abilities.onAbilityDestroy(ability); // already let go: no second destroy
+      expect(events.map((e: Record<string, Object>) => e['type'] as string).join(','))
+        .assertEqual('window_stage_created,window_stage_destroyed,ability_destroyed');
+      expect(events[0]['context'] === context).assertTrue();
+      expect(events[1]['context'] === context).assertTrue();
+      expect(core.liveWindowContexts().length).assertEqual(0);
+      core.stop();
+    });
+
+    it('anAbilityDestroyedWithItsWindowStageStillUpLetsTheWindowGo', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+      const events: Array<Record<string, Object>> = [];
+      const app: FakeApp = new FakeApp(appManager.ProcessState.STATE_BACKGROUND);
+      const core: FlashcatCore = buildCapturing(app, events);
+      const abilities: AbilityLifecycleCallback = app.abilities as AbilityLifecycleCallback;
+      const ability: UIAbility = { 'context': { 'name': 'entry' } as Object } as Record<string, Object> as Object as UIAbility;
+      abilities.onWindowStageCreate(ability, {} as Object as window.WindowStage);
+      events.length = 0;
+      abilities.onAbilityDestroy(ability);
+      expect(events.map((e: Record<string, Object>) => e['type'] as string).join(','))
+        .assertEqual('window_stage_destroyed,ability_destroyed');
+      expect(core.liveWindowContexts().length).assertEqual(0);
+      core.stop();
+    });
+
+    it('stoppingTheCoreForgetsTheWindows', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+      const app: FakeApp = new FakeApp(appManager.ProcessState.STATE_BACKGROUND);
+      const core: FlashcatCore = buildCapturing(app, []);
+      const ability: UIAbility = { 'context': { 'name': 'entry' } as Object } as Record<string, Object> as Object as UIAbility;
+      (app.abilities as AbilityLifecycleCallback).onWindowStageCreate(ability, {} as Object as window.WindowStage);
+      core.stop();
+      expect(core.liveWindowContexts().length).assertEqual(0);
+    });
+
+    it('aCoreInitializedAfterTheWindowCameUpFindsIt', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, async (): Promise<void> => {
+      const context: Object = { 'name': 'entry' };
+      hostOfLastWindow(context);
+      apiVersion(14);
+      const events: Array<Record<string, Object>> = [];
+      const app: FakeApp = new FakeApp(appManager.ProcessState.STATE_FOREGROUND);
+      const core: FlashcatCore = buildCapturing(app, events);
+      await settle();
+      expect(core.liveWindowContexts().length).assertEqual(1);
+      expect(core.liveWindowContexts()[0] === context).assertTrue();
+      const created: Array<Record<string, Object>> =
+        events.filter((e: Record<string, Object>) => e['type'] === 'window_stage_created');
+      expect(created.length).assertEqual(1);
+      expect(created[0]['context'] === context).assertTrue();
+      // The system reporting the same ability's window stage later hooks nothing twice.
+      const ability: UIAbility = { 'context': context } as Record<string, Object> as Object as UIAbility;
+      (app.abilities as AbilityLifecycleCallback).onWindowStageCreate(ability, {} as Object as window.WindowStage);
+      expect(core.liveWindowContexts().length).assertEqual(1);
+      core.stop();
+      resetWindowShim();
+    });
+
+    it('aCoreInitializedBeforeAnyWindowFindsNone', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, async (): Promise<void> => {
+      resetWindowShim(); // a window with no ability behind it, as before content is loaded
+      const events: Array<Record<string, Object>> = [];
+      const core: FlashcatCore = buildCapturing(new FakeApp(appManager.ProcessState.STATE_BACKGROUND), events);
+      await settle();
+      expect(core.liveWindowContexts().length).assertEqual(0);
+      expect(events.some((e: Record<string, Object>) => e['type'] === 'window_stage_created')).assertFalse();
+      core.stop();
+    });
+
+    it('aCoreOnApi13DoesNotLookForAWindow', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, async (): Promise<void> => {
+      hostOfLastWindow({ 'name': 'entry' } as Object);
+      apiVersion(13);
+      const core: FlashcatCore = buildCapturing(new FakeApp(appManager.ProcessState.STATE_FOREGROUND), []);
+      await settle();
+      expect(core.liveWindowContexts().length).assertEqual(0);
+      core.stop();
+      resetWindowShim();
+    });
+
+    it('aCoreStoppedBeforeTheLookupAnswersKeepsNoWindow', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, async (): Promise<void> => {
+      hostOfLastWindow({ 'name': 'entry' } as Object);
+      apiVersion(14);
+      const core: FlashcatCore = buildCapturing(new FakeApp(appManager.ProcessState.STATE_FOREGROUND), []);
+      core.stop();
+      await settle();
+      expect(core.liveWindowContexts().length).assertEqual(0);
+      resetWindowShim();
     });
 
     it('abilityCreationAndDestructionReachRum', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {

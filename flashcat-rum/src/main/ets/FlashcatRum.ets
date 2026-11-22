@@ -3,7 +3,7 @@ import { Flashcat, SdkCore, FeatureScope, FlashcatContext, IntakeTarget,
   RUM_FEATURE_NAME, FlashcatLog } from '@flashcatcloud/core';
 import { RumConfiguration } from './RumConfiguration';
 import { GlobalRumMonitor } from './RumMonitor';
-import { RumFeature } from './internal/RumFeature';
+import { RumFeature, WindowTracking } from './internal/RumFeature';
 import { DefaultRumMonitor } from './internal/monitor/DefaultRumMonitor';
 import { RumAutoInstrumentation } from './internal/RumAutoInstrumentation';
 import { RumNavigationTracker, NavContext } from './internal/RumNavigationTracker';
@@ -151,14 +151,19 @@ export class FlashcatRum {
     const monitor: DefaultRumMonitor =
       new DefaultRumMonitor(core, scope, configuration, store, controller, collectors, launch);
     monitorRef = monitor;
-    feature.attachMonitor(monitor, collectors, launch);
+    // Before the monitor is attached: attaching hooks the windows already up,
+    // and a hooked window reads the frame observer, the launch timer and the
+    // navigation flag.
     FlashcatRum.frames = frames;
     RumNavigationTracker.configureLaunch(launch);
-    GlobalRumMonitor.register(monitor);
-
-    // Phase 2: make the auto-instrumentation toggles consultable by the tap /
-    // navigation trackers. Inert unless the corresponding flag is enabled.
     RumAutoInstrumentation.configure(configuration);
+    const windows: WindowTracking = {
+      track: (context: Object): void => FlashcatRum.startViewTracking(context as NavContext),
+      untrack: (context: Object): void => FlashcatRum.stopViewTracking(context as NavContext),
+      untrackAll: (): void => FlashcatRum.stopViewTracking()
+    };
+    feature.attachMonitor(monitor, collectors, launch, windows);
+    GlobalRumMonitor.register(monitor);
 
     // Started only after the monitor is registered: the response may ask for the
     // session to be restarted, and that goes through the global monitor.
@@ -199,18 +204,18 @@ export class FlashcatRum {
    * One window per ability is tracked: sub-windows of the same ability share its
    * host context and are not observed separately.
    *
-   * Call it in every app, router-based or not: app launch timing (time to
-   * initial display, cold / warm / hot) ends at the first frame drawn, and
-   * this is where the SDK hooks frames — whatever `setTrackNavigation` says.
-   * Call it in the first page's `aboutToAppear`, with `this.getUIContext()`,
-   * so the hook is in place before that page's first frame; a launch whose
-   * first frame was missed is not reported. Launch timing does not depend on
+   * The SDK does this itself for every ability's window: when the window
+   * stage is created (before its first frame, so launch timing sees it); for
+   * an SDK initialized after the window came up, the window on top at
+   * initialization; and it lets the window go when the window stage is
+   * destroyed. Calling it as well is harmless: the ability is hooked once.
+   * App launch timing (time to initial display, cold / warm / hot) ends at
+   * the first frame drawn after the window was hooked; a launch whose first
+   * frame was missed (the SDK initialized after it) is not reported. Launch timing does not depend on
    * `VitalsUpdateFrequency`: `NEVER` does not turn it off.
    *
-   * IMPORTANT: pair with `stopViewTracking(context)` in the ability's
-   * onDestroy (`this.context` there will do) — the registry holds a strong reference per context, so
-   * create/destroy churn without the stop call pins each dead context for the
-   * lifetime of the RUM enablement.
+   * A context handed over here is held until `stopViewTracking(context)` or
+   * its window stage is destroyed.
    *
    * Covers `router`-based navigation only; `Navigation`/`NavDestination`-based
    * apps should call startView/stopView manually for now.
@@ -236,7 +241,9 @@ export class FlashcatRum {
 
   /**
    * Stop automatic View tracking. With `context`, detaches only that context's
-   * observer (call before an ability is destroyed); without, detaches all.
+   * ability; without, detaches all. Not needed when an ability goes away: the
+   * SDK lets its window go when the window stage is destroyed. A window
+   * detached here is hooked again only when a window stage is next created.
    */
   static stopViewTracking(context?: NavContext): void {
     let tracked: NavContext | undefined = undefined;

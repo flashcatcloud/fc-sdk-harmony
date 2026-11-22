@@ -209,7 +209,7 @@ export default function crashEventMapperTests(): void {
         'TypeError: boom\n    at run (Index.ets:1:2)',
         'fp-1',
         JsCrashPolicy.REPORT_THEN_EXIT,
-        '0.8.1',
+        '0.8.2',
         'session-1',
         'view-1',
         'Home');
@@ -235,7 +235,7 @@ export default function crashEventMapperTests(): void {
         'TypeError: boom\n    at run (Index.ets:1:2)',
         'fp-recovered',
         JsCrashPolicy.REPORT_AND_RECOVER,
-        '0.8.1',
+        '0.8.2',
         'session-1',
         'view-1',
         'Home');
@@ -425,7 +425,7 @@ export default function crashEventMapperTests(): void {
     it('aReplayedIncidentCarriesTheStateRecordedAtTheCrash', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
       const incident = (inForeground: boolean | undefined, sampled: boolean | undefined): CrashIncidentRecord =>
         new CrashIncidentRecord('inc-1', 1000, 'Error', 'boom', 's', 'fp-1', JsCrashPolicy.REPORT_THEN_EXIT,
-          '0.8.1', 's-1', 'v-1', 'Home', '', true, inForeground, sampled);
+          '0.8.2', 's-1', 'v-1', 'Home', '', true, inForeground, sampled);
       const background: Record<string, Object> = CrashEventMapper.fromPendingIncident(incident(false, false));
       expect(background['in_foreground']).assertEqual(false);
       expect(background['session_sampled']).assertEqual(false);

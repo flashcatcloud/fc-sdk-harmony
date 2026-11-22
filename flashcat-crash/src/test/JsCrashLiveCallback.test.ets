@@ -55,6 +55,10 @@ class FakeCore implements SdkCore {
   isAppStateKnown(): boolean {
     return this.stateKnown;
   }
+
+  liveWindowContexts(): Array<Object> {
+    return [];
+  }
   getIntakeTarget(): IntakeTarget {
     return { host: 'https://intake.example.com', clientToken: 'token' };
   }
@@ -69,7 +73,7 @@ class FakeCore implements SdkCore {
 /** A core a persisting policy can snapshot (the keep-alive policies never ask). */
 class PersistingCore extends FakeCore {
   getContext(): FlashcatContext {
-    return { featureContext: {}, sdkVersion: '0.8.1' } as Object as FlashcatContext;
+    return { featureContext: {}, sdkVersion: '0.8.2' } as Object as FlashcatContext;
   }
 }
 
@@ -77,7 +81,7 @@ class PersistingCore extends FakeCore {
 class RumContextCore extends FakeCore {
   rum: Record<string, Object> = {};
   getContext(): FlashcatContext {
-    return { featureContext: { 'rum': this.rum }, sdkVersion: '0.8.1' } as Object as FlashcatContext;
+    return { featureContext: { 'rum': this.rum }, sdkVersion: '0.8.2' } as Object as FlashcatContext;
   }
 }
 
