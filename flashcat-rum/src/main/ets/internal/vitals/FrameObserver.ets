@@ -38,16 +38,26 @@ export class FrameObserver implements VitalsCollector {
   private nextRequest: number = 0;
   private readonly views: Set<ViewVitals> = new Set<ViewVitals>();
   private readonly onFrame: (sample: FrameSample) => void;
+  private readonly longTaskAboveNs: number;
+  private readonly onLongTask: ((durationNs: number) => void) | null;
   private foreground: boolean = false;
   private stopped: boolean = false;
   private observing: boolean = false;
 
   /** Frames have no period, only on and off: they are observed while the
    * vitals period (`vitalsPeriodMs`) is above 0. `periodOf` is asked again on
-   * every change, so a frequency the console publishes applies at once. */
-  constructor(sourceFor: FrameSourceFactory, periodOf: () => number) {
+   * every change, so a frequency the console publishes applies at once.
+   *
+   * A frame whose UI work is longer than `longTaskAboveNs` (0: never) is also
+   * handed to `onLongTask`, once, whatever number of views are open. Only
+   * frames that measure UI work count (API 22+): a gap between draws is not a
+   * task. Frozen frames stay counted by the views alone. */
+  constructor(sourceFor: FrameSourceFactory, periodOf: () => number, longTaskAboveNs: number = 0,
+    onLongTask: ((durationNs: number) => void) | null = null) {
     this.sourceFor = sourceFor;
     this.periodOf = periodOf;
+    this.longTaskAboveNs = longTaskAboveNs;
+    this.onLongTask = onLongTask;
     this.onFrame = (sample: FrameSample): void => this.deliver(sample);
   }
 
@@ -177,6 +187,11 @@ export class FrameObserver implements VitalsCollector {
       return; // a callback already queued when the source stopped
     }
     this.views.forEach((v: ViewVitals) => v.onFrame(sample));
+    const onLongTask: ((durationNs: number) => void) | null = this.onLongTask;
+    if (onLongTask !== null && this.longTaskAboveNs > 0 && sample.isUiWork === true &&
+      Number.isFinite(sample.durationNs) && sample.durationNs > this.longTaskAboveNs) {
+      onLongTask(sample.durationNs);
+    }
   }
 
   private static log(what: string, e: Object): void {

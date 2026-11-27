@@ -16,6 +16,9 @@ const ERROR_THREADS_ATTRIBUTE: string = 'error.threads';
 const VIEW_IN_FOREGROUND_ATTRIBUTE: string = 'view.in_foreground';
 const SESSION_SAMPLED_ATTRIBUTE: string = 'session.sampled';
 
+// Android parity (RumViewScope.FROZEN_FRAME_THRESHOLD_NS).
+const LONG_TASK_FROZEN_ABOVE_NS: number = 700_000_000;
+
 export const APP_LAUNCH_TTID: string = 'ttid';
 export const APP_LAUNCH_TTFD: string = 'ttfd';
 
@@ -250,6 +253,43 @@ export class RumEventAssembler {
     vital['duration'] = durationNs;
     vital['startup_type'] = startupType;
     event['vital'] = vital;
+
+    RumEventAssembler.applyContext(event, context, attributes);
+    return event;
+  }
+
+  /**
+   * A long task, as the Android SDK writes it: `date` is when it started,
+   * `duration` is in nanoseconds, and one over 700 ms is a frozen frame.
+   */
+  static longTask(
+    context: FlashcatContext,
+    applicationId: string,
+    sessionId: string,
+    viewId: string,
+    viewName: string,
+    dateMs: number,
+    durationNs: number,
+    attributes: Record<string, Object>
+  ): Record<string, Object> {
+    const event: Record<string, Object> = {};
+    event['type'] = 'long_task';
+    event['date'] = dateMs;
+    event['_dd'] = RumEventAssembler.dd(0);
+    event['application'] = RumEventAssembler.idObj(applicationId);
+    event['session'] = RumEventAssembler.session(sessionId);
+
+    const view: Record<string, Object> = {};
+    view['id'] = viewId;
+    view['url'] = RumEventAssembler.viewUrl(viewName, attributes);
+    view['name'] = viewName;
+    event['view'] = view;
+
+    const longTask: Record<string, Object> = {};
+    longTask['id'] = util.generateRandomUUID(true);
+    longTask['duration'] = durationNs;
+    longTask['is_frozen_frame'] = durationNs > LONG_TASK_FROZEN_ABOVE_NS;
+    event['long_task'] = longTask;
 
     RumEventAssembler.applyContext(event, context, attributes);
     return event;

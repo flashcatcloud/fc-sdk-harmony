@@ -64,6 +64,7 @@ export class RumViewScope implements RumScope {
   private errorCount: number = 0;
   private resourceCount: number = 0;
   private crashCount: number = 0;
+  private longTaskCount: number = 0;
   private documentVersion: number = 0;
   private maxTimeSpentNs: number = 0;
   private active: boolean = true;
@@ -191,6 +192,14 @@ export class RumViewScope implements RumScope {
         } else {
           this.writeViewEvent(event.timestampMs);
         }
+        return this;
+      case 'addLongTask':
+        if (!this.active) {
+          return this; // seen after the view closed: it belongs to no view
+        }
+        this.longTaskCount += 1;
+        this.writeLongTask(event);
+        this.writeViewEvent(event.timestampMs);
         return this;
       case 'keepAlive':
         // Refresh time_spent without counting as a child event.
@@ -364,11 +373,24 @@ export class RumViewScope implements RumScope {
     if (this.loadingTimeNs !== null) {
       vitalFields['loading_time'] = this.loadingTimeNs;
     }
+    const longTask: Record<string, Object> = {};
+    longTask['count'] = this.longTaskCount;
+    vitalFields['long_task'] = longTask;
     this.featureScope.withWriteContext((context: FlashcatContext, writer: EventWriter) => {
       const event: Record<string, Object> = RumEventAssembler.view(
         context, this.applicationId, this.sessionId, this.viewId, this.viewName,
         this.startedAtMs, timeSpentNs, actions, errors, resources, crashes, version, isActive,
         this.viewAttributes(), this.draw, this.sampledForError, vitalFields);
+      writeMapped(writer, event, false);
+    });
+  }
+
+  private writeLongTask(raw: RumRawEvent): void {
+    const durationNs: number = Math.round(raw.longTaskDurationNs ?? 0);
+    this.featureScope.withWriteContext((context: FlashcatContext, writer: EventWriter) => {
+      const event: Record<string, Object> = RumEventAssembler.longTask(
+        context, this.applicationId, this.sessionId, this.viewId, this.viewName,
+        raw.timestampMs - Math.round(durationNs / MS_TO_NS), durationNs, this.viewAttributes(raw.attributes));
       writeMapped(writer, event, false);
     });
   }

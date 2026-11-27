@@ -131,7 +131,8 @@ export class FrameMetricsSource implements FrameSource {
         onFrame({
           durationNs: m.inputHandlingDuration + m.layoutMeasureDuration,
           periodNs: period,
-          slowAboveNs: period
+          slowAboveNs: period,
+          isUiWork: true
         });
       } catch (_e) {
         // never into the host's frame callback

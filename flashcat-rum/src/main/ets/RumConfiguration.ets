@@ -5,6 +5,9 @@ import { VitalsUpdateFrequency, DEFAULT_VITALS_UPDATE_FREQUENCY } from './Vitals
  * RUM feature configuration. Built via {@link RumConfigurationBuilder}.
  * Mirrors `RumConfiguration.Builder(applicationId)` on Android.
  */
+/** Android parity (`RumFeature.DEFAULT_LONG_TASK_THRESHOLD_MS`). */
+export const DEFAULT_LONG_TASK_THRESHOLD_MS: number = 100;
+
 export class RumConfiguration {
   readonly applicationId: string;
   readonly sessionSampleRate: number;       // 0..100
@@ -23,6 +26,8 @@ export class RumConfiguration {
   readonly trackActiveDevices: boolean;
   /** How often memory and CPU are sampled for the open view; `NEVER` also stops frame measurement. */
   readonly vitalsUpdateFrequency: VitalsUpdateFrequency;
+  /** A drawn frame whose UI work takes longer than this is a long task; 0 turns them off. Default 100. */
+  readonly longTaskThresholdMs: number;
 
   constructor(
     applicationId: string,
@@ -37,7 +42,8 @@ export class RumConfiguration {
     beforeSampling: BeforeSamplingCallback | null = null,
     sessionOnError: boolean = false,
     trackActiveDevices: boolean = true,
-    vitalsUpdateFrequency: VitalsUpdateFrequency = DEFAULT_VITALS_UPDATE_FREQUENCY
+    vitalsUpdateFrequency: VitalsUpdateFrequency = DEFAULT_VITALS_UPDATE_FREQUENCY,
+    longTaskThresholdMs: number = DEFAULT_LONG_TASK_THRESHOLD_MS
   ) {
     this.applicationId = applicationId;
     this.sessionSampleRate = sessionSampleRate;
@@ -52,6 +58,7 @@ export class RumConfiguration {
     this.sessionOnError = sessionOnError;
     this.trackActiveDevices = trackActiveDevices;
     this.vitalsUpdateFrequency = vitalsUpdateFrequency;
+    this.longTaskThresholdMs = longTaskThresholdMs;
   }
 }
 
@@ -72,6 +79,7 @@ export class RumConfigurationBuilder {
   private sessionOnError: boolean = false;
   private trackActiveDevices: boolean = true;
   private vitalsUpdateFrequency: VitalsUpdateFrequency = DEFAULT_VITALS_UPDATE_FREQUENCY;
+  private longTaskThresholdMs: number = DEFAULT_LONG_TASK_THRESHOLD_MS;
 
   constructor(applicationId: string) {
     this.applicationId = applicationId;
@@ -238,6 +246,28 @@ export class RumConfigurationBuilder {
     return this;
   }
 
+  /**
+   * Report a `long_task` event for every drawn frame whose UI work (input
+   * handling plus layout and measure) takes longer than `thresholdMs`, and count
+   * them on the view (`view.long_task.count`). Same name and default as
+   * Android's `trackLongTasks`: on by default at 100 ms; 0 turns it off.
+   *
+   * Long tasks come from the frames the SDK already observes, so only a stall
+   * that delays a redraw is seen. Work that blocks the main thread while
+   * nothing needs redrawing (a slow network or timer callback on an idle
+   * screen) is not, and neither is anything on API levels below 22, where the
+   * system reports no frame durations. Frames are observed only while the app
+   * is in the foreground, a view is open and `setVitalsUpdateFrequency` is not
+   * `NEVER`. A long task carries no stack: for the code that blocked, look at
+   * the main-thread jank errors of the same time.
+   */
+  trackLongTasks(thresholdMs: number = DEFAULT_LONG_TASK_THRESHOLD_MS): RumConfigurationBuilder {
+    // Untyped callers can pass anything: what is not a positive number turns them off.
+    this.longTaskThresholdMs = typeof thresholdMs === 'number' && Number.isFinite(thresholdMs) && thresholdMs > 0 ?
+      thresholdMs : 0;
+    return this;
+  }
+
   build(): RumConfiguration {
     return new RumConfiguration(
       this.applicationId,
@@ -252,7 +282,8 @@ export class RumConfigurationBuilder {
       this.beforeSampling,
       this.sessionOnError,
       this.trackActiveDevices,
-      this.vitalsUpdateFrequency
+      this.vitalsUpdateFrequency,
+      this.longTaskThresholdMs
     );
   }
 }
