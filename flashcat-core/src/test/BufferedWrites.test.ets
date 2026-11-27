@@ -100,6 +100,18 @@ function startAnAppend(persistence: FilePersistenceStrategy, firstSeq: number): 
   return seq;
 }
 
+/**
+ * Waits for the asynchronous append in flight, if any. rollActive writes what is
+ * buffered but does not wait for an append already started, so the newest
+ * lines may still be in one when it returns.
+ */
+async function appendSettled(persistence: FilePersistenceStrategy): Promise<void> {
+  const fields: Record<string, Object> = persistence as Object as Record<string, Object>;
+  for (let i: number = 0; i < 1000 && fields['appendingName'] !== null; i++) {
+    await delay(1);
+  }
+}
+
 /** Drains up to `max` batches, deleting each as an upload would; their lines in upload order. */
 function drain(persistence: FilePersistenceStrategy, max: number): string[] {
   let drained: string[] = [];
@@ -355,6 +367,7 @@ export default function bufferedWritesTests(): void {
           worst = bytes > worst ? bytes : worst;
         }
         persistence.rollActive();
+        await appendSettled(persistence); // the newest lines may be in it
         worst = Math.max(worst, diskBytes(rumDir(app.filesDir)));
         expect(worst > QUOTA_BYTES - 600 * 1024).assertTrue(); // it did fill up
         expect(worst <= QUOTA_BYTES + FLUSH_BYTES + 2048).assertTrue();
