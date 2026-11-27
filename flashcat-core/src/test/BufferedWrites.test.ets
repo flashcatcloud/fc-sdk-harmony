@@ -271,6 +271,31 @@ export default function bufferedWritesTests(): void {
         expect(diskLines(rumDir(app.filesDir)).length).assertEqual(0);
       });
 
+    it('aWipeWhileCollectingGoesOnKeepsOnlyTheEventsWrittenAfterIt',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, async (): Promise<void> => {
+        // Any wipe of the collected data (not only a consent revocation) runs
+        // wipeAll; collection may go on right after it, as when the app clears
+        // its data and keeps tracking.
+        const app: FakeApp = new FakeApp();
+        const persistence: FilePersistenceStrategy = new FilePersistenceStrategy(app.context(), 'rum');
+        const pad: string = 'x'.repeat(1000);
+        let bytes: number = 0;
+        for (let i: number = 0; bytes < FLUSH_BYTES; i++) {
+          const line: string = event(i, pad);
+          persistence.write(line); // the last one starts an append
+          bytes += line.length + 1;
+        }
+        persistence.write(event(-1)); // buffered behind it
+        persistence.wipeAll();
+        persistence.write(event(1000));
+        persistence.write(event(1001));
+        await delay(400);
+        expect(JSON.stringify(seqs(diskLines(rumDir(app.filesDir))))).assertEqual('[1000,1001]');
+        persistence.rollActive();
+        const batch: Batch | null = persistence.readNextBatch();
+        expect(batch !== null && batch.eventCount === 2).assertTrue();
+      });
+
     it('theQuotaIsNeverExceededByMoreThanOneFlush',
       TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, async (): Promise<void> => {
         const app: FakeApp = new FakeApp();

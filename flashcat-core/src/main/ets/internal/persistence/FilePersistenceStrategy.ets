@@ -575,6 +575,8 @@ export class FilePersistenceStrategy implements UploadPersistence {
    */
   wipeAll(): void {
     this.wipePending();
+    // The one place collected data is wiped: whatever wipes it has to come
+    // through here, or buffered lines would reappear on disk after the wipe.
     this.cancelFlushTimer();
     this.buffered = [];
     this.bufferedBytes = 0;
