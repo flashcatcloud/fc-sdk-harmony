@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+- Feature operations, as on Android and iOS: `startFeatureOperation`,
+  `succeedFeatureOperation` and `failFeatureOperation` on the RUM monitor, with
+  `FeatureOperationFailureReason` (`ERROR`, `ABANDONED`, `OTHER`). Each call
+  reports a `vital` event of type `operation_step` on the current view, with
+  `step_type` `start` or `end`, the optional `operation_key`, and
+  `failure_reason` on a failed end. No duration is sent: the backend pairs the
+  steps by name and key. A blank name, or a key given but blank, is ignored
+  with a warning. The steps follow session sampling and are held with the rest
+  of a session kept only on error.
+
 ## 0.8.2
 
 - Frame rate, slow and frozen frames, and app launch timing no longer need
