@@ -406,6 +406,38 @@ export class FlashcatCore implements SdkCore {
     this.bus.send(RUM_FEATURE_NAME, { 'type': 'user_changed' } as Record<string, Object>);
   }
 
+  addUserProperties(extraInfo: Record<string, Object>): void {
+    // Untyped callers can pass null or a non-object.
+    if (extraInfo === null || extraInfo === undefined || typeof extraInfo !== 'object' || Array.isArray(extraInfo)) {
+      FlashcatLog.usage('addUserProperties ignored: extraInfo must be an object');
+      return;
+    }
+    this.drainPendingRum();
+    // A new user record: the one the host passed to setUserInfo, and its extra
+    // info, stay the host's own, and events already snapshotted keep theirs.
+    const current: UserInfo = this.contextProvider.getUser();
+    const merged: Record<string, Object> = {};
+    const previous: Record<string, Object> = current.extraInfo ?? {};
+    for (const k of Object.keys(previous)) {
+      merged[k] = previous[k];
+    }
+    for (const k of Object.keys(extraInfo)) {
+      merged[k] = extraInfo[k];
+    }
+    const next: UserInfo = { extraInfo: merged };
+    if (current.id !== undefined) {
+      next.id = current.id;
+    }
+    if (current.name !== undefined) {
+      next.name = current.name;
+    }
+    if (current.email !== undefined) {
+      next.email = current.email;
+    }
+    // No user_changed: the identity is the same (Android notifies no listener either).
+    this.contextProvider.setUser(next);
+  }
+
   setTrackingConsent(consent: TrackingConsent): void {
     if (this.backgroundProcess) {
       FlashcatLog.e('setTrackingConsent ignored in the deferred-upload process (consent is read-only there)');

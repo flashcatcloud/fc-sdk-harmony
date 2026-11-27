@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+- `SdkCore.addUserProperties(extraInfo)`, as Android's
+  `Datadog.addUserProperties` (iOS: `addUserExtraInfo`): merges `extraInfo`
+  into the current user's extra info. A key already set is replaced, the others
+  are kept, and the user's id, name and email are left as they are; with no
+  user set, the user gets the extra info only. Events recorded from then on
+  carry the result. RUM first writes the events it still holds queued, with the
+  user of their call. An `extraInfo` that is not an object is ignored with a
+  warning.
+
 ## 0.8.2
 
 - `SdkCore.liveWindowContexts()`: the context of every ability whose window
