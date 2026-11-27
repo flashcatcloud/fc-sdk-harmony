@@ -98,5 +98,28 @@ export default function deviceFieldsTests(): void {
         expect(deviceOf(replayed)['battery_level']).assertEqual(0.42);
         expect(deviceOf(replayed)['time_zone']).assertEqual('Asia/Shanghai');
       });
+
+    it('aReplayedCrashFromAnOlderSdkSnapshotHasNoLanguageOrTimeZone',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        // The snapshot was written by a version that did not put languages or the time zone on events.
+        const crashedRun: Record<string, Object> = RumEventAssembler.view(
+          context(false), 'app', 's', 'v', 'Home', 1, 0, 0, 0, 0, 0, 1, true, {});
+        let threw: boolean = false;
+        let replayed: Record<string, Object> = {};
+        try {
+          replayed = RumFeature.withCrashedRunContext(
+            RumEventAssembler.error(context(true), 'app', 's', 'v', 'Home', 'boom', 'source', undefined, true,
+              'unhandled', 1, {}),
+            crashedRun);
+        } catch (_e) {
+          threw = true;
+        }
+        expect(threw).assertFalse();
+        const device: Record<string, Object> = deviceOf(replayed);
+        expect(device['brand']).assertEqual('HUAWEI');
+        for (const key of ['locale', 'locales', 'time_zone']) {
+          expect(Object.keys(device).indexOf(key)).assertEqual(-1);
+        }
+      });
   });
 }

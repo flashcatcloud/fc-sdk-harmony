@@ -96,6 +96,44 @@ export default function contextDeviceTests(): void {
         expect(deviceOf(p).locale).assertEqual('en-GB');
       });
 
+    it('snapshotsWithoutAChangeShareOneDeviceAndReadNothingAgain',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        reset();
+        let batteryReads: number = 0;
+        Object.defineProperty(battery, 'batterySOC', {
+          get: (): number => {
+            batteryReads++;
+            return 80;
+          }, configurable: true
+        });
+        let now: number = 1_000_000;
+        const p: ContextProvider = provider((): number => now);
+        try {
+          const first: DeviceInfo = deviceOf(p);
+          const readsAfterFirst: number = batteryReads;
+          now += 30_000;
+          const second: DeviceInfo = deviceOf(p);
+          expect(second === first).assertTrue(); // built once, not per event
+          expect(second.locales?.join(',')).assertEqual(first.locales?.join(','));
+          expect(second.batteryLevel).assertEqual(0.8);
+          expect(batteryReads).assertEqual(readsAfterFirst); // no provider was read again
+          // Negative control: a locale change rebuilds, so the next snapshot differs.
+          i18nKit['languages'] = ['en-GB'];
+          deliver('usual.event.LOCALE_CHANGED');
+          const third: DeviceInfo = deviceOf(p);
+          expect(third === first).assertFalse();
+          expect(third.locale).assertEqual('en-GB');
+          expect((third.locales as string[]).join(',')).assertEqual('en-GB');
+          // The battery poll also rebuilds, once the minute is up.
+          now += 60_000;
+          deviceOf(p);
+          expect(batteryReads).assertEqual(readsAfterFirst + 1);
+        } finally {
+          p.stop();
+          reset();
+        }
+      });
+
     it('theBatteryLevelIsReadAtMostOnceAMinute',
       TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
         reset();

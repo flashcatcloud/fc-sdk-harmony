@@ -45,6 +45,8 @@ export class ContextProvider {
   private batteryReadAtMs: number = Number.NEGATIVE_INFINITY;
   private readonly nowMs: () => number;
   private systemEvents: commonEventManager.CommonEventSubscriber | null = null;
+  /** The device as built by deviceNow(); dropped when a locale, time zone, power mode or battery reading changes. */
+  private deviceCache: DeviceInfo | null = null;
 
   constructor(context: common.Context, configuration: Configuration, persistIdentity: boolean = true,
     nowMs: () => number = (): number => Date.now()) {
@@ -138,6 +140,7 @@ export class ContextProvider {
 
   /** Re-reads what a delivered common event says has changed. */
   onSystemEvent(event: string): void {
+    this.deviceCache = null;
     if (event === POWER_SAVE_MODE_CHANGED) {
       this.readPowerSavingMode();
     } else if (event === LOCALE_CHANGED) {
@@ -340,8 +343,16 @@ export class ContextProvider {
     return this.featureContext[featureName] ?? {};
   }
 
-  /** The device as of now: what was read at init, plus the values that change. */
+  /**
+   * The device as of now: what was read at init, plus the values that change.
+   * Built once and shared by every snapshot until a system event or the
+   * battery poll says a value changed; consumers copy what they hand on.
+   */
   private deviceNow(): DeviceInfo {
+    const batteryDue: boolean = Math.abs(this.nowMs() - this.batteryReadAtMs) >= BATTERY_POLL_INTERVAL_MS;
+    if (this.deviceCache !== null && !batteryDue) {
+      return this.deviceCache;
+    }
     const device: DeviceInfo = {
       brand: this.device.brand,
       model: this.device.model,
@@ -352,7 +363,7 @@ export class ContextProvider {
     };
     if (this.locales.length > 0) {
       device.locale = this.locales[0];
-      device.locales = this.locales.slice(); // the event is the mapper's to edit
+      device.locales = this.locales.slice();
     }
     if (this.timeZone.length > 0) {
       device.timeZone = this.timeZone;
@@ -364,6 +375,7 @@ export class ContextProvider {
     if (this.powerSavingMode !== undefined) {
       device.powerSavingMode = this.powerSavingMode;
     }
+    this.deviceCache = device;
     return device;
   }
 

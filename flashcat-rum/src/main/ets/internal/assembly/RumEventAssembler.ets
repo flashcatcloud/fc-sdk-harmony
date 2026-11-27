@@ -470,7 +470,7 @@ export class RumEventAssembler {
       device['locale'] = context.device.locale;
     }
     if (context.device.locales !== undefined) {
-      device['locales'] = context.device.locales;
+      device['locales'] = context.device.locales.slice(); // the event is the mapper's to edit; the context is shared
     }
     if (context.device.timeZone !== undefined) {
       device['time_zone'] = context.device.timeZone;
