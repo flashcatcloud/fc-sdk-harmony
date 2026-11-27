@@ -182,4 +182,103 @@ export default function axiosHostSafetyTests(): void {
         expect(completed[0]['status_code']).assertEqual(500);
       });
   });
+
+  describe('AxiosResourcePhases', (): void => {
+    /** As @ohos.net.http reports it for a fresh https request; @ohos/axios passes it through. */
+    const kitTiming: Record<string, number> = {
+      'dnsTiming': 1.476, 'tcpTiming': 1.939, 'tlsTiming': 520.172, 'firstSendTiming': 520.62,
+      'firstReceiveTiming': 1118.865, 'totalFinishTiming': 1120.23, 'redirectTiming': 0,
+      'responseHeaderTiming': 1120.432, 'responseBodyTiming': 1120.911, 'totalTiming': 1123.033
+    };
+
+    /** Drives one request through the interceptors; returns the completion event it caused, if any. */
+    const complete = async (outcome: (config: InternalAxiosRequestConfig) => Record<string, Object>,
+      asError: boolean): Promise<Array<Record<string, Object>>> => {
+      const sent: Array<Record<string, Object>> = [];
+      const rum: Record<string, Object> = {
+        sendEvent: (event: Record<string, Object>): void => {
+          sent.push(event);
+        }
+      };
+      FlashcatTrace.enable(new TraceConfiguration(100), {
+        isActive: (): boolean => true,
+        getTrackingConsent: (): TrackingConsent => TrackingConsent.GRANTED,
+        getFeature: (name: string): Object | null => name === 'rum' ? rum : null,
+        updateFeatureContext: (): void => {}
+      } as Object as SdkCore);
+      try {
+        const fake: FakeInstance = new FakeInstance();
+        trackAxios(fake.asInstance());
+        const headers: Record<string, Object> = { 'has': (): boolean => false, 'set': (): void => {} };
+        const config: InternalAxiosRequestConfig =
+          { 'url': 'https://api.example.com/a', 'method': 'get', 'headers': headers } as Object as InternalAxiosRequestConfig;
+        (fake.requestHook as RequestHook)(config);
+        const settled: Record<string, Object> = outcome(config);
+        if (asError) {
+          try {
+            await (fake.errorHook as ErrorHook)(settled as Object as AxiosError);
+          } catch (_e) {
+            // the host's own rejection
+          }
+        } else {
+          (fake.responseHook as ResponseHook)(settled as Object as AxiosResponse);
+        }
+      } finally {
+        FlashcatTrace.enable(new TraceConfiguration(100), {
+          isActive: (): boolean => true,
+          getTrackingConsent: (): TrackingConsent => TrackingConsent.PENDING,
+          getFeature: (): null => null,
+          updateFeatureContext: (): void => {}
+        } as Object as SdkCore);
+      }
+      return sent.filter((e: Record<string, Object>): boolean => e['type'] !== 'network_request_started');
+    };
+
+    it('aResponseCarriesTheKitsTimingAsLibcurlMarks',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, async (): Promise<void> => {
+        const done: Array<Record<string, Object>> = await complete((config: InternalAxiosRequestConfig) => {
+          return { 'status': 200, 'data': 'ok', 'headers': {}, 'config': config, 'performanceTiming': kitTiming };
+        }, false);
+        expect(done.length).assertEqual(1);
+        const timing: Record<string, number> = done[0]['timing'] as Record<string, number>;
+        expect(timing['namelookup']).assertEqual(1.476);
+        expect(timing['connect']).assertEqual(1.939);
+        expect(timing['appconnect']).assertEqual(520.172);
+        expect(timing['pretransfer']).assertEqual(520.62);
+        expect(timing['starttransfer']).assertEqual(1118.865);
+        expect(timing['total']).assertEqual(1120.23);
+        expect(timing['redirect']).assertEqual(0);
+      });
+
+    it('anHttpErrorStatusResponseCarriesItsTimingToo',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, async (): Promise<void> => {
+        const done: Array<Record<string, Object>> = await complete((config: InternalAxiosRequestConfig) => {
+          const response: Record<string, Object> =
+            { 'status': 404, 'data': '', 'headers': {}, 'config': config, 'performanceTiming': kitTiming };
+          return { 'message': 'Request failed with status code 404', 'config': config, 'response': response };
+        }, true);
+        expect(done.length).assertEqual(1);
+        expect(done[0]['status_code']).assertEqual(404);
+        expect((done[0]['timing'] as Record<string, number>)['total']).assertEqual(1120.23);
+      });
+
+    it('aStreamedResponseOrATransportFailureHasNoTiming',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, async (): Promise<void> => {
+        // A streamed body: the adapter leaves performanceTiming undefined.
+        const streamed: Array<Record<string, Object>> = await complete((config: InternalAxiosRequestConfig) => {
+          return { 'status': 200, 'data': '', 'headers': {}, 'config': config };
+        }, false);
+        expect(streamed.length).assertEqual(1);
+        expect(streamed[0]['type']).assertEqual('network_request_completed');
+        expect(Object.keys(streamed[0]).indexOf('timing')).assertEqual(-1);
+        // No response at all: a network error, no timing either.
+        const failed: Array<Record<string, Object>> = await complete((config: InternalAxiosRequestConfig) => {
+          return { 'message': 'connect failed', 'config': config,
+            'response': { 'destroy': (): void => {} } as Record<string, Object> };
+        }, true);
+        expect(failed.length).assertEqual(1);
+        expect(failed[0]['type']).assertEqual('network_request_failed');
+        expect(Object.keys(failed[0]).indexOf('timing')).assertEqual(-1);
+      });
+  });
 }
