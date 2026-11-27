@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+- `addTiming(name)` on the RUM monitor, as on Android: records
+  `view.custom_timings[name]` on the open view, the time from the view's start
+  to the call in nanoseconds (at least 1), and writes a view update carrying
+  it. A later call with the same name replaces the value; the view's later
+  documents keep every timing it has. Characters other than letters, digits,
+  `-`, `_`, `.`, `@` and `$` in the name are replaced with `_`, as Android does.
+  A timing called with no view open, or after the view stopped, is ignored and
+  starts no session; the next view starts with no timings.
+
 ## 0.8.2
 
 - Frame rate, slow and frozen frames, and app launch timing no longer need

@@ -176,6 +176,19 @@ export class DefaultRumMonitor implements RumMonitor {
     });
   }
 
+  addTiming(name: string): void {
+    // A name that is not a string would end up as a key of the view's timings.
+    if (typeof name !== 'string') {
+      FlashcatLog.usage('addTiming ignored: the name must be a string');
+      return;
+    }
+    this.dispatch('addTiming', () => {
+      const e: RumRawEvent = this.raw('addTiming');
+      e.name = name;
+      return e;
+    });
+  }
+
   /** Internal: the router page `key` drew its first frame at `atMs`. */
   addAutoViewLoadingTime(key: string, atMs: number): void {
     this.dispatch('addViewLoadingTime', () => {

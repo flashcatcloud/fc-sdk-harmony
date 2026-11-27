@@ -7,6 +7,7 @@
   enable
   startView
   stopView
+  addTiming
   addAction
   startAction
   stopAction
