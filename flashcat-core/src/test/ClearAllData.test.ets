@@ -183,6 +183,43 @@ export default function clearAllDataTests(): void {
       ext.stop();
     });
 
+    it('theNextLaunchIsANewDeviceWhileTheRunningOneKeepsItsId', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+      // Preferences are process-wide in the headless runner: each core here is a launch.
+      const first: FlashcatCore = build(fakeContext(), TrackingConsent.GRANTED);
+      const before: string = first.getContext().anonymousId as string;
+      first.stop();
+      // Control: without a clear, the next launch is the same device.
+      const second: FlashcatCore = build(fakeContext(), TrackingConsent.GRANTED);
+      expect(second.getContext().anonymousId as string).assertEqual(before);
+      second.clearAllData();
+      // Android parity: the running process keeps its id, so its session stays one device.
+      expect(second.getContext().anonymousId as string).assertEqual(before);
+      second.stop();
+      const third: FlashcatCore = build(fakeContext(), TrackingConsent.GRANTED);
+      const after: string = third.getContext().anonymousId as string;
+      expect(after.length > 0).assertTrue();
+      expect(after === before).assertFalse();
+      third.stop();
+      // The new id is stored: the launch after is the same new device.
+      const fourth: FlashcatCore = build(fakeContext(), TrackingConsent.GRANTED);
+      expect(fourth.getContext().anonymousId as string).assertEqual(after);
+      fourth.stop();
+    });
+
+    it('aLaterGrantDoesNotStoreTheClearedIdAgain', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+      const granted: FlashcatCore = build(fakeContext(), TrackingConsent.GRANTED);
+      granted.stop();
+      const refused: FlashcatCore = build(fakeContext(), TrackingConsent.NOT_GRANTED);
+      const cleared: string = refused.getContext().anonymousId as string;
+      refused.clearAllData();
+      // GRANTED stores the in-memory id when none is stored: not the one just cleared.
+      refused.setTrackingConsent(TrackingConsent.GRANTED);
+      refused.stop();
+      const next: FlashcatCore = build(fakeContext(), TrackingConsent.GRANTED);
+      expect((next.getContext().anonymousId as string) === cleared).assertFalse();
+      next.stop();
+    });
+
     it('theFacadeActsOnTheNamedInstanceAndIgnoresAMissingOne', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
       Flashcat.clearAllData('never-initialized'); // logged, not thrown
       const context: common.Context = fakeContext();

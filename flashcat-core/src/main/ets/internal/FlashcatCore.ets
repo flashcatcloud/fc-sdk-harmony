@@ -459,7 +459,8 @@ export class FlashcatCore implements SdkCore {
   /**
    * Android's `clearAllData`: delete every event collected and not uploaded yet
    * — each feature's batches and pre-consent buffer, the pending crash
-   * incidents and the RUM view snapshot — without stopping anything. Uploads,
+   * incidents and the RUM view snapshot — and the stored anonymous id (the next
+   * launch is a new device) without stopping anything. Uploads,
    * consent and the running session carry on; what is recorded next is kept.
    */
   clearAllData(): void {
@@ -471,6 +472,7 @@ export class FlashcatCore implements SdkCore {
     this.drainPendingRum();
     this.features.forEach((r: RegisteredFeature) => r.persistence.wipeAll());
     this.bus.send(CRASH_STORAGE_TARGET, { 'type': 'crash_storage_wipe' } as Record<string, Object>);
+    this.contextProvider.forgetPersistedIdentity();
     this.bus.send(RUM_FEATURE_NAME, { 'type': 'data_cleared' } as Record<string, Object>);
   }
 
