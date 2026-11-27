@@ -153,6 +153,13 @@ function buildCore(app: FakeApp, consent: TrackingConsent = TrackingConsent.GRAN
   return core;
 }
 
+/** The persistence behind a core's feature. */
+function persistenceOf(core: FlashcatCore, feature: string): FilePersistenceStrategy {
+  const features: Map<string, Record<string, Object>> =
+    (core as Object as Record<string, Object>)['features'] as Map<string, Record<string, Object>>;
+  return (features.get(feature) as Record<string, Object>)['persistence'] as FilePersistenceStrategy;
+}
+
 function writeEvent(core: FlashcatCore, seq: number, forceFlush: boolean = false): boolean {
   const scope: FeatureScope | null = core.getFeature('rum');
   let written: boolean = false;
@@ -552,6 +559,87 @@ export default function bufferedWritesTests(): void {
         seq += 1;
         expect(fields['flushTimer'] as number).assertEqual(-1);
         expect(JSON.stringify(seqs(diskLines(rumDir(app.filesDir))))).assertEqual(JSON.stringify(range(seq)));
+      });
+
+    it('aSynchronousWriteThatFailedPartWayIsNotWrittenTwice',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        const app: FakeApp = new FakeApp();
+        const persistence: FilePersistenceStrategy = new FilePersistenceStrategy(app.context(), 'rum');
+        const api: Record<string, Object> = fsApi();
+        const writeSync: Object = api['writeSync'];
+        persistence.write(event(0));
+        // The content lands, then the write reports an error.
+        api['writeSync'] = (fd: number, content: string): number => {
+          (writeSync as (fd: number, content: string) => number)(fd, content);
+          throw new Error('EIO');
+        };
+        try {
+          expect(persistence.write(event(1), true)).assertFalse();
+        } finally {
+          api['writeSync'] = writeSync;
+        }
+        expect(JSON.stringify(seqs(diskLines(rumDir(app.filesDir))))).assertEqual('[0,1]');
+        persistence.wipeAll();
+      });
+
+    it('aSynchronousWriteWhoseCloseFailsCountsAsWritten',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        const app: FakeApp = new FakeApp();
+        const persistence: FilePersistenceStrategy = new FilePersistenceStrategy(app.context(), 'rum');
+        const api: Record<string, Object> = fsApi();
+        const closeSync: Object = api['closeSync'];
+        persistence.write(event(0));
+        api['closeSync'] = (file: Object): void => {
+          (closeSync as (file: Object) => void)(file);
+          throw new Error('EIO');
+        };
+        try {
+          expect(persistence.write(event(1), true)).assertTrue();
+        } finally {
+          api['closeSync'] = closeSync;
+        }
+        expect(JSON.stringify(seqs(diskLines(rumDir(app.filesDir))))).assertEqual('[0,1]');
+        persistence.wipeAll();
+      });
+
+    it('aSynchronousWriteThatCouldNotOpenIsRetriedOnce',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        const app: FakeApp = new FakeApp();
+        const persistence: FilePersistenceStrategy = new FilePersistenceStrategy(app.context(), 'rum');
+        const api: Record<string, Object> = fsApi();
+        const openSync: Object = api['openSync'];
+        let opens: number = 0;
+        persistence.write(event(0));
+        // The directory is removed underneath: the open fails until it is recreated.
+        fs.rmdirSync(rumDir(app.filesDir));
+        api['openSync'] = (p: string, mode: number): Object => {
+          opens += 1;
+          return (openSync as (p: string, mode: number) => Object)(p, mode);
+        };
+        try {
+          expect(persistence.write(event(1), true)).assertTrue();
+        } finally {
+          api['openSync'] = openSync;
+        }
+        expect(opens).assertEqual(2);
+        expect(JSON.stringify(seqs(diskLines(rumDir(app.filesDir))))).assertEqual('[0,1]');
+        persistence.wipeAll();
+      });
+
+    it('preConsentEventsUploadBeforeEventsWrittenAfterTheGrant',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        // The intake keeps the view update that arrives last: v1, written while
+        // consent was pending, must not arrive after v2, written after the grant.
+        const app: FakeApp = new FakeApp();
+        const core: FlashcatCore = buildCore(app);
+        writeEvent(core, 0); // granted: opens the active batch
+        core.setTrackingConsent(TrackingConsent.PENDING);
+        writeEvent(core, 1); // v1, pre-consent
+        core.setTrackingConsent(TrackingConsent.GRANTED);
+        writeEvent(core, 2); // v2
+        const persistence: FilePersistenceStrategy = persistenceOf(core, 'rum');
+        core.stop();
+        expect(JSON.stringify(seqs(drain(persistence, 10)))).assertEqual('[0,1,2]');
       });
   });
 }

@@ -22,6 +22,13 @@
   written: a batch waits while one written before it has events not yet on
   disk. The intake keeps the view update that arrives last, so a batch
   overtaken by a later one would overwrite the newer view state.
+- Events collected while consent was pending upload before the events written
+  after the grant. The batch that was active when consent became pending
+  used to take the later events too and upload them first.
+- A synchronous write is retried only when the file could not be opened. A
+  write that failed part-way is no longer repeated (it duplicated the events
+  already written), and a failure to close the file after a complete write no
+  longer counts as a failed write.
 - The active batch rolls 250 ms before its window ends, so it is complete on
   disk before another process may claim it, and the disk quota is enforced
   at every append.

@@ -67,7 +67,7 @@ export interface Batch {
   eventCount: number;
 }
 
-/** How an asynchronous append ended. */
+/** How an append ended. */
 enum AppendResult {
   WRITTEN,
   NOT_OPENED,   // nothing written
@@ -324,14 +324,8 @@ export class FilePersistenceStrategy implements UploadPersistence {
       try {
         if (generation !== this.generation) {
           FilePersistenceStrategy.unlinkQuietly(path); // wiped meanwhile: refused data
-        } else if (result === AppendResult.NOT_OPENED) {
-          // Nothing was written, so a retry cannot duplicate lines.
-          this.healAndAppend(name, content, pending.bytes);
-        } else if (result === AppendResult.WRITE_FAILED) {
-          // Not retried: part of the content may be in the file already, and a
-          // retry would duplicate it. A torn last line is dropped on read
-          // (completeLines); the rest of these lines is lost.
-          FlashcatLog.e(`append: ${pending.lines.length} events may be incomplete in ${name}`);
+        } else {
+          this.settleAppend(result, name, content, pending);
         }
       } catch (e) {
         FlashcatLog.e(`append completion failed: ${FilePersistenceStrategy.errorText(e)}`);
@@ -362,12 +356,31 @@ export class FilePersistenceStrategy implements UploadPersistence {
     for (const pending of pendings) {
       const name: string = this.appendTarget(pending, now);
       const content: string = pending.lines.join('');
-      if (!FilePersistenceStrategy.append(`${this.rootDir}/${name}`, content)
-        && !this.healAndAppend(name, content, pending.bytes)) {
+      const result: AppendResult = FilePersistenceStrategy.append(`${this.rootDir}/${name}`, content);
+      if (!this.settleAppend(result, name, content, pending)) {
         ok = false;
       }
     }
     return ok;
+  }
+
+  /**
+   * What a finished append of `pending`'s lines to `name` leaves to do, for
+   * both the synchronous and the asynchronous path. True when the lines are
+   * on disk. NOT_OPENED wrote nothing, so the append is retried once; after
+   * WRITE_FAILED part of the content may be in the file already and a retry
+   * would duplicate it, so it is not retried: a torn last line is dropped on
+   * read (completeLines), the rest of these lines is lost.
+   */
+  private settleAppend(result: AppendResult, name: string, content: string, pending: BufferedAppend): boolean {
+    if (result === AppendResult.WRITTEN) {
+      return true;
+    }
+    if (result === AppendResult.NOT_OPENED) {
+      return this.healAndAppend(name, content, pending.bytes);
+    }
+    FlashcatLog.e(`append: ${pending.lines.length} events may be incomplete in ${name}`);
+    return false;
   }
 
   /**
@@ -404,11 +417,18 @@ export class FilePersistenceStrategy implements UploadPersistence {
     return name;
   }
 
-  /** Self-heal a directory removed underneath us, then try the append once more; on failure the lines are lost. */
+  /**
+   * Self-heal a directory removed underneath us, then try the append once
+   * more; on failure the lines are lost. Called only when nothing was written.
+   */
   private healAndAppend(name: string, content: string, bytes: number): boolean {
     this.ensureDir(this.rootDir);
-    if (FilePersistenceStrategy.append(`${this.rootDir}/${name}`, content)) {
+    const result: AppendResult = FilePersistenceStrategy.append(`${this.rootDir}/${name}`, content);
+    if (result === AppendResult.WRITTEN) {
       return true;
+    }
+    if (result === AppendResult.WRITE_FAILED) {
+      return false; // part of it may be on disk: the batch stays accounted
     }
     this.releaseBytes(name, bytes);
     if (name === this.activeName) {
@@ -465,7 +485,7 @@ export class FilePersistenceStrategy implements UploadPersistence {
         return false; // single line larger than half the cap — give up
       }
     }
-    const ok: boolean = FilePersistenceStrategy.append(path, line);
+    const ok: boolean = FilePersistenceStrategy.append(path, line) === AppendResult.WRITTEN;
     if (ok) {
       this.pendingBytes += lineBytes;
     }
@@ -484,6 +504,14 @@ export class FilePersistenceStrategy implements UploadPersistence {
       if (!fs.accessSync(path)) {
         return;
       }
+      // Upload order follows ownNames, and the pending events are older than
+      // anything written after the grant. Every batch this instance already
+      // holds was written before the pending events (granted writes stop while
+      // consent is PENDING), so the migrated batches join ownNames after them —
+      // but the active one would take the post-grant events too and upload them
+      // ahead of the older pending ones. Close it: later writes open a batch
+      // that follows the migrated ones.
+      this.rollActive();
       const data: string = fs.readTextSync(path);
       if (data.length > 0) {
         // Age-filter: migrated batches are named with TODAY's timestamp, so the
@@ -546,7 +574,7 @@ export class FilePersistenceStrategy implements UploadPersistence {
     // batch from our own drain for the roll-age window.
     const name: string = this.newBatchName(Date.now());
     const content: string = lines.join('\n') + '\n';
-    if (FilePersistenceStrategy.append(`${this.rootDir}/${name}`, content)) {
+    if (FilePersistenceStrategy.append(`${this.rootDir}/${name}`, content) !== AppendResult.NOT_OPENED) {
       this.ownNames.add(name);
       this.sizes.set(name, FilePersistenceStrategy.utf8Length(content));
     }
@@ -1005,22 +1033,31 @@ export class FilePersistenceStrategy implements UploadPersistence {
     return buffer.byteLength(s, 'utf-8');
   }
 
-  private static append(path: string, content: string): boolean {
+  /** One open, write and close. A failed close does not fail it: the content was written. */
+  private static append(path: string, content: string): AppendResult {
+    let file: fs.File;
     try {
-      const file = fs.openSync(path, fs.OpenMode.READ_WRITE | fs.OpenMode.CREATE | fs.OpenMode.APPEND);
-      try {
-        fs.writeSync(file.fd, content);
-        return true;
-      } finally {
-        fs.closeSync(file);
-      }
+      file = fs.openSync(path, fs.OpenMode.READ_WRITE | fs.OpenMode.CREATE | fs.OpenMode.APPEND);
     } catch (e) {
       FlashcatLog.e(`append failed path=${path}: ${FilePersistenceStrategy.errorText(e)}`);
-      return false;
+      return AppendResult.NOT_OPENED;
     }
+    let result: AppendResult = AppendResult.WRITE_FAILED;
+    try {
+      fs.writeSync(file.fd, content);
+      result = AppendResult.WRITTEN;
+    } catch (e) {
+      FlashcatLog.e(`append failed path=${path}: ${FilePersistenceStrategy.errorText(e)}`);
+    }
+    try {
+      fs.closeSync(file);
+    } catch (_e) {
+      // The descriptor is gone either way.
+    }
+    return result;
   }
 
-  /** Like append, with the Promise API. A failed close does not fail it: the content was written. */
+  /** Like append, with the Promise API. */
   private static async appendAsync(path: string, content: string): Promise<AppendResult> {
     let file: fs.File;
     try {
