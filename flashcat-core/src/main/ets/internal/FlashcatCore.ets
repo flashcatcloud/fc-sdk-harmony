@@ -516,7 +516,7 @@ export class FlashcatCore implements SdkCore {
       // Each step on its own: a failing one must not skip the next (onStop
       // releases the feature's own timers and subscriptions).
       try {
-        r.persistence.rollActive(); // close buffered events so they're recovered next launch
+        r.persistence.stop(); // close buffered events so they're recovered next launch
       } catch (error) {
         FlashcatLog.e(`stop: ${r.feature.name} roll failed: ${error instanceof Error ? error.message : 'error'}`);
       }

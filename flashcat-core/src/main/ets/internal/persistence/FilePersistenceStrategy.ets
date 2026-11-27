@@ -67,6 +67,13 @@ export interface Batch {
   eventCount: number;
 }
 
+/** How an asynchronous append ended. */
+enum AppendResult {
+  WRITTEN,
+  NOT_OPENED,   // nothing written
+  WRITE_FAILED  // some of the content may have been written
+}
+
 /** Lines written to a batch that are not on disk yet. */
 interface BufferedAppend {
   name: string;
@@ -94,8 +101,10 @@ export class FilePersistenceStrategy implements UploadPersistence {
   private activeName: string | null = null;   // basename of the active main batch file
   private activeCreatedMs: number = 0;
   private activeBytes: number = 0;
-  // Batch files THIS instance created: always safe to claim regardless of age
+  // Batch files THIS instance wrote: always safe to claim regardless of age
   // (their roll state is known locally). Bounded by the file-count quota.
+  // Insertion order is the order their lines were handed to the file system,
+  // which is the order the drain uploads them in (see readNextBatch).
   private readonly ownNames: Set<string> = new Set<string>();
   private pendingBytes: number = -1;          // -1 = not yet read from disk
   // Quota accounting without a directory scan per batch: bytes per batch file
@@ -111,6 +120,8 @@ export class FilePersistenceStrategy implements UploadPersistence {
   private flushTimer: number = -1;
   // The batch an asynchronous append is writing to; one at a time.
   private appendingName: string | null = null;
+  // Set by stop: nothing is scheduled any more, later writes go to disk at once.
+  private stopped: boolean = false;
   // Bumped by wipeAll: an append in flight across it writes refused data,
   // which is deleted when it completes.
   private generation: number = 0;
@@ -204,6 +215,16 @@ export class FilePersistenceStrategy implements UploadPersistence {
   }
 
   /**
+   * SDK stop: rollActive, and nothing is scheduled from now on — no flush
+   * timer, and an append in flight schedules nothing when it completes. A
+   * write after it goes to disk at once.
+   */
+  stop(): void {
+    this.stopped = true;
+    this.rollActive();
+  }
+
+  /**
    * An owner never appends to a batch past its roll window: another process may
    * claim a batch that old. Buffered lines reach disk up to FLUSH_DELAY_MS after
    * they were written, so the active batch rolls that much early.
@@ -223,14 +244,15 @@ export class FilePersistenceStrategy implements UploadPersistence {
     this.sizes.set(this.activeName, 0);
   }
 
-  /** A fresh batch name, owned by this instance; names sort in creation order (seq is padded). */
+  /**
+   * A fresh batch name; names sort in creation order (seq is padded). It joins
+   * ownNames when lines are first handed to it, not here: that is what keeps
+   * ownNames in write order.
+   */
   private newBatchName(now: number): string {
     this.seq += 1;
     const rand: number = Math.floor(Math.random() * 1e6);
-    const name: string = `${BATCH_PREFIX}${now}-${this.seq.toString().padStart(8, '0')}-${rand}${BATCH_SUFFIX}`;
-    // Own batch: always safe for this instance to claim, whatever its age.
-    this.ownNames.add(name);
-    return name;
+    return `${BATCH_PREFIX}${now}-${this.seq.toString().padStart(8, '0')}-${rand}${BATCH_SUFFIX}`;
   }
 
   // ---- buffered appends ----
@@ -252,6 +274,10 @@ export class FilePersistenceStrategy implements UploadPersistence {
   /** Starts a flush when enough is waiting, else makes sure one is due within FLUSH_DELAY_MS. */
   private scheduleFlush(): void {
     if (this.buffered.length === 0) {
+      return;
+    }
+    if (this.stopped) {
+      this.flushBuffered();
       return;
     }
     if (this.bufferedBytes >= FLUSH_BYTES && this.appendingName === null) {
@@ -291,14 +317,27 @@ export class FilePersistenceStrategy implements UploadPersistence {
     const content: string = pending.lines.join('');
     const generation: number = this.generation;
     this.appendingName = name;
-    FilePersistenceStrategy.appendAsync(path, content).then((ok: boolean) => {
+    FilePersistenceStrategy.appendAsync(path, content).then((result: AppendResult) => {
       this.appendingName = null;
-      if (generation !== this.generation) {
-        FilePersistenceStrategy.unlinkQuietly(path); // wiped meanwhile: refused data
-      } else if (!ok) {
-        this.healAndAppend(name, content, pending.bytes);
+      // Whatever happens here, the next flush is scheduled: a throw would
+      // otherwise leave the buffer waiting for the next write.
+      try {
+        if (generation !== this.generation) {
+          FilePersistenceStrategy.unlinkQuietly(path); // wiped meanwhile: refused data
+        } else if (result === AppendResult.NOT_OPENED) {
+          // Nothing was written, so a retry cannot duplicate lines.
+          this.healAndAppend(name, content, pending.bytes);
+        } else if (result === AppendResult.WRITE_FAILED) {
+          // Not retried: part of the content may be in the file already, and a
+          // retry would duplicate it. A torn last line is dropped on read
+          // (completeLines); the rest of these lines is lost.
+          FlashcatLog.e(`append: ${pending.lines.length} events may be incomplete in ${name}`);
+        }
+      } catch (e) {
+        FlashcatLog.e(`append completion failed: ${FilePersistenceStrategy.errorText(e)}`);
+      } finally {
+        this.scheduleFlush();
       }
-      this.scheduleFlush();
     });
   }
 
@@ -337,11 +376,15 @@ export class FilePersistenceStrategy implements UploadPersistence {
    * window (another process may claim it). Then the lines open a new batch. In
    * the first case it is named after the batch it continues, so it sorts right
    * after it and before every batch opened since; in the second only a new
-   * date keeps it from being claimed while it is written.
+   * date keeps it from being claimed while it is written. These names order
+   * the batches for a later process, which drains this one's leftovers by
+   * name; this process drains its own in ownNames order, which the target
+   * joins here, as its lines are handed to the file system.
    */
   private appendTarget(pending: BufferedAppend, now: number): string {
     const expired: boolean = (now - pending.createdMs) > this.batchAgeMs;
     if (pending.name !== this.appendingName && !expired) {
+      this.ownNames.add(pending.name); // a name seen before keeps its place
       return pending.name;
     }
     let name: string;
@@ -351,8 +394,8 @@ export class FilePersistenceStrategy implements UploadPersistence {
       // A letter sorts after the '.' of the suffix: `…-<rand>c<seq>.ndjson` follows `…-<rand>.ndjson`.
       this.seq += 1;
       name = `${pending.name.slice(0, pending.name.length - BATCH_SUFFIX.length)}c${this.seq}${BATCH_SUFFIX}`;
-      this.ownNames.add(name);
     }
+    this.ownNames.add(name);
     this.sizes.set(name, pending.bytes);
     this.releaseBytes(pending.name, pending.bytes);
     if (pending.name === this.activeName) {
@@ -504,6 +547,7 @@ export class FilePersistenceStrategy implements UploadPersistence {
     const name: string = this.newBatchName(Date.now());
     const content: string = lines.join('\n') + '\n';
     if (FilePersistenceStrategy.append(`${this.rootDir}/${name}`, content)) {
+      this.ownNames.add(name);
       this.sizes.set(name, FilePersistenceStrategy.utf8Length(content));
     }
   }
@@ -622,10 +666,7 @@ export class FilePersistenceStrategy implements UploadPersistence {
       return null;
     }
     this.reconcileSizes(listed);
-    const ready: string[] = listed
-      .filter((n: string) => n.endsWith(BATCH_SUFFIX) && n !== this.activeName && !this.hasUnwritten(n))
-      .sort();
-    for (const originalName of ready) {
+    for (const originalName of this.drainOrder(listed)) {
       // Age out batches the intake would silently discard per-event anyway.
       const createdMs: number = FilePersistenceStrategy.batchCreatedMs(originalName);
       if (createdMs > 0 && (now - createdMs) > MAX_BATCH_RETENTION_MS) {
@@ -665,6 +706,33 @@ export class FilePersistenceStrategy implements UploadPersistence {
       }
     }
     return null; // idle — silent to avoid per-tick spam
+  }
+
+  /**
+   * Batches to try, in upload order. The intake keeps the last view update to
+   * ARRIVE, so batches must arrive in the order their events were written: a
+   * view update in a later batch overtaken by an earlier one is overwritten
+   * by the stale one. Hence the rule: this instance's own batches go in the
+   * order their lines were handed to the file system (ownNames), and none
+   * goes while one handed over before it is still incomplete — the active
+   * batch, or one with lines buffered or in an asynchronous append. Before
+   * them, batches left by earlier processes or written by another one, by
+   * name (creation time).
+   */
+  private drainOrder(listed: string[]): string[] {
+    const order: string[] = listed
+      .filter((n: string) => n.endsWith(BATCH_SUFFIX) && !this.ownNames.has(n))
+      .sort();
+    const onDisk: Set<string> = new Set<string>(listed);
+    for (const name of Array.from(this.ownNames)) {
+      if (name === this.activeName || this.hasUnwritten(name)) {
+        break;
+      }
+      if (onDisk.has(name)) {
+        order.push(name);
+      }
+    }
+    return order;
   }
 
   /**
@@ -953,18 +1021,18 @@ export class FilePersistenceStrategy implements UploadPersistence {
   }
 
   /** Like append, with the Promise API. A failed close does not fail it: the content was written. */
-  private static async appendAsync(path: string, content: string): Promise<boolean> {
+  private static async appendAsync(path: string, content: string): Promise<AppendResult> {
     let file: fs.File;
     try {
       file = await fs.open(path, fs.OpenMode.READ_WRITE | fs.OpenMode.CREATE | fs.OpenMode.APPEND);
     } catch (e) {
       FlashcatLog.e(`append failed path=${path}: ${FilePersistenceStrategy.errorText(e)}`);
-      return false;
+      return AppendResult.NOT_OPENED;
     }
-    let ok: boolean = false;
+    let result: AppendResult = AppendResult.WRITE_FAILED;
     try {
       await fs.write(file.fd, content);
-      ok = true;
+      result = AppendResult.WRITTEN;
     } catch (e) {
       FlashcatLog.e(`append failed path=${path}: ${FilePersistenceStrategy.errorText(e)}`);
     }
@@ -973,7 +1041,7 @@ export class FilePersistenceStrategy implements UploadPersistence {
     } catch (_e) {
       // The descriptor is gone either way.
     }
-    return ok;
+    return result;
   }
 
   private static unlinkQuietly(path: string): void {
