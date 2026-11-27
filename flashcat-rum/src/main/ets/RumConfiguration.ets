@@ -1,13 +1,13 @@
 import { RumEventMapper, BeforeSamplingCallback } from './RumTypes';
 import { VitalsUpdateFrequency, DEFAULT_VITALS_UPDATE_FREQUENCY } from './VitalsUpdateFrequency';
 
+/** Android parity (`RumFeature.DEFAULT_LONG_TASK_THRESHOLD_MS`). */
+export const DEFAULT_LONG_TASK_THRESHOLD_MS: number = 100;
+
 /**
  * RUM feature configuration. Built via {@link RumConfigurationBuilder}.
  * Mirrors `RumConfiguration.Builder(applicationId)` on Android.
  */
-/** Android parity (`RumFeature.DEFAULT_LONG_TASK_THRESHOLD_MS`). */
-export const DEFAULT_LONG_TASK_THRESHOLD_MS: number = 100;
-
 export class RumConfiguration {
   readonly applicationId: string;
   readonly sessionSampleRate: number;       // 0..100
