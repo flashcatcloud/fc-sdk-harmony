@@ -182,6 +182,10 @@ export class DefaultRumMonitor implements RumMonitor {
       FlashcatLog.usage('addTiming ignored: the name must be a string');
       return;
     }
+    if (name.trim().length === 0) {
+      FlashcatLog.usage('addTiming ignored: the name is empty');
+      return;
+    }
     this.dispatch('addTiming', () => {
       const e: RumRawEvent = this.raw('addTiming');
       e.name = name;

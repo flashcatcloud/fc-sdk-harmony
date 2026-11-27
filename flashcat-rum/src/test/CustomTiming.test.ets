@@ -190,6 +190,23 @@ export default function customTimingTests(): void {
       expect((timingsOf(scope.last('detail')) as Record<string, Object>)['detail_ready']).assertEqual(50 * MS_NS);
     });
 
+    it('anEmptyOrBlankNameIsIgnored', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+      const scope: CapturingScope = new CapturingScope();
+      const monitor: DefaultRumMonitor =
+        new DefaultRumMonitor(new FakeCore(), scope, new RumConfigurationBuilder('app-1').build());
+      monitor.stopKeepAlive();
+      monitor.startView('home', 'home');
+      monitor.addTiming('');
+      monitor.addTiming('   ');
+      monitor.drainPending();
+      expect(timingsOf(scope.last('home'))).assertUndefined();
+      // Control: a real name on the same view is recorded.
+      monitor.addTiming('ready');
+      monitor.drainPending();
+      const timings: Record<string, Object> = timingsOf(scope.last('home')) as Record<string, Object>;
+      expect(Object.keys(timings).join(',')).assertEqual('ready');
+    });
+
     it('withNoViewOpenATimingIsIgnoredAndStartsNoSession', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
       const scope: CapturingScope = new CapturingScope();
       const monitor: DefaultRumMonitor =

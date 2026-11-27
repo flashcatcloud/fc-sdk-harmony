@@ -8,7 +8,8 @@
   it. A later call with the same name replaces the value; the view's later
   documents keep every timing it has. Characters other than letters, digits,
   `-`, `_`, `.`, `@` and `$` in the name are replaced with `_`, as Android does.
-  A timing called with no view open, or after the view stopped, is ignored and
+  A timing with an empty (or blank) name, called with no view open, or after
+  the view stopped, is ignored and
   starts no session; the next view starts with no timings.
 
 ## 0.8.2

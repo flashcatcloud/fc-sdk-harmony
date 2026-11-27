@@ -40,8 +40,8 @@ export interface RumMonitor {
    * becomes the time from the view's start to now, in nanoseconds, sent with
    * the view document this call writes. Calling again with the same name
    * replaces the value. Characters other than letters, digits, `-`, `_`, `.`,
-   * `@` and `$` in the name are replaced with `_`. Ignored when no view is
-   * open. Same as Android's `addTiming(name)`.
+   * `@` and `$` in the name are replaced with `_`. Ignored when the name is
+   * empty (or only whitespace) or no view is open. Same as Android's `addTiming(name)`.
    */
   addTiming(name: string): void;
 
