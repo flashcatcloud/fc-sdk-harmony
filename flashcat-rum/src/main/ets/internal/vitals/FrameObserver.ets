@@ -190,7 +190,11 @@ export class FrameObserver implements VitalsCollector {
     const onLongTask: ((durationNs: number) => void) | null = this.onLongTask;
     if (onLongTask !== null && this.longTaskAboveNs > 0 && sample.isUiWork === true &&
       Number.isFinite(sample.durationNs) && sample.durationNs > this.longTaskAboveNs) {
-      onLongTask(sample.durationNs);
+      try {
+        onLongTask(sample.durationNs);
+      } catch (e) {
+        FrameObserver.log('long task not reported', e);
+      }
     }
   }
 

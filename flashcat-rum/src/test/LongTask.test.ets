@@ -4,6 +4,7 @@ import { FrameSample, ViewVitals } from '../main/ets/internal/vitals/ViewVitals'
 import { FrameObserver, FrameSource, FrameSourceFactory } from '../main/ets/internal/vitals/FrameObserver';
 import { FrameMetricsSource, Subscription } from '../main/ets/internal/vitals/SystemFrameSources';
 import { RumRawEvent } from '../main/ets/internal/scope/RumScope';
+import { VitalsCollectors } from '../main/ets/internal/vitals/VitalsCollector';
 import { RumApplicationScope } from '../main/ets/internal/scope/RumApplicationScope';
 import { DefaultRumMonitor } from '../main/ets/internal/monitor/DefaultRumMonitor';
 import { RumConfiguration, RumConfigurationBuilder } from '../main/ets/RumConfiguration';
@@ -36,6 +37,8 @@ class FakeSource implements FrameSource {
   }
 }
 
+let firstView: ViewVitals = new ViewVitals();
+
 /** An observer in the foreground, its source attached, with one view open; long tasks go to `seen`. */
 async function observing(source: FakeSource, seen: number[], thresholdNs: number = THRESHOLD_NS): Promise<FrameObserver> {
   const factory: FrameSourceFactory = (_c: Object): Promise<FrameSource | null> => Promise.resolve(source);
@@ -46,7 +49,8 @@ async function observing(source: FakeSource, seen: number[], thresholdNs: number
   frames.setForeground(true);
   frames.attach('ctx');
   await settle();
-  frames.register(new ViewVitals());
+  firstView = new ViewVitals();
+  frames.register(firstView);
   return frames;
 }
 
@@ -105,12 +109,18 @@ export default function longTaskTests(): void {
         const source: FakeSource = new FakeSource();
         const seen: number[] = [];
         const frames: FrameObserver = await observing(source, seen);
+        const view: ViewVitals = new ViewVitals();
+        frames.register(view);
+        frames.unregister(firstView);
         frames.setForeground(false);
         source.push(frame(5000 * MS));
         expect(seen.length).assertEqual(0);
         frames.setForeground(true);
         source.push(frame(400 * MS));
         expect(seen.length).assertEqual(1); // control: the same observer reports once back in the foreground
+        frames.unregister(view);
+        source.push(frame(400 * MS));
+        expect(seen.length).assertEqual(1); // no view open
       });
 
     it('theFrameMetricsPathMarksItsFramesAsUiWork',
@@ -156,8 +166,36 @@ export default function longTaskTests(): void {
         const views: Array<Record<string, Object>> = scope.views();
         expect(longTaskCountOf(views[0])).assertEqual(0);
         expect(longTaskCountOf(views[views.length - 1])).assertEqual(2);
-        // Frozen frames belong to the frame observer: a long task over 700 ms adds none.
-        expect(views[views.length - 1]['frozen_frame']).assertUndefined();
+      });
+
+    it('aFrozenLongFrameIsOneFrozenFrameAndOneLongTask',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, async (): Promise<void> => {
+        // The whole path: frame source -> observer -> views and the scope tree.
+        const scope: CapturingScope = new CapturingScope();
+        const source: FakeSource = new FakeSource();
+        let app: RumApplicationScope | null = null;
+        const factory: FrameSourceFactory = (_c: Object): Promise<FrameSource | null> => Promise.resolve(source);
+        const frames: FrameObserver = new FrameObserver(factory, (): number => 500, THRESHOLD_NS,
+          (durationNs: number): void => {
+            const e: RumRawEvent = raw('addLongTask', Date.now());
+            e.longTaskDurationNs = durationNs;
+            (app as RumApplicationScope).handleEvent(e);
+          });
+        app = new RumApplicationScope(scope, new FakeCore(), 'app-1', 100, null, null, null, false,
+          new VitalsCollectors([frames]));
+        frames.setForeground(true);
+        frames.attach('ctx');
+        await settle();
+        app.handleEvent(raw('startView', Date.now(), 'home'));
+        source.push(frame(900 * MS));
+        const tasks: Array<Record<string, Object>> = longTasks(scope);
+        expect(tasks.length).assertEqual(1);
+        expect((tasks[0]['long_task'] as Record<string, Object>)['is_frozen_frame']).assertTrue();
+        const views: Array<Record<string, Object>> = scope.views();
+        const last: Record<string, Object> = views[views.length - 1];
+        expect(longTaskCountOf(last)).assertEqual(1);
+        // Counted once, by the frame measurement: the long task adds no second frozen frame.
+        expect((last['frozen_frame'] as Record<string, Object>)['count']).assertEqual(1);
       });
 
     it('aLongTaskOutsideAViewOrASessionIsDropped',

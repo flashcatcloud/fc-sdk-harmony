@@ -386,6 +386,8 @@ export class RumViewScope implements RumScope {
   }
 
   private writeLongTask(raw: RumRawEvent): void {
+    // The frame is reported once its work is done: its start is when it was seen
+    // minus its UI work (close to, not exactly, when the frame began).
     const durationNs: number = Math.round(raw.longTaskDurationNs ?? 0);
     this.featureScope.withWriteContext((context: FlashcatContext, writer: EventWriter) => {
       const event: Record<string, Object> = RumEventAssembler.longTask(
