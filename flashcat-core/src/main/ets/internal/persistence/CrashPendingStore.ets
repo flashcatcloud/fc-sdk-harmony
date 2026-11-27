@@ -72,7 +72,13 @@ export class CrashPendingStore implements FeatureEventReceiver {
   onReceive(event: Record<string, Object>): void {
     const type: string = CrashPendingStore.stringValue(event['type']);
     if (type === 'crash_storage_write') {
-      this.beforeIncidentWrite();
+      // The incident is what matters here: a flush that throws must not keep
+      // it from being written.
+      try {
+        this.beforeIncidentWrite();
+      } catch (e) {
+        FlashcatLog.e(`crash storage: flush before incident failed: ${e instanceof Error ? e.message : 'error'}`);
+      }
       const incidentId: string = CrashPendingStore.safeId(
         CrashPendingStore.stringValue(event['incident_id']));
       const serialized: string = CrashPendingStore.stringValue(event['serialized']);
