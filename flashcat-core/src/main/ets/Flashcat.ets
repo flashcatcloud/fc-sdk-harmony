@@ -152,8 +152,11 @@ export class Flashcat {
    * instance: every feature's batches, events buffered while consent is
    * pending, and crashes waiting to be reported on the next launch. The SDK
    * keeps running — the current session, uploads and consent are unchanged,
-   * and events recorded afterwards are kept and uploaded as usual. Same as
-   * Android's `Datadog.clearAllData`.
+   * and events recorded afterwards are kept and uploaded as usual. The device
+   * id is deleted too: the running process keeps its current id, and a new one
+   * is generated at the next launch. An upload already in flight is not
+   * cancelled and may still complete, so data in that request can still reach
+   * the server. Same as Android's `Datadog.clearAllData`.
    */
   static clearAllData(instanceName?: string): void {
     const core: FlashcatCore | null = Flashcat.coreOrLog('clearAllData', instanceName);
