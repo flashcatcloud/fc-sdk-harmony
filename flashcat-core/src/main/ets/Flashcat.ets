@@ -148,6 +148,26 @@ export class Flashcat {
   }
 
   /**
+   * Delete all data collected and not uploaded yet, for the default (or named)
+   * instance: every feature's batches, events buffered while consent is
+   * pending, and crashes waiting to be reported on the next launch. The SDK
+   * keeps running — the current session, uploads and consent are unchanged,
+   * and events recorded afterwards are kept and uploaded as usual. Same as
+   * Android's `Datadog.clearAllData`.
+   */
+  static clearAllData(instanceName?: string): void {
+    const core: FlashcatCore | null = Flashcat.coreOrLog('clearAllData', instanceName);
+    if (core === null) {
+      return;
+    }
+    try {
+      core.clearAllData();
+    } catch (error) {
+      FlashcatLog.e(`clearAllData failed: ${Flashcat.errorText(error)}`);
+    }
+  }
+
+  /**
    * The instance a host-facing call acts on. A call made before initialize (or
    * after stopInstance) is a no-op the log explains — not an exception in the host.
    */

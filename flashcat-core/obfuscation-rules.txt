@@ -19,6 +19,7 @@
   clearUserInfo
   flush
   flushAndWait
+  clearAllData
   stopInstance
   setUploadFrequency
   setBatchSize

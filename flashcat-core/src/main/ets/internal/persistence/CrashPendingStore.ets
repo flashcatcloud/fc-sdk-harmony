@@ -101,7 +101,8 @@ export class CrashPendingStore implements FeatureEventReceiver {
       event['serialized'] = this.readSidecar(LAST_VIEW_FILE);
     } else if (type === 'crash_storage_delete_last_view') {
       this.deleteLastView();
-    } else if (type === 'crash_storage_consent_revoked') {
+    } else if (type === 'crash_storage_wipe') {
+      // Consent refused, or the host cleared all data.
       this.deleteLastView();
       this.deleteAllIncidents();
     }

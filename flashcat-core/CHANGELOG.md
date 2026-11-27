@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+- `Flashcat.clearAllData(instanceName?)`, as Android's `Datadog.clearAllData`:
+  deletes all data collected and not uploaded yet — every feature's batches
+  (including one being uploaded), the events buffered while consent is pending,
+  the crashes waiting to be reported on the next launch, and the RUM view
+  snapshot. The SDK is not stopped: uploads, the tracking consent and the
+  current RUM session carry on, and events recorded afterwards are kept and
+  uploaded as usual. Events RUM still holds queued are written first, so they
+  are deleted too. Ignored in the deferred-upload process. Kept: the device's
+  anonymous id, the consent record, the remote configuration cache and the
+  crash de-duplication and crash-loop records (hashes and timestamps only).
+
 ## 0.8.2
 
 - `SdkCore.liveWindowContexts()`: the context of every ability whose window
