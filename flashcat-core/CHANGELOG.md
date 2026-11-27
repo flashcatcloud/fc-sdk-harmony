@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- The network context follows a network coming back after a loss right away:
+  events stop reporting `not_connected` as soon as the system says a network
+  is available, instead of at its next capability change.
+
 ## 0.8.2
 
 - `SdkCore.liveWindowContexts()`: the context of every ability whose window
