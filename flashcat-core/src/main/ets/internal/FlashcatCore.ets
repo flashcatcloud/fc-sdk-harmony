@@ -106,7 +106,10 @@ export class FlashcatCore implements SdkCore {
     this.contextProvider = new ContextProvider(
       context, configuration,
       this.consent !== TrackingConsent.NOT_GRANTED && !backgroundProcess);
-    this.crashPendingStore = new CrashPendingStore(context, !backgroundProcess);
+    // A crash record is written while the process may be going down: the
+    // events buffered before it have to be on disk first.
+    this.crashPendingStore = new CrashPendingStore(context, !backgroundProcess,
+      () => this.features.forEach((r: RegisteredFeature) => r.persistence.flushBuffered()));
   }
 
   /** Called by Flashcat.initialize. Flush buffered events when the app backgrounds. */
@@ -451,8 +454,12 @@ export class FlashcatCore implements SdkCore {
     } else {
       // → PENDING: stop uploading; new events buffer separately until a decision.
       // The persisted background job is cancelled too — an extension wake-up has
-      // nothing uploadable until the user decides.
-      this.features.forEach((r: RegisteredFeature) => r.scheduler.stop());
+      // nothing uploadable until the user decides. Events collected under the
+      // previous consent are written out now, under it.
+      this.features.forEach((r: RegisteredFeature) => {
+        r.persistence.flushBuffered();
+        r.scheduler.stop();
+      });
       this.deferredUploadRegistrar.deregister(this.deferredWorkOptions());
     }
   }
@@ -808,8 +815,13 @@ class PersistenceEventWriter implements EventWriter {
       // none can happen, so the event joins the active batch (which still rolls
       // on age) instead of closing it: offline, every failed request would
       // otherwise open a new batch file and trigger a doomed upload.
+      // It is still written to disk at once: a force-flushed event (an error,
+      // a crash) may be the last thing the process does.
       const force: boolean = forceFlush === true && !this.backingOff();
-      const ok: boolean = this.persistence.write(line, force);
+      let ok: boolean = this.persistence.write(line, force);
+      if (ok && forceFlush === true && !force) {
+        ok = this.persistence.flushBuffered();
+      }
       if (ok && force) {
         this.flushTrigger();
       }

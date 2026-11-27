@@ -163,11 +163,12 @@ export default function uploadThrottleTests(): void {
     it('shortWindowMakesWrittenEventDrainableWithoutForceRoll',
       TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, async (): Promise<void> => {
         // 1 ms window → once any real time has passed the active batch is past
-        // its roll age, so the event drains without a forceRoll.
+        // its roll age, so the event drains without a forceRoll once the
+        // buffered line is on disk (within the 250 ms flush delay).
         const persistence: FilePersistenceStrategy =
           new FilePersistenceStrategy(fakeContext(), 'rum', 1);
         persistence.write('{"type":"view","date":1}', false);
-        await delay(30);
+        await delay(300);
 
         expect(persistence.readNextBatch() !== null).assertTrue();
       });

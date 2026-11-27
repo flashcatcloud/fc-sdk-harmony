@@ -6,6 +6,17 @@
   `buffer.byteLength` instead of a per-character loop in ArkTS, the largest
   single main-thread cost of writing an event. The counts are unchanged,
   including a lone surrogate (3 bytes, the replacement character).
+- Events are buffered in memory and appended to their batch file together,
+  with the asynchronous file API, at most 250 ms after they are written or as
+  soon as 64 KB are waiting. A write no longer opens, writes and closes the
+  file on the main thread. Backgrounding, `stop`, a consent change, a crash
+  record and a force-flushed event (errors) still write the buffer
+  synchronously, so a process that is backgrounded or has an ArkTS crash
+  loses nothing; a native crash, a freeze or a process killed outright while
+  in the foreground can lose the events of its last 250 ms. Revoking consent discards the buffer. The active batch
+  rolls 250 ms before its window ends, so it is complete on disk before
+  another process may claim it, and the disk quota is enforced at every
+  append.
 
 ## 0.8.2
 
