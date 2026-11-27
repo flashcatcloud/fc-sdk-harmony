@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+- The context's device carries the preferred languages (`locale`, `locales`),
+  the time zone, the battery level (0–1, read at most once a minute) and
+  whether a power saving mode is on (power save, extreme power save or custom
+  power save). Languages, time zone and power saving are read at
+  initialization and again when the system announces a change
+  (`usual.event.LOCALE_CHANGED`, `TIMEZONE_CHANGED`,
+  `POWER_SAVE_MODE_CHANGED`); the subscription ends when the SDK stops. A value
+  the system cannot give is left out. No permission is needed.
+
 ## 0.8.2
 
 - `SdkCore.liveWindowContexts()`: the context of every ability whose window
