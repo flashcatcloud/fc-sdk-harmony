@@ -1,4 +1,5 @@
 import { common } from '@kit.AbilityKit';
+import { buffer } from '@kit.ArkTS';
 import { fileIo as fs } from '@kit.CoreFileKit';
 import { FlashcatLog } from '../FlashcatLog';
 import { BatchSize } from '../../config/Batching';
@@ -718,28 +719,14 @@ export class FilePersistenceStrategy implements UploadPersistence {
     this.sizes = next;
   }
 
-  /** UTF-8 byte length of a string (what lands on disk / on the wire). */
+  /**
+   * UTF-8 byte length of a string (what lands on disk / on the wire). Native:
+   * a per-character JS loop here was the largest single cost of a write. A
+   * valid surrogate pair counts 4 bytes; a lone surrogate counts 3, the
+   * replacement character the encoder emits for it.
+   */
   static utf8Length(s: string): number {
-    let bytes: number = 0;
-    for (let i: number = 0; i < s.length; i++) {
-      const code: number = s.charCodeAt(i);
-      if (code < 0x80) {
-        bytes += 1;
-      } else if (code < 0x800) {
-        bytes += 2;
-      } else if (code >= 0xD800 && code <= 0xDBFF) {
-        const next: number = i + 1 < s.length ? s.charCodeAt(i + 1) : 0;
-        if (next >= 0xDC00 && next <= 0xDFFF) {
-          bytes += 4; // valid surrogate pair → one 4-byte code point
-          i += 1;
-        } else {
-          bytes += 3; // lone high surrogate → encoder emits a 3-byte replacement
-        }
-      } else {
-        bytes += 3;
-      }
-    }
-    return bytes;
+    return buffer.byteLength(s, 'utf-8');
   }
 
   private static append(path: string, content: string): boolean {

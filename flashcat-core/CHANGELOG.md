@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- Storage counts an event's UTF-8 bytes with the runtime's native
+  `buffer.byteLength` instead of a per-character loop in ArkTS, the largest
+  single main-thread cost of writing an event. The counts are unchanged,
+  including a lone surrogate (3 bytes, the replacement character).
+
 ## 0.8.2
 
 - `SdkCore.liveWindowContexts()`: the context of every ability whose window

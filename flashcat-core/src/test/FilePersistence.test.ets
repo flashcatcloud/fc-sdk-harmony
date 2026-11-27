@@ -38,6 +38,67 @@ function batchCount(context: common.Context): number {
   return fs.listFileSync(dir).filter((n: string) => n.endsWith('.ndjson')).length;
 }
 
+// The per-character count utf8Length used before it went native: the reference
+// the native count must match exactly, lone surrogates included.
+function loopUtf8Length(s: string): number {
+  let bytes: number = 0;
+  for (let i: number = 0; i < s.length; i++) {
+    const code: number = s.charCodeAt(i);
+    if (code < 0x80) {
+      bytes += 1;
+    } else if (code < 0x800) {
+      bytes += 2;
+    } else if (code >= 0xD800 && code <= 0xDBFF) {
+      const next: number = i + 1 < s.length ? s.charCodeAt(i + 1) : 0;
+      if (next >= 0xDC00 && next <= 0xDFFF) {
+        bytes += 4;
+        i += 1;
+      } else {
+        bytes += 3;
+      }
+    } else {
+      bytes += 3;
+    }
+  }
+  return bytes;
+}
+
+function hasSurrogate(text: string): boolean {
+  for (let i: number = 0; i < text.length; i++) {
+    const code: number = text.charCodeAt(i);
+    if (code >= 0xD800 && code <= 0xDFFF) {
+      return true;
+    }
+  }
+  return false;
+}
+
+// Deterministic so a failure reproduces: ASCII, two-byte, CJK, emoji pairs, and
+// lone or mismatched surrogates, in random order and length (0 included).
+function randomText(next: () => number): string {
+  const length: number = Math.floor(next() * 40);
+  let out: string = '';
+  for (let i: number = 0; i < length; i++) {
+    const kind: number = Math.floor(next() * 7);
+    if (kind === 0) {
+      out += String.fromCharCode(Math.floor(next() * 0x80));
+    } else if (kind === 1) {
+      out += String.fromCharCode(0x80 + Math.floor(next() * 0x780));
+    } else if (kind === 2) {
+      out += String.fromCharCode(0x4E00 + Math.floor(next() * 0x5200));
+    } else if (kind === 3) {
+      out += String.fromCharCode(0xD83D, 0xDE00 + Math.floor(next() * 0x50)); // emoji pair
+    } else if (kind === 4) {
+      out += String.fromCharCode(0xD800 + Math.floor(next() * 0x400)); // high, maybe lone
+    } else if (kind === 5) {
+      out += String.fromCharCode(0xDC00 + Math.floor(next() * 0x400)); // low, maybe lone
+    } else {
+      out += String.fromCharCode(0xE000 + Math.floor(next() * 0x2000));
+    }
+  }
+  return out;
+}
+
 export default function filePersistenceTests(): void {
   describe('FilePersistence', (): void => {
     it('migrationDropsEventsOlderThanRetentionWindow',
@@ -225,6 +286,30 @@ export default function filePersistenceTests(): void {
         }
         // One listing per idle pass (the batch list), not two.
         expect(calls()['listFileSync'] - before).assertEqual(10);
+      });
+    it('utf8LengthMatchesThePerCharacterCountOnRandomText',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        let seed: number = 20261127;
+        const next: () => number = (): number => {
+          seed = (seed * 1103515245 + 12345) % 2147483648;
+          return seed / 2147483648;
+        };
+        const fixed: string[] = ['', 'a', '\uD800', '\uDC00', '\uD800\uD800', '\uDC00\uD800', 'x\uD83D', '\uD83D\uDE00', '中文'];
+        let mismatches: number = 0;
+        let surrogateCases: number = 0;
+        for (let i: number = 0; i < 10000 + fixed.length; i++) {
+          const text: string = i < fixed.length ? fixed[i] : randomText(next);
+          if (hasSurrogate(text)) {
+            surrogateCases += 1;
+          }
+          if (FilePersistenceStrategy.utf8Length(text) !== loopUtf8Length(text)) {
+            mismatches += 1;
+          }
+        }
+        expect(mismatches).assertEqual(0);
+        expect(surrogateCases > 5000).assertTrue();
+        expect(FilePersistenceStrategy.utf8Length('\uD800')).assertEqual(3);
+        expect(FilePersistenceStrategy.utf8Length('\uD83D\uDE00')).assertEqual(4);
       });
   });
 }

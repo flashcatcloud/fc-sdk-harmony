@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- The thread budget of a crash counts UTF-8 bytes with the runtime's native
+  `buffer.byteLength`. A surrogate pair now counts its real 4 bytes instead of
+  6, so a dump with emoji in thread names or symbols can keep slightly more
+  threads; the 200,000-byte budget itself is unchanged.
+
 ## 0.8.2
 
 - No changes; released together with `@flashcatcloud/core`, `rum`, `trace` and `axios` 0.8.2.
