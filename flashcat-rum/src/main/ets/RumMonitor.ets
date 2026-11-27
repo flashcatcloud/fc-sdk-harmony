@@ -35,6 +35,22 @@ export interface RumMonitor {
    */
   reportAppFullyDisplayed(): void;
 
+  /**
+   * Add attributes to the open view. The view's later documents and every
+   * event recorded in it from now on (actions, resources, errors) carry them,
+   * until the view stops; the next view starts without them. A key already
+   * set on the view is replaced. Ignored when no view is open. Same as
+   * Android's `addViewAttributes`.
+   */
+  addViewAttributes(attributes: Record<string, Object>): void;
+
+  /**
+   * Remove attributes from the open view, by key: its later documents and the
+   * events recorded in it from now on no longer carry them. Global attributes
+   * (`addAttribute`) are not affected. Same as Android's `removeViewAttributes`.
+   */
+  removeViewAttributes(keys: Array<string>): void;
+
   addAction(type: RumActionType, name: string, attributes?: Record<string, Object>): void;
   startAction(type: RumActionType, name: string, attributes?: Record<string, Object>): void;
   stopAction(type: RumActionType, name: string, attributes?: Record<string, Object>): void;
@@ -104,6 +120,8 @@ class NoOpRumMonitor implements RumMonitor {
   stopView(key: string, attributes?: Record<string, Object>): void {}
   addViewLoadingTime(overwrite: boolean): void {}
   reportAppFullyDisplayed(): void {}
+  addViewAttributes(attributes: Record<string, Object>): void {}
+  removeViewAttributes(keys: Array<string>): void {}
   addAction(type: RumActionType, name: string, attributes?: Record<string, Object>): void {}
   startAction(type: RumActionType, name: string, attributes?: Record<string, Object>): void {}
   stopAction(type: RumActionType, name: string, attributes?: Record<string, Object>): void {}

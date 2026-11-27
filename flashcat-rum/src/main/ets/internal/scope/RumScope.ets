@@ -12,7 +12,7 @@ export interface RumRawEvent {
   kind: string;                 // 'startView' | 'stopView' | 'addAction' | 'addError'
                                 // | 'startResource' | 'stopResource' | 'stopResourceWithError'
                                 // | 'keepAlive' | 'markCrash' | 'appLaunch' | 'addViewLoadingTime'
-                                // | 'openLaunchView'
+                                // | 'openLaunchView' | 'addViewAttributes' | 'removeViewAttributes'
                                 // markCrash: bump the active view's error+crash counts without
                                 // writing an error event (the error itself is delivered by the
                                 // durable pending-incident replay at next launch).
@@ -49,6 +49,9 @@ export interface RumRawEvent {
   // view loading time (kind === 'addViewLoadingTime'); timestampMs is when the view loaded
   overwrite?: boolean;          // manual: replace a value an earlier manual call set
   loadingTimeAuto?: boolean;    // measured by the SDK for the router page `key`
+
+  // view attributes (kind === 'addViewAttributes' carries them in `attributes`)
+  attributeKeys?: string[];     // kind === 'removeViewAttributes': the keys to remove
 
   // resource specifics (kind === 'startResource' | 'stopResource')
   url?: string;

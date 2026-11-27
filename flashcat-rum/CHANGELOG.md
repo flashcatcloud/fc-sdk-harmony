@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+- `addViewAttributes(attributes)` and `removeViewAttributes(keys)` on the RUM
+  monitor, as on Android. Attributes added to the open view are carried by its
+  later view documents and by every action, resource and error recorded in it
+  from then on, until the view stops; the next view starts without them. Adding
+  attributes writes no view document of its own: the view's next update carries
+  them. Removing a key affects the view's attributes only, not global ones. With
+  no view open, both calls are ignored and start no session.
+- Resources now carry their view's attributes (those passed to `startView`,
+  and those added since), under the resource's own, as on Android. Before, a
+  resource carried only the global attributes and its own.
+
 ## 0.8.2
 
 - Frame rate, slow and frozen frames, and app launch timing no longer need

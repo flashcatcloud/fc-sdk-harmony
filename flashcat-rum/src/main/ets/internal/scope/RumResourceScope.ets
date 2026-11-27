@@ -85,7 +85,7 @@ export class RumResourceScope {
    * process may have been frozen, so the wall-clock delta can span hours the
    * request never ran. Its phases go with it.
    */
-  stop(raw: RumRawEvent): void {
+  stop(raw: RumRawEvent, viewAttributes: Record<string, Object>): void {
     const durationNs: number | undefined = this.spannedBackground()
       ? undefined
       : Math.max(0, raw.timestampMs - this.startedAtMs) * MS_TO_NS;
@@ -93,7 +93,7 @@ export class RumResourceScope {
     const phases: Record<string, Object> = durationNs !== undefined && typeof timing === 'object' && timing !== null
       ? resourcePhases(timing as Record<string, Object>, durationNs)
       : {};
-    const attrs: Record<string, Object> = this.mergedAttributes(raw);
+    const attrs: Record<string, Object> = this.mergedAttributes(raw, viewAttributes);
     this.featureScope.withWriteContext((context: FlashcatContext, writer: EventWriter) => {
       const event: Record<string, Object> = RumEventAssembler.resource(
         context, this.applicationId, this.sessionId, this.viewId, this.viewName,
@@ -105,8 +105,8 @@ export class RumResourceScope {
   }
 
   /** Request failed — emit a network ErrorEvent carrying the resource info. */
-  stopWithError(raw: RumRawEvent): void {
-    const attrs: Record<string, Object> = this.mergedAttributes(raw);
+  stopWithError(raw: RumRawEvent, viewAttributes: Record<string, Object>): void {
+    const attrs: Record<string, Object> = this.mergedAttributes(raw, viewAttributes);
     this.featureScope.withWriteContext((context: FlashcatContext, writer: EventWriter) => {
       const event: Record<string, Object> = RumEventAssembler.error(
         context, this.applicationId, this.sessionId, this.viewId, this.viewName,
@@ -128,9 +128,16 @@ export class RumResourceScope {
       || AppForegroundHistory.backgroundCount() !== this.backgroundCountAtStart;
   }
 
-  /** Start attributes overlaid with stop-time attributes (stop wins). */
-  private mergedAttributes(stop: RumRawEvent): Record<string, Object> {
+  /**
+   * The view's attributes when the request completes, overlaid with the start
+   * attributes, then the stop-time ones (stop wins) — Android's
+   * `parentScope.getCustomAttributes() + resourceAttributes`.
+   */
+  private mergedAttributes(stop: RumRawEvent, viewAttributes: Record<string, Object>): Record<string, Object> {
     const attrs: Record<string, Object> = {};
+    for (const k of Object.keys(viewAttributes)) {
+      attrs[k] = viewAttributes[k];
+    }
     for (const k of Object.keys(this.attributes)) {
       attrs[k] = this.attributes[k];
     }

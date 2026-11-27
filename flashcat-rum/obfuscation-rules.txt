@@ -7,6 +7,8 @@
   enable
   startView
   stopView
+  addViewAttributes
+  removeViewAttributes
   addAction
   startAction
   stopAction
