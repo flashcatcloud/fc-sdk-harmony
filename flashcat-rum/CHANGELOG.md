@@ -24,6 +24,22 @@
   steps by name and key. A blank name, or a key given but blank, is ignored
   with a warning. The steps follow session sampling and are held with the rest
   of a session kept only on error.
+- Long tasks, on by default as on Android: a drawn frame whose UI work (input
+  handling plus layout and measure) takes longer than 100 ms is reported as a
+  `long_task` event on the current view — `date` when it started,
+  `long_task.duration` in nanoseconds, `long_task.is_frozen_frame` over
+  700 ms — and counted in `view.long_task.count`, which every view now
+  carries. Change the threshold, or pass 0 to turn them off, with
+  `RumConfigurationBuilder.trackLongTasks(thresholdMs)`. A frame over
+  700 ms is counted in `view.frozen_frame` by the frame measurement and is also
+  emitted as a long task with `is_frozen_frame` true; the long task itself does
+  not increment `view.frozen_frame` a second time.
+  Long tasks come from the frames the SDK already observes, with no extra
+  sampling: only a stall that delays a redraw is seen, not work that blocks
+  the main thread while nothing needs redrawing, and nothing is seen on API
+  levels below 22, where the system reports no frame durations, or while
+  `setVitalsUpdateFrequency(NEVER)` stops frame measurement. A long task has
+  no stack; the main-thread jank errors of the same time point to the code.
 
 ## 0.8.2
 

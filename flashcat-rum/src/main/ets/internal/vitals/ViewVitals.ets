@@ -32,6 +32,8 @@ export interface FrameSample {
   periodNs: number;
   /** A frame longer than this, and not frozen, is slow. */
   slowAboveNs: number;
+  /** `durationNs` is UI work the frame waited for (API 22+), so a long one is a long task. */
+  isUiWork?: boolean;
 }
 
 // Android parity (SlowFramesConfiguration / RumViewScope defaults).

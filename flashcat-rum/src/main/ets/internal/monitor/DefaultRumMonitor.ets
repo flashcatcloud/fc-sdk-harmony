@@ -219,6 +219,15 @@ export class DefaultRumMonitor implements RumMonitor {
     });
   }
 
+  /** Internal: a drawn frame whose UI work took `durationNs`, longer than the long task threshold. */
+  addLongTask(durationNs: number): void {
+    this.dispatch('addLongTask', () => {
+      const e: RumRawEvent = this.raw('addLongTask');
+      e.longTaskDurationNs = durationNs;
+      return e;
+    });
+  }
+
   stopView(key: string, attributes?: Record<string, Object>): void {
     this.dispatch('stopView', () => {
       const e: RumRawEvent = this.raw('stopView', attributes);
