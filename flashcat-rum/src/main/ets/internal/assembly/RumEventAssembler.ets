@@ -93,6 +93,7 @@ export class RumEventAssembler {
     event['view'] = view;
 
     RumEventAssembler.applyContext(event, context, attributes);
+    RumEventAssembler.applyPowerState(event, context);
     return event;
   }
 
@@ -194,6 +195,7 @@ export class RumEventAssembler {
     }
 
     RumEventAssembler.applyContext(event, context, attributes);
+    RumEventAssembler.applyPowerState(event, context);
     return event;
   }
 
@@ -252,6 +254,57 @@ export class RumEventAssembler {
     vital['app_launch_metric'] = metric;
     vital['duration'] = durationNs;
     vital['startup_type'] = startupType;
+    event['vital'] = vital;
+
+    RumEventAssembler.applyContext(event, context, attributes);
+    RumEventAssembler.applyPowerState(event, context);
+    return event;
+  }
+
+  /**
+   * One step of a feature operation (`type: vital`, `vital.type:
+   * operation_step`), as the Android SDK writes it. No duration: the backend
+   * measures the operation from its start and end steps.
+   */
+  static operationStep(
+    context: FlashcatContext,
+    applicationId: string,
+    sessionId: string,
+    viewId: string,
+    viewName: string,
+    name: string,
+    operationKey: string | undefined,
+    stepType: string,
+    failureReason: string | undefined,
+    dateMs: number,
+    attributes: Record<string, Object>,
+    draw: DrawnConfiguration | null = null,
+    sampledForError: boolean = false
+  ): Record<string, Object> {
+    const event: Record<string, Object> = {};
+    event['type'] = 'vital';
+    event['date'] = dateMs;
+    event['_dd'] = RumEventAssembler.dd(0, draw, sampledForError);
+    event['application'] = RumEventAssembler.idObj(applicationId);
+    event['session'] = RumEventAssembler.session(sessionId);
+
+    const view: Record<string, Object> = {};
+    view['id'] = viewId;
+    view['url'] = RumEventAssembler.viewUrl(viewName, attributes);
+    view['name'] = viewName;
+    event['view'] = view;
+
+    const vital: Record<string, Object> = {};
+    vital['id'] = util.generateRandomUUID(true);
+    vital['type'] = 'operation_step';
+    vital['name'] = name;
+    if (operationKey !== undefined) {
+      vital['operation_key'] = operationKey;
+    }
+    vital['step_type'] = stepType;
+    if (failureReason !== undefined) {
+      vital['failure_reason'] = failureReason;
+    }
     event['vital'] = vital;
 
     RumEventAssembler.applyContext(event, context, attributes);
@@ -502,6 +555,16 @@ export class RumEventAssembler {
     device['brand'] = context.device.brand;
     device['model'] = context.device.model;
     device['name'] = context.device.model;
+    // Android parity: the languages and the time zone go on every event.
+    if (context.device.locale !== undefined) {
+      device['locale'] = context.device.locale;
+    }
+    if (context.device.locales !== undefined) {
+      device['locales'] = context.device.locales.slice(); // the event is the mapper's to edit; the context is shared
+    }
+    if (context.device.timeZone !== undefined) {
+      device['time_zone'] = context.device.timeZone;
+    }
     event['device'] = device;
 
     const connectivity: Record<string, Object> = {};
@@ -553,6 +616,20 @@ export class RumEventAssembler {
       ctx[k] = attributes[k];
     }
     event['context'] = ctx;
+  }
+
+  /**
+   * Android parity: the battery level and power saving mode go on views,
+   * errors and app launches only. After applyContext, which writes `device`.
+   */
+  private static applyPowerState(event: Record<string, Object>, context: FlashcatContext): void {
+    const device: Record<string, Object> = event['device'] as Record<string, Object>;
+    if (context.device.batteryLevel !== undefined) {
+      device['battery_level'] = context.device.batteryLevel;
+    }
+    if (context.device.powerSavingMode !== undefined) {
+      device['power_saving_mode'] = context.device.powerSavingMode;
+    }
   }
 
   private static isInternalAttribute(key: string): boolean {

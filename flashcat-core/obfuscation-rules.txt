@@ -17,8 +17,10 @@
   setTrackingConsent
   setUserInfo
   clearUserInfo
+  addUserProperties
   flush
   flushAndWait
+  clearAllData
   stopInstance
   setUploadFrequency
   setBatchSize

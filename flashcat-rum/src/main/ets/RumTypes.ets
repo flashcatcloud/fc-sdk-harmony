@@ -71,6 +71,16 @@ export enum RumResourceKind {
   OTHER = 'other'
 }
 
+/**
+ * Why a feature operation failed, reported on its end step as
+ * `vital.failure_reason`. Same values as Android's `FailureReason`.
+ */
+export enum FeatureOperationFailureReason {
+  ERROR = 'error',
+  ABANDONED = 'abandoned',
+  OTHER = 'other'
+}
+
 export enum RumResourceMethod {
   GET = 'GET',
   POST = 'POST',

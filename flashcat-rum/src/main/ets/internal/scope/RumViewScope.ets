@@ -186,12 +186,12 @@ export class RumViewScope implements RumScope {
       case 'addAction':
         this.actionCount += 1;
         this.writeAction(event);
-        if (RumViewScope.deferring) {
-          this.deferredViewAtMs = Math.max(this.deferredViewAtMs, event.timestampMs);
-          RumViewScope.deferred.add(this);
-        } else {
-          this.writeViewEvent(event.timestampMs);
-        }
+        this.writeViewUpdate(event.timestampMs);
+        return this;
+      case 'operationStep':
+        // Counted nowhere on the view; the view document is refreshed, as Android does.
+        this.writeOperationStep(event);
+        this.writeViewUpdate(event.timestampMs);
         return this;
       case 'addLongTask':
         if (!this.active) {
@@ -381,6 +381,26 @@ export class RumViewScope implements RumScope {
         context, this.applicationId, this.sessionId, this.viewId, this.viewName,
         this.startedAtMs, timeSpentNs, actions, errors, resources, crashes, version, isActive,
         this.viewAttributes(), this.draw, this.sampledForError, vitalFields);
+      writeMapped(writer, event, false);
+    });
+  }
+
+  /** Refresh the view document now, or once the queue drain ends when writes are deferred. */
+  private writeViewUpdate(atMs: number): void {
+    if (RumViewScope.deferring) {
+      this.deferredViewAtMs = Math.max(this.deferredViewAtMs, atMs);
+      RumViewScope.deferred.add(this);
+    } else {
+      this.writeViewEvent(atMs);
+    }
+  }
+
+  private writeOperationStep(raw: RumRawEvent): void {
+    this.featureScope.withWriteContext((context: FlashcatContext, writer: EventWriter) => {
+      const event: Record<string, Object> = RumEventAssembler.operationStep(
+        context, this.applicationId, this.sessionId, this.viewId, this.viewName,
+        raw.name ?? '', raw.operationKey, raw.operationStepType ?? 'start', raw.operationFailureReason,
+        raw.timestampMs, this.viewAttributes(raw.attributes), this.draw, this.sampledForError);
       writeMapped(writer, event, false);
     });
   }

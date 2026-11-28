@@ -2,6 +2,28 @@
 
 ## Unreleased
 
+- Every event carries `device.locale`, `device.locales` and
+  `device.time_zone`; views, errors and app launches also carry
+  `device.battery_level` and `device.power_saving_mode`, as on Android. A
+  crash reported at the next launch carries the device state of the run that
+  crashed.
+- Released with `Flashcat.clearAllData()` (`@flashcatcloud/core`). When the
+  data is cleared, RUM writes the running session's record back to the view
+  snapshot at once, without its view, so a native crash or freeze from then on
+  is still reported in that session; the session's next view document goes on
+  file as soon as it is written. The stored active-device beacon and today's
+  sent marker are dropped, as Android does, so the beacon is sent again on the
+  next trigger. A session kept only on error keeps the events it holds in
+  memory, as on Android.
+- Feature operations, as on Android and iOS: `startFeatureOperation`,
+  `succeedFeatureOperation` and `failFeatureOperation` on the RUM monitor, with
+  `FeatureOperationFailureReason` (`ERROR`, `ABANDONED`, `OTHER`). Each call
+  reports a `vital` event of type `operation_step` on the current view, with
+  `step_type` `start` or `end`, the optional `operation_key`, and
+  `failure_reason` on a failed end. No duration is sent: the backend pairs the
+  steps by name and key. A blank name, or a key given but blank, is ignored
+  with a warning. The steps follow session sampling and are held with the rest
+  of a session kept only on error.
 - Long tasks, on by default as on Android: a drawn frame whose UI work (input
   handling plus layout and measure) takes longer than 100 ms is reported as a
   `long_task` event on the current view — `date` when it started,

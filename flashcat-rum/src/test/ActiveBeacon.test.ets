@@ -81,6 +81,7 @@ class FakeCore implements SdkCore {
   setUserInfo(user: UserInfo): void {
     this.user = user;
   }
+  addUserProperties(_extraInfo: Record<string, Object>): void {}
   clearUserInfo(): void {
     this.user = {};
   }
@@ -628,6 +629,21 @@ export default function activeBeaconTests(): void {
       second.onReceive({ 'type': 'consent_revoked' });
       expect(core.settings.has(PENDING_KEY)).assertFalse();
       second.onStop();
+    });
+
+    it('clearingAllDataForgetsTheStoredBeaconAndTheSentMarker', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, async (): Promise<void> => {
+      const core: FakeCore = new FakeCore();
+      core.foreground = false; // no trigger of its own while the test runs
+      const feature: RumFeature = new RumFeature(core, new RumConfigurationBuilder('app-1').build());
+      feature.onInitialize();
+      core.settings.set(PENDING_KEY, '{"payload":{},"used_at":1,"key":"k"}');
+      core.settings.set(SENT_KEY, 'k');
+      feature.onReceive({ 'type': 'user_changed' }); // control: another signal keeps them
+      expect(core.settings.has(SENT_KEY)).assertTrue();
+      feature.onReceive({ 'type': 'data_cleared' });
+      expect(core.settings.has(PENDING_KEY)).assertFalse();
+      expect(core.settings.has(SENT_KEY)).assertFalse();
+      feature.onStop();
     });
 
     it('theToggleOffSendsNothingAndDropsWhatIsStored', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, async (): Promise<void> => {

@@ -2,10 +2,8 @@ import { http } from '@kit.NetworkKit';
 import { FlashcatLog } from '@flashcatcloud/core';
 import { TraceContext } from './internal/TraceContext';
 import {
-  contentTypeOf, failureMessage, shouldInjectTraceHeaders, headerStringValue, setHeaderValue,
-  publishResourceCompleted
+  contentTypeOf, failureMessage, shouldInjectTraceHeaders, headerStringValue, setHeaderValue
 } from './internal/TraceInterceptor';
-import { transferTimingOfHttp } from './internal/TransferTiming';
 import { FlashcatTrace } from './FlashcatTrace';
 import { TracedResource } from './TracedResource';
 
@@ -84,11 +82,8 @@ export class FlashcatHttp {
     }
     if (resourceKey.length > 0) {
       try {
-        // Not stopTracedResource: unlike a manual caller, this wrapper has the
-        // network kit's own timing of the request to report with it.
-        publishResourceCompleted(FlashcatTrace.currentCore(), resourceKey, FlashcatHttp.statusOf(response),
-          FlashcatHttp.sizeOf(response), contentTypeOf(response.header),
-          transferTimingOfHttp(response.performanceTiming));
+        FlashcatTrace.stopTracedResource(resourceKey, FlashcatHttp.statusOf(response),
+          FlashcatHttp.sizeOf(response), contentTypeOf(response.header), response.performanceTiming);
       } catch (error) {
         FlashcatHttp.logFailure('request completion', error);
       }

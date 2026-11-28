@@ -54,7 +54,9 @@ function registerInterceptors(instance: AxiosInstance): void {
       try {
         const key: string = takeKey(response.config);
         if (key.length > 0) {
-          FlashcatTrace.stopTracedResource(key, response.status, sizeOf(response));
+          // @ohos/axios puts the network kit's timing on the response (absent
+          // for a streamed body), so the resource carries its phases.
+          FlashcatTrace.stopTracedResource(key, response.status, sizeOf(response), '', response.performanceTiming);
         }
       } catch (error) {
         logFailure('response', error);
@@ -74,7 +76,7 @@ function registerInterceptors(instance: AxiosInstance): void {
         if (key.length > 0) {
           const response: AxiosResponse | undefined = error.response;
           if (response !== undefined && typeof response.status === 'number' && response.status > 0) {
-            FlashcatTrace.stopTracedResource(key, response.status, sizeOf(response));
+            FlashcatTrace.stopTracedResource(key, response.status, sizeOf(response), '', response.performanceTiming);
           } else {
             FlashcatTrace.failTracedResource(key, error.message);
           }
