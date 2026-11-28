@@ -12,7 +12,8 @@ export interface RumRawEvent {
   kind: string;                 // 'startView' | 'stopView' | 'addAction' | 'addError'
                                 // | 'startResource' | 'stopResource' | 'stopResourceWithError'
                                 // | 'keepAlive' | 'markCrash' | 'appLaunch' | 'addViewLoadingTime'
-                                // | 'openLaunchView' | 'addTiming'
+                                // | 'openLaunchView' | 'operationStep' | 'addLongTask'
+                                // | 'addViewAttributes' | 'removeViewAttributes' | 'addTiming'
                                 // markCrash: bump the active view's error+crash counts without
                                 // writing an error event (the error itself is delivered by the
                                 // durable pending-incident replay at next launch).
@@ -46,9 +47,20 @@ export interface RumRawEvent {
   launchDurationNs?: number;
   launchFullyDisplayed?: boolean; // ttid: also report it as the ttfd (fully displayed first)
 
+  // feature operation step (kind === 'operationStep'); `name` is the operation's name
+  operationKey?: string;
+  operationStepType?: string;   // 'start' | 'end'
+  operationFailureReason?: string; // FeatureOperationFailureReason value, on a failed end only
+
+  // long task (kind === 'addLongTask'); timestampMs is when it was seen, after it ended
+  longTaskDurationNs?: number;
+
   // view loading time (kind === 'addViewLoadingTime'); timestampMs is when the view loaded
   overwrite?: boolean;          // manual: replace a value an earlier manual call set
   loadingTimeAuto?: boolean;    // measured by the SDK for the router page `key`
+
+  // view attributes (kind === 'addViewAttributes' carries them in `attributes`)
+  attributeKeys?: string[];     // kind === 'removeViewAttributes': the keys to remove
 
   // resource specifics (kind === 'startResource' | 'stopResource')
   url?: string;

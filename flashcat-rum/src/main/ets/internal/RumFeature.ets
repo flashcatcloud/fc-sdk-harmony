@@ -40,7 +40,7 @@ const CRASH_STORAGE_TARGET: string = '__flashcat_crash_storage';
 // backend and its view document must not be revived.
 const LAST_VIEW_MAX_AGE_MS: number = 4 * 60 * 60 * 1000;
 // Event fields that belong to the run a replayed crash happened in, not the launch replaying it.
-const CRASHED_RUN_FIELDS: string[] = ['version', 'os', 'usr', 'connectivity'];
+const CRASHED_RUN_FIELDS: string[] = ['version', 'os', 'device', 'usr', 'connectivity'];
 // OpenHarmony runtime banners written before the stack when the module's
 // sourcemap cannot be loaded, or is not loaded yet (a fault during launch).
 // Neither is a frame nor a meaningful error message.
@@ -502,6 +502,13 @@ export class RumFeature implements Feature, FeatureEventReceiver {
       // The process may be about to go away: the latest view goes on file now,
       // not after the snapshot's write delay.
       LastViewSnapshot.flush();
+    } else if (type === 'data_cleared') {
+      // The core deleted the snapshot with the batches: the running session goes
+      // back on file without its view, so a fault from now on is still its own.
+      LastViewSnapshot.cleared();
+      if (this.activeBeacon !== null) {
+        this.activeBeacon.forget(); // as Android's clearData: today's beacon is sent again
+      }
     } else if (type === 'consent_revoked') {
       // The core has wiped its batches; what a session still holds in memory
       // goes the same way.

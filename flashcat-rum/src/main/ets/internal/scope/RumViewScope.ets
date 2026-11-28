@@ -53,7 +53,9 @@ export class RumViewScope implements RumScope {
   private readonly viewName: string;
   private readonly viewId: string;
   private readonly startedAtMs: number;
-  private readonly attributes: Record<string, Object>;
+  // The view's own attributes: those it started with, then what
+  // addViewAttributes / removeViewAttributes changed while it was open.
+  private readonly attributes: Map<string, Object> = new Map<string, Object>();
   // What this session was drawn under. Reported on the view document (the only
   // event type the backend builds session rows from), so a session can be
   // traced back to the settings that decided whether to keep it.
@@ -66,6 +68,7 @@ export class RumViewScope implements RumScope {
   private errorCount: number = 0;
   private resourceCount: number = 0;
   private crashCount: number = 0;
+  private longTaskCount: number = 0;
   private documentVersion: number = 0;
   private maxTimeSpentNs: number = 0;
   private active: boolean = true;
@@ -108,7 +111,11 @@ export class RumViewScope implements RumScope {
     this.viewName = viewName;
     this.viewId = viewId;
     this.startedAtMs = startedAtMs;
-    this.attributes = attributes;
+    // A copy: the session keeps the start attributes to restart the view in a
+    // later session, and attributes added to this view must not go with them.
+    for (const k of Object.keys(attributes)) {
+      this.attributes.set(k, attributes[k]);
+    }
     this.draw = draw;
     this.sampledForError = sampledForError;
     this.collector = collector;
@@ -131,7 +138,7 @@ export class RumViewScope implements RumScope {
 
   /** Caller-supplied view.url (real route path) wins over the opaque key. */
   resolvedViewUrl(): string {
-    const fromAttributes: Object | undefined = this.attributes['view.url'];
+    const fromAttributes: Object | undefined = this.attributes.get('view.url');
     if (typeof fromAttributes === 'string' && fromAttributes.length > 0) {
       return fromAttributes;
     }
@@ -140,9 +147,9 @@ export class RumViewScope implements RumScope {
 
   private viewAttributes(extra?: Record<string, Object>): Record<string, Object> {
     const attrs: Record<string, Object> = {};
-    for (const k of Object.keys(this.attributes)) {
-      attrs[k] = this.attributes[k];
-    }
+    this.attributes.forEach((v: Object, k: string) => {
+      attrs[k] = v;
+    });
     if (extra !== undefined) {
       for (const k of Object.keys(extra)) {
         attrs[k] = extra[k];
@@ -178,7 +185,20 @@ export class RumViewScope implements RumScope {
         // At least 1 ns, as on Android: a timing at the view's start is still sent.
         this.customTimings.set(RumViewScope.timingName(event.name ?? ''),
           Math.max(1, Math.max(0, event.timestampMs - this.startedAtMs) * MS_TO_NS));
-        this.writeViewEvent(event.timestampMs);
+        this.writeViewUpdate(event.timestampMs);
+        return this;
+      // Only the open view gets these (the session routes nothing else to a
+      // closed one). Android parity: no document of their own; the next one
+      // carries the change.
+      case 'addViewAttributes':
+        for (const k of Object.keys(event.attributes)) {
+          this.attributes.set(k, event.attributes[k]);
+        }
+        return this;
+      case 'removeViewAttributes':
+        for (const k of event.attributeKeys ?? []) {
+          this.attributes.delete(k);
+        }
         return this;
       case 'addViewLoadingTime':
         if (this.takeLoadingTime(event)) {
@@ -197,12 +217,20 @@ export class RumViewScope implements RumScope {
       case 'addAction':
         this.actionCount += 1;
         this.writeAction(event);
-        if (RumViewScope.deferring) {
-          this.deferredViewAtMs = Math.max(this.deferredViewAtMs, event.timestampMs);
-          RumViewScope.deferred.add(this);
-        } else {
-          this.writeViewEvent(event.timestampMs);
+        this.writeViewUpdate(event.timestampMs);
+        return this;
+      case 'operationStep':
+        // Counted nowhere on the view; the view document is refreshed, as Android does.
+        this.writeOperationStep(event);
+        this.writeViewUpdate(event.timestampMs);
+        return this;
+      case 'addLongTask':
+        if (!this.active) {
+          return this; // seen after the view closed: it belongs to no view
         }
+        this.longTaskCount += 1;
+        this.writeLongTask(event);
+        this.writeViewEvent(event.timestampMs);
         return this;
       case 'keepAlive':
         // Refresh time_spent without counting as a child event.
@@ -243,7 +271,7 @@ export class RumViewScope implements RumScope {
         const scope: RumResourceScope | undefined = this.pendingResources.get(event.key ?? '');
         if (scope !== undefined) {
           this.pendingResources.delete(event.key ?? '');
-          scope.stop(event);
+          scope.stop(event, this.viewAttributes());
           this.resourceCount += 1;
           this.writeViewEvent(event.timestampMs);
         }
@@ -253,7 +281,7 @@ export class RumViewScope implements RumScope {
         const scope: RumResourceScope | undefined = this.pendingResources.get(event.key ?? '');
         if (scope !== undefined) {
           this.pendingResources.delete(event.key ?? '');
-          scope.stopWithError(event);
+          scope.stopWithError(event, this.viewAttributes());
           this.errorCount += 1;
           this.writeViewEvent(event.timestampMs);
         }
@@ -392,11 +420,46 @@ export class RumViewScope implements RumScope {
       });
       vitalFields['custom_timings'] = timings;
     }
+    const longTask: Record<string, Object> = {};
+    longTask['count'] = this.longTaskCount;
+    vitalFields['long_task'] = longTask;
     this.featureScope.withWriteContext((context: FlashcatContext, writer: EventWriter) => {
       const event: Record<string, Object> = RumEventAssembler.view(
         context, this.applicationId, this.sessionId, this.viewId, this.viewName,
         this.startedAtMs, timeSpentNs, actions, errors, resources, crashes, version, isActive,
         this.viewAttributes(), this.draw, this.sampledForError, vitalFields);
+      writeMapped(writer, event, false);
+    });
+  }
+
+  /** Refresh the view document now, or once the queue drain ends when writes are deferred. */
+  private writeViewUpdate(atMs: number): void {
+    if (RumViewScope.deferring) {
+      this.deferredViewAtMs = Math.max(this.deferredViewAtMs, atMs);
+      RumViewScope.deferred.add(this);
+    } else {
+      this.writeViewEvent(atMs);
+    }
+  }
+
+  private writeOperationStep(raw: RumRawEvent): void {
+    this.featureScope.withWriteContext((context: FlashcatContext, writer: EventWriter) => {
+      const event: Record<string, Object> = RumEventAssembler.operationStep(
+        context, this.applicationId, this.sessionId, this.viewId, this.viewName,
+        raw.name ?? '', raw.operationKey, raw.operationStepType ?? 'start', raw.operationFailureReason,
+        raw.timestampMs, this.viewAttributes(raw.attributes), this.draw, this.sampledForError);
+      writeMapped(writer, event, false);
+    });
+  }
+
+  private writeLongTask(raw: RumRawEvent): void {
+    // The frame is reported once its work is done: its start is when it was seen
+    // minus its UI work (close to, not exactly, when the frame began).
+    const durationNs: number = Math.round(raw.longTaskDurationNs ?? 0);
+    this.featureScope.withWriteContext((context: FlashcatContext, writer: EventWriter) => {
+      const event: Record<string, Object> = RumEventAssembler.longTask(
+        context, this.applicationId, this.sessionId, this.viewId, this.viewName,
+        raw.timestampMs - Math.round(durationNs / MS_TO_NS), durationNs, this.viewAttributes(raw.attributes));
       writeMapped(writer, event, false);
     });
   }

@@ -1,4 +1,6 @@
-import { RumActionType, RumErrorSource, RumResourceKind, RumResourceMethod } from './RumTypes';
+import {
+  FeatureOperationFailureReason, RumActionType, RumErrorSource, RumResourceKind, RumResourceMethod
+} from './RumTypes';
 
 /**
  * Manual RUM instrumentation API. Obtain via `GlobalRumMonitor.get()`.
@@ -36,6 +38,22 @@ export interface RumMonitor {
   reportAppFullyDisplayed(): void;
 
   /**
+   * Add attributes to the open view. The view's later documents and every
+   * event recorded in it from now on (actions, resources, errors) carry them,
+   * until the view stops; the next view starts without them. A key already
+   * set on the view is replaced. Ignored when no view is open. Same as
+   * Android's `addViewAttributes`.
+   */
+  addViewAttributes(attributes: Record<string, Object>): void;
+
+  /**
+   * Remove attributes from the open view, by key: its later documents and the
+   * events recorded in it from now on no longer carry them. Global attributes
+   * (`addAttribute`) are not affected. Same as Android's `removeViewAttributes`.
+   */
+  removeViewAttributes(keys: Array<string>): void;
+
+  /**
    * Record a custom timing on the open view: `view.custom_timings[name]`
    * becomes the time from the view's start to now, in nanoseconds, sent with
    * the view document this call writes. Calling again with the same name
@@ -62,6 +80,31 @@ export interface RumMonitor {
     attributes?: Record<string, Object>): void;
 
   addError(message: string, source: RumErrorSource, stack?: string, attributes?: Record<string, Object>): void;
+
+  /**
+   * Starts the `name` feature operation: reports a `vital` event of type
+   * `operation_step` with `step_type: start`. The backend pairs it with the end
+   * step of the same name and key, and measures the operation from the two.
+   * Same as Android's `startFeatureOperation`.
+   *
+   * @param name the operation's name; a blank name is ignored with a warning
+   * @param operationKey tells apart operations of the same name that run at the
+   *        same time (two uploads, say); a blank key is ignored with a warning.
+   *        Pass the same key to the call that ends it.
+   * @param attributes custom attributes of this step
+   */
+  startFeatureOperation(name: string, operationKey?: string, attributes?: Record<string, Object>): void;
+
+  /** Ends the `name` feature operation successfully (`step_type: end`). */
+  succeedFeatureOperation(name: string, operationKey?: string, attributes?: Record<string, Object>): void;
+
+  /**
+   * Ends the `name` feature operation as failed (`step_type: end` with
+   * `failure_reason`). Pass `undefined` as `operationKey` when the operation
+   * was started without one.
+   */
+  failFeatureOperation(name: string, operationKey: string | undefined, failureReason: FeatureOperationFailureReason,
+    attributes?: Record<string, Object>): void;
 
   addAttribute(key: string, value: Object): void;
   removeAttribute(key: string): void;
@@ -114,6 +157,8 @@ class NoOpRumMonitor implements RumMonitor {
   stopView(key: string, attributes?: Record<string, Object>): void {}
   addViewLoadingTime(overwrite: boolean): void {}
   reportAppFullyDisplayed(): void {}
+  addViewAttributes(attributes: Record<string, Object>): void {}
+  removeViewAttributes(keys: Array<string>): void {}
   addTiming(name: string): void {}
   addAction(type: RumActionType, name: string, attributes?: Record<string, Object>): void {}
   startAction(type: RumActionType, name: string, attributes?: Record<string, Object>): void {}
@@ -124,6 +169,10 @@ class NoOpRumMonitor implements RumMonitor {
   stopResourceWithError(key: string, message: string, statusCode?: number,
     attributes?: Record<string, Object>): void {}
   addError(message: string, source: RumErrorSource, stack?: string, attributes?: Record<string, Object>): void {}
+  startFeatureOperation(name: string, operationKey?: string, attributes?: Record<string, Object>): void {}
+  succeedFeatureOperation(name: string, operationKey?: string, attributes?: Record<string, Object>): void {}
+  failFeatureOperation(name: string, operationKey: string | undefined, failureReason: FeatureOperationFailureReason,
+    attributes?: Record<string, Object>): void {}
   addAttribute(key: string, value: Object): void {}
   removeAttribute(key: string): void {}
   getAttributes(): Record<string, Object> {

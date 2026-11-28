@@ -16,6 +16,8 @@ import resourceDurationBackgroundTests from './ResourceDurationBackground.test';
 import activeBeaconTests from './ActiveBeacon.test';
 import dispatchQueueTests from './DispatchQueue.test';
 import resourcePhasesTests from './ResourcePhases.test';
+import clearedSnapshotTests from './LastViewCleared.test';
+import viewAttributesTests from './ViewAttributes.test';
 import customTimingTests from './CustomTiming.test';
 
 export default function testsuite(): void {
@@ -34,6 +36,8 @@ export default function testsuite(): void {
   activeBeaconTests();
   dispatchQueueTests();
   resourcePhasesTests();
+  clearedSnapshotTests();
+  viewAttributesTests();
   customTimingTests();
   describe('flashcat-rum', (): void => {
     it('defaultMonitorIsNoOp', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {

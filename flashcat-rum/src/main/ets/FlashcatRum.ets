@@ -121,7 +121,13 @@ export class FlashcatRum {
 
     const periodOf: () => number = FlashcatRum.vitalsPeriodOf(configuration, store);
     const apiVersion: number = core.getContext().device.apiVersion;
-    const frames: FrameObserver = new FrameObserver(systemFrameSources(apiVersion), periodOf);
+    // Long tasks go through the monitor too: the session and view current when the frame was seen.
+    const frames: FrameObserver = new FrameObserver(systemFrameSources(apiVersion), periodOf,
+      configuration.longTaskThresholdMs * 1e6, (durationNs: number): void => {
+        if (monitorRef !== null) {
+          monitorRef.addLongTask(durationNs);
+        }
+      });
     const collectors: VitalsCollectors = new VitalsCollectors([
       new ResourceSampler(systemResourceReaders(), periodOf), frames]);
     collectorsRef = collectors;

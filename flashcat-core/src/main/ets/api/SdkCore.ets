@@ -90,4 +90,12 @@ export interface SdkCore {
   setUserInfo(user: UserInfo): void;
   /** Clear the identified user (equivalent to setUserInfo({})). */
   clearUserInfo(): void;
+  /**
+   * Merge `extraInfo` into the current user's extra info: a key already set is
+   * replaced, the others are kept, and the user's id, name and email are left
+   * as they are. Events recorded from now on carry the result. Works with no
+   * user set too (then the user has only extra info). Same as Android's
+   * `Datadog.addUserProperties` (iOS: `Datadog.addUserExtraInfo`).
+   */
+  addUserProperties(extraInfo: Record<string, Object>): void;
 }

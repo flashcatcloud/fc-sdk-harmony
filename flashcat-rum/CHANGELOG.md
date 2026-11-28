@@ -2,6 +2,54 @@
 
 ## Unreleased
 
+- Every event carries `device.locale`, `device.locales` and
+  `device.time_zone`; views, errors and app launches also carry
+  `device.battery_level` and `device.power_saving_mode`, as on Android. A
+  crash reported at the next launch carries the device state of the run that
+  crashed.
+- Released with `Flashcat.clearAllData()` (`@flashcatcloud/core`). When the
+  data is cleared, RUM writes the running session's record back to the view
+  snapshot at once, without its view, so a native crash or freeze from then on
+  is still reported in that session; the session's next view document goes on
+  file as soon as it is written. The stored active-device beacon and today's
+  sent marker are dropped, as Android does, so the beacon is sent again on the
+  next trigger. A session kept only on error keeps the events it holds in
+  memory, as on Android.
+- Feature operations, as on Android and iOS: `startFeatureOperation`,
+  `succeedFeatureOperation` and `failFeatureOperation` on the RUM monitor, with
+  `FeatureOperationFailureReason` (`ERROR`, `ABANDONED`, `OTHER`). Each call
+  reports a `vital` event of type `operation_step` on the current view, with
+  `step_type` `start` or `end`, the optional `operation_key`, and
+  `failure_reason` on a failed end. No duration is sent: the backend pairs the
+  steps by name and key. A blank name, or a key given but blank, is ignored
+  with a warning. The steps follow session sampling and are held with the rest
+  of a session kept only on error.
+- Long tasks, on by default as on Android: a drawn frame whose UI work (input
+  handling plus layout and measure) takes longer than 100 ms is reported as a
+  `long_task` event on the current view — `date` when it started,
+  `long_task.duration` in nanoseconds, `long_task.is_frozen_frame` over
+  700 ms — and counted in `view.long_task.count`, which every view now
+  carries. Change the threshold, or pass 0 to turn them off, with
+  `RumConfigurationBuilder.trackLongTasks(thresholdMs)`. A frame over
+  700 ms is counted in `view.frozen_frame` by the frame measurement and is also
+  emitted as a long task with `is_frozen_frame` true; the long task itself does
+  not increment `view.frozen_frame` a second time.
+  Long tasks come from the frames the SDK already observes, with no extra
+  sampling: only a stall that delays a redraw is seen, not work that blocks
+  the main thread while nothing needs redrawing, and nothing is seen on API
+  levels below 22, where the system reports no frame durations, or while
+  `setVitalsUpdateFrequency(NEVER)` stops frame measurement. A long task has
+  no stack; the main-thread jank errors of the same time point to the code.
+- `addViewAttributes(attributes)` and `removeViewAttributes(keys)` on the RUM
+  monitor, as on Android. Attributes added to the open view are carried by its
+  later view documents and by every action, resource and error recorded in it
+  from then on, until the view stops; the next view starts without them. Adding
+  attributes writes no view document of its own: the view's next update carries
+  them. Removing a key affects the view's attributes only, not global ones. With
+  no view open, both calls are ignored and start no session.
+- Resources now carry their view's attributes (those passed to `startView`,
+  and those added since), under the resource's own, as on Android. Before, a
+  resource carried only the global attributes and its own.
 - `addTiming(name)` on the RUM monitor, as on Android: records
   `view.custom_timings[name]` on the open view, the time from the view's start
   to the call in nanoseconds (at least 1), and writes a view update carrying

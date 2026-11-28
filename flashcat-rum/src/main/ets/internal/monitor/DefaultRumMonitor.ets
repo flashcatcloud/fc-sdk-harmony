@@ -2,7 +2,9 @@ import { SdkCore, FeatureScope, FlashcatLog } from '@flashcatcloud/core';
 import { util } from '@kit.ArkTS';
 import { RumMonitor } from '../../RumMonitor';
 import { RumConfiguration } from '../../RumConfiguration';
-import { RumActionType, RumErrorSource, RumResourceKind, RumResourceMethod } from '../../RumTypes';
+import {
+  FeatureOperationFailureReason, RumActionType, RumErrorSource, RumResourceKind, RumResourceMethod
+} from '../../RumTypes';
 import { RumApplicationScope, DetachedDraw } from '../scope/RumApplicationScope';
 import { RumViewScope } from '../scope/RumViewScope';
 import { RumRawEvent } from '../scope/RumScope';
@@ -176,6 +178,30 @@ export class DefaultRumMonitor implements RumMonitor {
     });
   }
 
+  addViewAttributes(attributes: Record<string, Object>): void {
+    this.dispatch('addViewAttributes', () => {
+      // Copied now: the host may change its record after the call. Only these
+      // attributes, not the global ones: those reach each event on their own.
+      const copy: Record<string, Object> = {};
+      if (attributes !== undefined && attributes !== null) {
+        for (const k of Object.keys(attributes)) {
+          copy[k] = attributes[k];
+        }
+      }
+      return { kind: 'addViewAttributes', attributes: copy, timestampMs: Date.now() } as RumRawEvent;
+    });
+  }
+
+  removeViewAttributes(keys: Array<string>): void {
+    this.dispatch('removeViewAttributes', () => {
+      // Untyped callers can pass null or a non-array.
+      const copy: string[] = Array.isArray(keys) ? keys.filter((k: string) => typeof k === 'string') : [];
+      const e: RumRawEvent = { kind: 'removeViewAttributes', attributes: {}, timestampMs: Date.now() };
+      e.attributeKeys = copy;
+      return e;
+    });
+  }
+
   addTiming(name: string): void {
     // A name that is not a string would end up as a key of the view's timings.
     if (typeof name !== 'string') {
@@ -230,6 +256,15 @@ export class DefaultRumMonitor implements RumMonitor {
       e.launchStartMs = startMs;
       e.launchDurationNs = durationNs;
       e.launchFullyDisplayed = fullyDisplayed;
+      return e;
+    });
+  }
+
+  /** Internal: a drawn frame whose UI work took `durationNs`, longer than the long task threshold. */
+  addLongTask(durationNs: number): void {
+    this.dispatch('addLongTask', () => {
+      const e: RumRawEvent = this.raw('addLongTask');
+      e.longTaskDurationNs = durationNs;
       return e;
     });
   }
@@ -472,6 +507,56 @@ export class DefaultRumMonitor implements RumMonitor {
   drawDetachedSession(roll: number): DetachedDraw | null {
     this.drainPending();
     return this.applicationScope.drawDetachedSession(roll);
+  }
+
+  startFeatureOperation(name: string, operationKey?: string, attributes?: Record<string, Object>): void {
+    this.operationStep('startFeatureOperation', name, operationKey, 'start', undefined, attributes);
+  }
+
+  succeedFeatureOperation(name: string, operationKey?: string, attributes?: Record<string, Object>): void {
+    this.operationStep('succeedFeatureOperation', name, operationKey, 'end', undefined, attributes);
+  }
+
+  failFeatureOperation(name: string, operationKey: string | undefined, failureReason: FeatureOperationFailureReason,
+    attributes?: Record<string, Object>): void {
+    this.operationStep('failFeatureOperation', name, operationKey, 'end',
+      DefaultRumMonitor.failureReasonOf(failureReason), attributes);
+  }
+
+  /**
+   * One step of a feature operation, as Android reports it: a blank name, or a
+   * key given but blank, is refused with a warning and nothing is sent. Open
+   * operations are not tracked: the backend pairs the steps by name and key.
+   */
+  private operationStep(what: string, name: string, operationKey: string | undefined, stepType: string,
+    failureReason: string | undefined, attributes?: Record<string, Object>): void {
+    // Untyped callers can pass anything; null stands for "no key" as undefined does.
+    const key: string | undefined = operationKey === null ? undefined : operationKey;
+    if (typeof name !== 'string' || name.trim().length === 0) {
+      FlashcatLog.usage(`${what} ignored: feature operation name cannot be an empty or blank string ` +
+        `but was "${name}". Vital event won't be sent.`);
+      return;
+    }
+    if (key !== undefined && (typeof key !== 'string' || key.trim().length === 0)) {
+      FlashcatLog.usage(`${what} ignored: feature operation key cannot be an empty or blank string ` +
+        `but was "${key}". Vital event won't be sent.`);
+      return;
+    }
+    this.dispatch('operationStep', () => {
+      const e: RumRawEvent = this.raw('operationStep', attributes);
+      e.name = name;
+      e.operationKey = key;
+      e.operationStepType = stepType;
+      e.operationFailureReason = failureReason;
+      return e;
+    });
+  }
+
+  /** The schema's value for `reason`; one an untyped caller made up reads as `other`. */
+  private static failureReasonOf(reason: FeatureOperationFailureReason): string {
+    const value: string = reason as string;
+    return value === FeatureOperationFailureReason.ERROR || value === FeatureOperationFailureReason.ABANDONED ?
+      value : FeatureOperationFailureReason.OTHER;
   }
 
   addAttribute(key: string, value: Object): void {

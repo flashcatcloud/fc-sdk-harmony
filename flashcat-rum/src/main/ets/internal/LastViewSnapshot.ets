@@ -255,6 +255,22 @@ export class LastViewSnapshot {
   }
 
   /**
+   * The host cleared all data and the core deleted the file. The views recorded
+   * so far go with it; the session record is written again at once, so a fault
+   * of the running session is still reported in it. The session's next view
+   * goes on file as soon as it is recorded.
+   */
+  static cleared(): void {
+    LastViewSnapshot.cancelPending();
+    LastViewSnapshot.latest = null;
+    LastViewSnapshot.onFile = false;
+    LastViewSnapshot.recordedSessionId = '';
+    if (LastViewSnapshot.session !== null && LastViewSnapshot.writer !== null) {
+      LastViewSnapshot.writeNow();
+    }
+  }
+
+  /**
    * The view the NEXT launch will read back if this process dies now: the latest one
    * recorded, whether or not its write has happened yet.
    */

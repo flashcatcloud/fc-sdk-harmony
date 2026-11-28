@@ -37,4 +37,30 @@ const systemDateTime = {
     return Number(process.hrtime.bigint() / (nanoseconds ? 1n : 1000000n));
   }
 };
-module.exports = { deviceInfo, zlib, systemDateTime };
+// batterySOC / powerMode: what the system reports; tests set them (a getter that throws models a failing call).
+const batteryInfo = { batterySOC: 80 };
+const power = {
+  DevicePowerMode: { MODE_NORMAL: 600, MODE_POWER_SAVE: 601, MODE_PERFORMANCE: 602, MODE_EXTREME_POWER_SAVE: 603,
+    MODE_CUSTOM_POWER_SAVE: 650 },
+  powerMode: 600,
+  getPowerMode: () => power.powerMode
+};
+// Subscribers record their events and callback; `deliver` fires every live one that listens.
+const commonEventManager = {
+  subscribers: [],
+  createSubscriberSync: (info) => ({ events: info.events, callback: null }),
+  subscribe: (subscriber, callback) => {
+    subscriber.callback = callback;
+    commonEventManager.subscribers.push(subscriber);
+  },
+  unsubscribe: (subscriber, callback) => {
+    commonEventManager.subscribers = commonEventManager.subscribers.filter((s) => s !== subscriber);
+    if (typeof callback === 'function') callback(undefined);
+  },
+  deliver: (event) => {
+    for (const s of commonEventManager.subscribers.slice()) {
+      if (s.events.includes(event) && s.callback !== null) s.callback(undefined, { event });
+    }
+  }
+};
+module.exports = { deviceInfo, zlib, systemDateTime, batteryInfo, power, commonEventManager };
