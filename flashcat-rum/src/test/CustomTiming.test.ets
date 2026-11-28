@@ -5,6 +5,7 @@ import {
 } from '@flashcatcloud/core';
 import { RumApplicationScope } from '../main/ets/internal/scope/RumApplicationScope';
 import { RumRawEvent } from '../main/ets/internal/scope/RumScope';
+import { RumViewScope } from '../main/ets/internal/scope/RumViewScope';
 import { DefaultRumMonitor } from '../main/ets/internal/monitor/DefaultRumMonitor';
 import { RumConfigurationBuilder } from '../main/ets/RumConfiguration';
 
@@ -135,6 +136,28 @@ export default function customTimingTests(): void {
       const view: Record<string, Object> = scope.last('home');
       expect((timingsOf(view) as Record<string, Object>)['hero_image']).assertEqual(250 * MS_NS);
       expect(view['is_active']).assertTrue();
+    });
+
+    it('whileQueuedEventsAreProcessedTimingsShareOneViewDocument', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+      const scope: CapturingScope = new CapturingScope();
+      const app: RumApplicationScope = new RumApplicationScope(scope, new FakeCore(), 'app-1', 100);
+      const t0: number = Date.now();
+      app.handleEvent(raw('startView', t0, 'home'));
+      const before: number = scope.views().length;
+      RumViewScope.deferActionViewWrites(true);
+      try {
+        app.handleEvent(timing(t0 + 10, 'first'));
+        app.handleEvent(timing(t0 + 20, 'second'));
+        // Deferred like an action: no document per timing while the queue drains.
+        expect(scope.views().length).assertEqual(before);
+      } finally {
+        RumViewScope.deferActionViewWrites(false);
+      }
+      // One document when the slice ends, carrying both timings.
+      expect(scope.views().length).assertEqual(before + 1);
+      const timings: Record<string, Object> = timingsOf(scope.last('home')) as Record<string, Object>;
+      expect(timings['first']).assertEqual(10 * MS_NS);
+      expect(timings['second']).assertEqual(20 * MS_NS);
     });
 
     it('timingsAccumulateAndTheSameNameIsReplaced', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
