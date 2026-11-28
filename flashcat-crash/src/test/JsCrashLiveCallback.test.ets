@@ -67,6 +67,7 @@ class FakeCore implements SdkCore {
   }
   writeSetting(_key: string, _value: string | null): void {}
   setUserInfo(_user: UserInfo): void {}
+  addUserProperties(_extraInfo: Record<string, Object>): void {}
   clearUserInfo(): void {}
 }
 

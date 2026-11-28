@@ -17,6 +17,7 @@
   setTrackingConsent
   setUserInfo
   clearUserInfo
+  addUserProperties
   flush
   flushAndWait
   stopInstance

@@ -347,6 +347,10 @@ export class ContextProvider {
     this.user = user === null || user === undefined ? {} : user;
   }
 
+  getUser(): UserInfo {
+    return this.user;
+  }
+
   updateFeatureContext(featureName: string, update: Record<string, Object>): void {
     const merged: Record<string, Object> = {};
     const existing: Record<string, Object> = this.featureContext[featureName] ?? {};
