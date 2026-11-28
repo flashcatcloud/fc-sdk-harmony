@@ -90,6 +90,7 @@ export class RumEventAssembler {
     event['view'] = view;
 
     RumEventAssembler.applyContext(event, context, attributes);
+    RumEventAssembler.applyPowerState(event, context);
     return event;
   }
 
@@ -191,6 +192,7 @@ export class RumEventAssembler {
     }
 
     RumEventAssembler.applyContext(event, context, attributes);
+    RumEventAssembler.applyPowerState(event, context);
     return event;
   }
 
@@ -252,6 +254,7 @@ export class RumEventAssembler {
     event['vital'] = vital;
 
     RumEventAssembler.applyContext(event, context, attributes);
+    RumEventAssembler.applyPowerState(event, context);
     return event;
   }
 
@@ -462,6 +465,16 @@ export class RumEventAssembler {
     device['brand'] = context.device.brand;
     device['model'] = context.device.model;
     device['name'] = context.device.model;
+    // Android parity: the languages and the time zone go on every event.
+    if (context.device.locale !== undefined) {
+      device['locale'] = context.device.locale;
+    }
+    if (context.device.locales !== undefined) {
+      device['locales'] = context.device.locales.slice(); // the event is the mapper's to edit; the context is shared
+    }
+    if (context.device.timeZone !== undefined) {
+      device['time_zone'] = context.device.timeZone;
+    }
     event['device'] = device;
 
     const connectivity: Record<string, Object> = {};
@@ -513,6 +526,20 @@ export class RumEventAssembler {
       ctx[k] = attributes[k];
     }
     event['context'] = ctx;
+  }
+
+  /**
+   * Android parity: the battery level and power saving mode go on views,
+   * errors and app launches only. After applyContext, which writes `device`.
+   */
+  private static applyPowerState(event: Record<string, Object>, context: FlashcatContext): void {
+    const device: Record<string, Object> = event['device'] as Record<string, Object>;
+    if (context.device.batteryLevel !== undefined) {
+      device['battery_level'] = context.device.batteryLevel;
+    }
+    if (context.device.powerSavingMode !== undefined) {
+      device['power_saving_mode'] = context.device.powerSavingMode;
+    }
   }
 
   private static isInternalAttribute(key: string): boolean {

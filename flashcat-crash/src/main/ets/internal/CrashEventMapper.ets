@@ -1,3 +1,4 @@
+import { buffer } from '@kit.ArkTS';
 import { RumErrorSource } from './RumErrorSourceLite';
 import { CrashFingerprint, CrashIncidentRecord } from './CrashIncident';
 import { JsCrashPolicy } from '../CrashConfiguration';
@@ -491,7 +492,7 @@ export class CrashEventMapper {
     const kept: Array<Record<string, Object>> = [];
     let size: number = 2; // the enclosing brackets
     for (let i = 0; i < ordered.length; i++) {
-      size += CrashEventMapper.utf8Length(JSON.stringify(ordered[i])) + 1;
+      size += buffer.byteLength(JSON.stringify(ordered[i]), 'utf-8') + 1;
       if (size > MAX_THREADS_BYTES) {
         break;
       }
@@ -518,16 +519,6 @@ export class CrashEventMapper {
       out['state'] = state;
     }
     return out;
-  }
-
-  /** UTF-8 byte length; a surrogate pair counts 3 + 3, slightly over its real 4. */
-  private static utf8Length(text: string): number {
-    let bytes: number = 0;
-    for (let i = 0; i < text.length; i++) {
-      const code: number = text.charCodeAt(i);
-      bytes += code < 0x80 ? 1 : (code < 0x800 ? 2 : 3);
-    }
-    return bytes;
   }
 
   /** Process and device memory at the fault (`params.memory`, API 22+), in KB. */

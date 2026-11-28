@@ -21,4 +21,7 @@ const taskpool = {
   executed: 0,
   execute(fn, ...args) { taskpool.executed += 1; return Promise.resolve().then(() => fn(...args)); }
 };
-module.exports = { util, process: processShim, taskpool };
+// @ohos.buffer subset: byteLength over node's Buffer, which encodes a lone
+// surrogate as the 3-byte replacement character as the device does.
+const buffer = { byteLength: (s, encoding) => Buffer.byteLength(s, encoding) };
+module.exports = { util, process: processShim, taskpool, buffer };
