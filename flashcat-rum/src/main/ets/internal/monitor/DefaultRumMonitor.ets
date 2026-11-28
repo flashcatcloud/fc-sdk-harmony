@@ -178,6 +178,30 @@ export class DefaultRumMonitor implements RumMonitor {
     });
   }
 
+  addViewAttributes(attributes: Record<string, Object>): void {
+    this.dispatch('addViewAttributes', () => {
+      // Copied now: the host may change its record after the call. Only these
+      // attributes, not the global ones: those reach each event on their own.
+      const copy: Record<string, Object> = {};
+      if (attributes !== undefined && attributes !== null) {
+        for (const k of Object.keys(attributes)) {
+          copy[k] = attributes[k];
+        }
+      }
+      return { kind: 'addViewAttributes', attributes: copy, timestampMs: Date.now() } as RumRawEvent;
+    });
+  }
+
+  removeViewAttributes(keys: Array<string>): void {
+    this.dispatch('removeViewAttributes', () => {
+      // Untyped callers can pass null or a non-array.
+      const copy: string[] = Array.isArray(keys) ? keys.filter((k: string) => typeof k === 'string') : [];
+      const e: RumRawEvent = { kind: 'removeViewAttributes', attributes: {}, timestampMs: Date.now() };
+      e.attributeKeys = copy;
+      return e;
+    });
+  }
+
   /** Internal: the router page `key` drew its first frame at `atMs`. */
   addAutoViewLoadingTime(key: string, atMs: number): void {
     this.dispatch('addViewLoadingTime', () => {

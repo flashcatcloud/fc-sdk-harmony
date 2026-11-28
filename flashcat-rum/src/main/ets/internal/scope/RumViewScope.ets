@@ -51,7 +51,9 @@ export class RumViewScope implements RumScope {
   private readonly viewName: string;
   private readonly viewId: string;
   private readonly startedAtMs: number;
-  private readonly attributes: Record<string, Object>;
+  // The view's own attributes: those it started with, then what
+  // addViewAttributes / removeViewAttributes changed while it was open.
+  private readonly attributes: Map<string, Object> = new Map<string, Object>();
   // What this session was drawn under. Reported on the view document (the only
   // event type the backend builds session rows from), so a session can be
   // traced back to the settings that decided whether to keep it.
@@ -105,7 +107,11 @@ export class RumViewScope implements RumScope {
     this.viewName = viewName;
     this.viewId = viewId;
     this.startedAtMs = startedAtMs;
-    this.attributes = attributes;
+    // A copy: the session keeps the start attributes to restart the view in a
+    // later session, and attributes added to this view must not go with them.
+    for (const k of Object.keys(attributes)) {
+      this.attributes.set(k, attributes[k]);
+    }
     this.draw = draw;
     this.sampledForError = sampledForError;
     this.collector = collector;
@@ -128,7 +134,7 @@ export class RumViewScope implements RumScope {
 
   /** Caller-supplied view.url (real route path) wins over the opaque key. */
   resolvedViewUrl(): string {
-    const fromAttributes: Object | undefined = this.attributes['view.url'];
+    const fromAttributes: Object | undefined = this.attributes.get('view.url');
     if (typeof fromAttributes === 'string' && fromAttributes.length > 0) {
       return fromAttributes;
     }
@@ -137,9 +143,9 @@ export class RumViewScope implements RumScope {
 
   private viewAttributes(extra?: Record<string, Object>): Record<string, Object> {
     const attrs: Record<string, Object> = {};
-    for (const k of Object.keys(this.attributes)) {
-      attrs[k] = this.attributes[k];
-    }
+    this.attributes.forEach((v: Object, k: string) => {
+      attrs[k] = v;
+    });
     if (extra !== undefined) {
       for (const k of Object.keys(extra)) {
         attrs[k] = extra[k];
@@ -167,6 +173,19 @@ export class RumViewScope implements RumScope {
           this.writeViewEvent(event.timestampMs);
           this.clearViewContext();
           return null;
+        }
+        return this;
+      // Only the open view gets these (the session routes nothing else to a
+      // closed one). Android parity: no document of their own; the next one
+      // carries the change.
+      case 'addViewAttributes':
+        for (const k of Object.keys(event.attributes)) {
+          this.attributes.set(k, event.attributes[k]);
+        }
+        return this;
+      case 'removeViewAttributes':
+        for (const k of event.attributeKeys ?? []) {
+          this.attributes.delete(k);
         }
         return this;
       case 'addViewLoadingTime':
@@ -240,7 +259,7 @@ export class RumViewScope implements RumScope {
         const scope: RumResourceScope | undefined = this.pendingResources.get(event.key ?? '');
         if (scope !== undefined) {
           this.pendingResources.delete(event.key ?? '');
-          scope.stop(event);
+          scope.stop(event, this.viewAttributes());
           this.resourceCount += 1;
           this.writeViewEvent(event.timestampMs);
         }
@@ -250,7 +269,7 @@ export class RumViewScope implements RumScope {
         const scope: RumResourceScope | undefined = this.pendingResources.get(event.key ?? '');
         if (scope !== undefined) {
           this.pendingResources.delete(event.key ?? '');
-          scope.stopWithError(event);
+          scope.stopWithError(event, this.viewAttributes());
           this.errorCount += 1;
           this.writeViewEvent(event.timestampMs);
         }
