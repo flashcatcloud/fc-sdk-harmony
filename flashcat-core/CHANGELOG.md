@@ -32,6 +32,9 @@
 - The active batch rolls 250 ms before its window ends, so it is complete on
   disk before another process may claim it, and the disk quota is enforced
   at every append.
+- The network context follows a network coming back after a loss right away:
+  events stop reporting `not_connected` as soon as the system says a network
+  is available, instead of at its next capability change.
 
 ## 0.8.2
 

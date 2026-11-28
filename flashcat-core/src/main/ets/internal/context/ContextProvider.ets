@@ -115,6 +115,17 @@ export class ContextProvider {
           // keep the previous network state
         }
       });
+      // Back from no network: the default network's capabilities are read
+      // here, so events stop reporting not_connected without waiting for the
+      // next capability change. A connection created without a specifier
+      // only reports the default network.
+      conn.on('netAvailable', (net: connection.NetHandle) => {
+        try {
+          this.network = ContextProvider.availableNetwork(net, this.network.interfaces);
+        } catch (_e) {
+          // keep the previous network state
+        }
+      });
       conn.on('netLost', (_net: connection.NetHandle) => {
         this.network = { status: 'not_connected', interfaces: [] };
       });
@@ -127,6 +138,15 @@ export class ContextProvider {
       this.netConnection = conn;
     } catch (_e) {
       // subscription unavailable — the initial snapshot (or 'maybe') stands
+    }
+  }
+
+  /** A network just came up; its interfaces when they can be read, else the last known ones. */
+  private static availableNetwork(net: connection.NetHandle, lastInterfaces: string[]): NetworkInfo {
+    try {
+      return { status: 'connected', interfaces: ContextProvider.interfacesFrom(connection.getNetCapabilitiesSync(net)) };
+    } catch (_e) {
+      return { status: 'connected', interfaces: lastInterfaces };
     }
   }
 

@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- `stopTracedResource` takes an optional `timing`: the `performanceTiming` of an
+  `@ohos.net.http` response. The resource then carries the same phases as one
+  made through `FlashcatHttp`.
+
 ## 0.8.2
 
 - No changes; released together with `@flashcatcloud/core`, `crash`, `rum` and `axios` 0.8.2.
