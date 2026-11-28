@@ -1,4 +1,6 @@
-import { RumActionType, RumErrorSource, RumResourceKind, RumResourceMethod } from './RumTypes';
+import {
+  FeatureOperationFailureReason, RumActionType, RumErrorSource, RumResourceKind, RumResourceMethod
+} from './RumTypes';
 
 /**
  * Manual RUM instrumentation API. Obtain via `GlobalRumMonitor.get()`.
@@ -69,6 +71,31 @@ export interface RumMonitor {
 
   addError(message: string, source: RumErrorSource, stack?: string, attributes?: Record<string, Object>): void;
 
+  /**
+   * Starts the `name` feature operation: reports a `vital` event of type
+   * `operation_step` with `step_type: start`. The backend pairs it with the end
+   * step of the same name and key, and measures the operation from the two.
+   * Same as Android's `startFeatureOperation`.
+   *
+   * @param name the operation's name; a blank name is ignored with a warning
+   * @param operationKey tells apart operations of the same name that run at the
+   *        same time (two uploads, say); a blank key is ignored with a warning.
+   *        Pass the same key to the call that ends it.
+   * @param attributes custom attributes of this step
+   */
+  startFeatureOperation(name: string, operationKey?: string, attributes?: Record<string, Object>): void;
+
+  /** Ends the `name` feature operation successfully (`step_type: end`). */
+  succeedFeatureOperation(name: string, operationKey?: string, attributes?: Record<string, Object>): void;
+
+  /**
+   * Ends the `name` feature operation as failed (`step_type: end` with
+   * `failure_reason`). Pass `undefined` as `operationKey` when the operation
+   * was started without one.
+   */
+  failFeatureOperation(name: string, operationKey: string | undefined, failureReason: FeatureOperationFailureReason,
+    attributes?: Record<string, Object>): void;
+
   addAttribute(key: string, value: Object): void;
   removeAttribute(key: string): void;
   /** Snapshot of the global attributes attached to every event. */
@@ -131,6 +158,10 @@ class NoOpRumMonitor implements RumMonitor {
   stopResourceWithError(key: string, message: string, statusCode?: number,
     attributes?: Record<string, Object>): void {}
   addError(message: string, source: RumErrorSource, stack?: string, attributes?: Record<string, Object>): void {}
+  startFeatureOperation(name: string, operationKey?: string, attributes?: Record<string, Object>): void {}
+  succeedFeatureOperation(name: string, operationKey?: string, attributes?: Record<string, Object>): void {}
+  failFeatureOperation(name: string, operationKey: string | undefined, failureReason: FeatureOperationFailureReason,
+    attributes?: Record<string, Object>): void {}
   addAttribute(key: string, value: Object): void {}
   removeAttribute(key: string): void {}
   getAttributes(): Record<string, Object> {

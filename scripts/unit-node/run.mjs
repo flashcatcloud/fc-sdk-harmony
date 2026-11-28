@@ -100,6 +100,7 @@ const SHIM_MAP = {
   '@kit.BasicServicesKit': path.join(shimDir, 'kit-basicservices.js'),
   '@kit.CoreFileKit': path.join(shimDir, 'kit-corefile.js'),
   '@kit.CryptoArchitectureKit': path.join(shimDir, 'kit-crypto.js'),
+  '@kit.LocalizationKit': path.join(shimDir, 'kit-localization.js'),
   '@kit.NetworkKit': path.join(shimDir, 'kit-network.js'),
   '@kit.PerformanceAnalysisKit': path.join(shimDir, 'kit-performance.js'),
   '@kit.RemoteCommunicationKit': path.join(shimDir, 'kit-rcp.js'),

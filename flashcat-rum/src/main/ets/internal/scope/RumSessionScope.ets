@@ -220,8 +220,9 @@ export class RumSessionScope implements RumScope {
       return this;
     }
 
-    // An action, a request or an error in a session that has never had a view
-    // (the app's first page was on screen before RUM was enabled, say) opens the
+    // An action, a request, an error or a feature operation step in a session
+    // that has never had a view (the app's first page was on screen before RUM
+    // was enabled, say) opens the
     // ApplicationLaunch view, as on Android and iOS. Without it the action and
     // the request were dropped, and the error went out in a session the backend
     // never builds. Nothing opens between two views (lastStoppedView set), nor
@@ -230,7 +231,8 @@ export class RumSessionScope implements RumScope {
     // learns its foreground asynchronously, after the app's first calls.
     const knownInBackground: boolean = this.core.isAppStateKnown() && !this.core.isAppInForeground();
     if (this.activeView === null && this.lastStoppedView === null && !knownInBackground &&
-      (event.kind === 'addAction' || event.kind === 'startResource' || event.kind === 'addError')) {
+      (event.kind === 'addAction' || event.kind === 'startResource' || event.kind === 'addError' ||
+        event.kind === 'operationStep')) {
       // Not before the session: a timed action is stamped at its start, which can
       // precede the session its stop minted.
       this.startLaunchView(Math.max(event.timestampMs, this.startedAtMs), event.globalAttributes ?? {});
@@ -264,7 +266,7 @@ export class RumSessionScope implements RumScope {
       FlashcatLog.usage('addViewLoadingTime ignored: no view is open');
     } else if (event.kind === 'addViewAttributes' || event.kind === 'removeViewAttributes') {
       FlashcatLog.usage(`${event.kind} ignored: no view is open`);
-    } else if (event.kind === 'addAction' || event.kind === 'startResource') {
+    } else if (event.kind === 'addAction' || event.kind === 'startResource' || event.kind === 'operationStep') {
       // Surfaced so integrators can see why their data is missing — previously
       // these were dropped with no trace at any log level.
       FlashcatLog.d(`rum.session: dropped viewless ${event.kind} — no active view (between views or in the background)`);

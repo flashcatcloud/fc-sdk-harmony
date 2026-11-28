@@ -12,7 +12,8 @@ export interface RumRawEvent {
   kind: string;                 // 'startView' | 'stopView' | 'addAction' | 'addError'
                                 // | 'startResource' | 'stopResource' | 'stopResourceWithError'
                                 // | 'keepAlive' | 'markCrash' | 'appLaunch' | 'addViewLoadingTime'
-                                // | 'openLaunchView' | 'addViewAttributes' | 'removeViewAttributes'
+                                // | 'openLaunchView' | 'operationStep' | 'addLongTask'
+                                // | 'addViewAttributes' | 'removeViewAttributes'
                                 // markCrash: bump the active view's error+crash counts without
                                 // writing an error event (the error itself is delivered by the
                                 // durable pending-incident replay at next launch).
@@ -45,6 +46,14 @@ export interface RumRawEvent {
   launchStartMs?: number;       // epoch ms the launch started: the vital's date
   launchDurationNs?: number;
   launchFullyDisplayed?: boolean; // ttid: also report it as the ttfd (fully displayed first)
+
+  // feature operation step (kind === 'operationStep'); `name` is the operation's name
+  operationKey?: string;
+  operationStepType?: string;   // 'start' | 'end'
+  operationFailureReason?: string; // FeatureOperationFailureReason value, on a failed end only
+
+  // long task (kind === 'addLongTask'); timestampMs is when it was seen, after it ended
+  longTaskDurationNs?: number;
 
   // view loading time (kind === 'addViewLoadingTime'); timestampMs is when the view loaded
   overwrite?: boolean;          // manual: replace a value an earlier manual call set

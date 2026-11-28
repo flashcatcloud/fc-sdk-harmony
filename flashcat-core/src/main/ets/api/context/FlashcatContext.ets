@@ -6,6 +6,12 @@ export interface DeviceInfo {
   osVersion: string;      // e.g. "5.0.0"
   apiVersion: number;     // SDK API level
   deviceType: string;     // phone / tablet / 2in1 / tv / wearable / car
+  // Read from the system and kept current; absent when the system could not say.
+  locale?: string;        // the preferred language, e.g. "zh-Hans-CN"
+  locales?: string[];     // every preferred language, most preferred first
+  timeZone?: string;      // IANA name, e.g. "Asia/Shanghai"
+  batteryLevel?: number;  // 0..1
+  powerSavingMode?: boolean;
 }
 
 /** Identified end user. All fields optional. */
