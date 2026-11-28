@@ -258,6 +258,56 @@ export class RumEventAssembler {
     return event;
   }
 
+  /**
+   * One step of a feature operation (`type: vital`, `vital.type:
+   * operation_step`), as the Android SDK writes it. No duration: the backend
+   * measures the operation from its start and end steps.
+   */
+  static operationStep(
+    context: FlashcatContext,
+    applicationId: string,
+    sessionId: string,
+    viewId: string,
+    viewName: string,
+    name: string,
+    operationKey: string | undefined,
+    stepType: string,
+    failureReason: string | undefined,
+    dateMs: number,
+    attributes: Record<string, Object>,
+    draw: DrawnConfiguration | null = null,
+    sampledForError: boolean = false
+  ): Record<string, Object> {
+    const event: Record<string, Object> = {};
+    event['type'] = 'vital';
+    event['date'] = dateMs;
+    event['_dd'] = RumEventAssembler.dd(0, draw, sampledForError);
+    event['application'] = RumEventAssembler.idObj(applicationId);
+    event['session'] = RumEventAssembler.session(sessionId);
+
+    const view: Record<string, Object> = {};
+    view['id'] = viewId;
+    view['url'] = RumEventAssembler.viewUrl(viewName, attributes);
+    view['name'] = viewName;
+    event['view'] = view;
+
+    const vital: Record<string, Object> = {};
+    vital['id'] = util.generateRandomUUID(true);
+    vital['type'] = 'operation_step';
+    vital['name'] = name;
+    if (operationKey !== undefined) {
+      vital['operation_key'] = operationKey;
+    }
+    vital['step_type'] = stepType;
+    if (failureReason !== undefined) {
+      vital['failure_reason'] = failureReason;
+    }
+    event['vital'] = vital;
+
+    RumEventAssembler.applyContext(event, context, attributes);
+    return event;
+  }
+
   static action(
     context: FlashcatContext,
     applicationId: string,

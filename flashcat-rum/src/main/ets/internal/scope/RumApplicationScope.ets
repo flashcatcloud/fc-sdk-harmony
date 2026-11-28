@@ -182,7 +182,7 @@ export class RumApplicationScope implements RumScope {
    */
   private maybeRestartExpiredView(session: RumSessionScope, event: RumRawEvent, restartAtMs: number): void {
     if (event.kind !== 'addAction' && event.kind !== 'addError'
-      && event.kind !== 'startResource') {
+      && event.kind !== 'startResource' && event.kind !== 'operationStep') {
       // NOT consumed: a non-qualifying event must not burn the remembered view,
       // or the next qualifying event finds nothing to restart.
       return;
