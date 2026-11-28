@@ -110,9 +110,10 @@ export default function clearAllDataTests(): void {
       storage({ 'type': 'crash_storage_write', 'incident_id': 'a1', 'serialized': '{"stack":"s"}' });
       storage({ 'type': 'crash_storage_write_last_view', 'serialized': '{"view":{}}' });
       storage({ 'type': 'crash_storage_write_loop', 'serialized': '[1]' });
-      // Control: everything is on disk before the call.
+      // Control: everything is on disk before the call, except the active batch's
+      // event, which is still in the write buffer.
       expect(onDisk(context, 'rum').indexOf('rolled-rum') >= 0).assertTrue();
-      expect(onDisk(context, 'rum').indexOf('active-rum') >= 0).assertTrue();
+      expect(onDisk(context, 'rum').indexOf('active-rum') >= 0).assertFalse();
       expect(onDisk(context, 'trace').indexOf('rolled-trace') >= 0).assertTrue();
       expect((storage({ 'type': 'crash_storage_list' })['files'] as Array<Object>).length).assertEqual(1);
       expect((storage({ 'type': 'crash_storage_read_last_view' })['serialized'] as string).length > 0).assertTrue();
@@ -125,7 +126,9 @@ export default function clearAllDataTests(): void {
       expect(storage({ 'type': 'crash_storage_read_last_view' })['serialized'] as string).assertEqual('');
       // The crash-loop guard's hashes and timestamps are not collected data: they stay.
       expect(storage({ 'type': 'crash_storage_read_loop' })['serialized'] as string).assertEqual('[1]');
+      // stop() writes the write buffer synchronously: the buffered event was dropped too.
       core.stop();
+      expect(onDisk(context, 'rum')).assertEqual('');
     });
 
     it('theSdkKeepsRunningAndKeepsWhatIsRecordedNext', TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
