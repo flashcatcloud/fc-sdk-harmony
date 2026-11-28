@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Every event carries `device.locale`, `device.locales` and
+  `device.time_zone`; views, errors and app launches also carry
+  `device.battery_level` and `device.power_saving_mode`, as on Android. A
+  crash reported at the next launch carries the device state of the run that
+  crashed.
 - Released with `Flashcat.clearAllData()` (`@flashcatcloud/core`). When the
   data is cleared, RUM writes the running session's record back to the view
   snapshot at once, without its view, so a native crash or freeze from then on

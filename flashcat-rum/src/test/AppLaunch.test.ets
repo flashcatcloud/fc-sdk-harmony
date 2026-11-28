@@ -96,6 +96,7 @@ class FakeCore implements SdkCore {
     return this.windows;
   }
   setUserInfo(_user: UserInfo): void {}
+  addUserProperties(_extraInfo: Record<string, Object>): void {}
   clearUserInfo(): void {}
   getIntakeTarget(): IntakeTarget {
     return { host: 'https://intake.example.com', clientToken: 'ct-123' };

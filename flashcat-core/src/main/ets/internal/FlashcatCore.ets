@@ -106,7 +106,10 @@ export class FlashcatCore implements SdkCore {
     this.contextProvider = new ContextProvider(
       context, configuration,
       this.consent !== TrackingConsent.NOT_GRANTED && !backgroundProcess);
-    this.crashPendingStore = new CrashPendingStore(context, !backgroundProcess);
+    // A crash record is written while the process may be going down: the
+    // events buffered before it have to be on disk first.
+    this.crashPendingStore = new CrashPendingStore(context, !backgroundProcess,
+      () => this.features.forEach((r: RegisteredFeature) => r.persistence.flushBuffered()));
   }
 
   /** Called by Flashcat.initialize. Flush buffered events when the app backgrounds. */
@@ -406,6 +409,38 @@ export class FlashcatCore implements SdkCore {
     this.bus.send(RUM_FEATURE_NAME, { 'type': 'user_changed' } as Record<string, Object>);
   }
 
+  addUserProperties(extraInfo: Record<string, Object>): void {
+    // Untyped callers can pass null or a non-object.
+    if (extraInfo === null || extraInfo === undefined || typeof extraInfo !== 'object' || Array.isArray(extraInfo)) {
+      FlashcatLog.usage('addUserProperties ignored: extraInfo must be an object');
+      return;
+    }
+    this.drainPendingRum();
+    // A new user record: the one the host passed to setUserInfo, and its extra
+    // info, stay the host's own, and events already snapshotted keep theirs.
+    const current: UserInfo = this.contextProvider.getUser();
+    const merged: Record<string, Object> = {};
+    const previous: Record<string, Object> = current.extraInfo ?? {};
+    for (const k of Object.keys(previous)) {
+      merged[k] = previous[k];
+    }
+    for (const k of Object.keys(extraInfo)) {
+      merged[k] = extraInfo[k];
+    }
+    const next: UserInfo = { extraInfo: merged };
+    if (current.id !== undefined) {
+      next.id = current.id;
+    }
+    if (current.name !== undefined) {
+      next.name = current.name;
+    }
+    if (current.email !== undefined) {
+      next.email = current.email;
+    }
+    // No user_changed: the identity is the same (Android notifies no listener either).
+    this.contextProvider.setUser(next);
+  }
+
   setTrackingConsent(consent: TrackingConsent): void {
     if (this.backgroundProcess) {
       FlashcatLog.e('setTrackingConsent ignored in the deferred-upload process (consent is read-only there)');
@@ -450,8 +485,12 @@ export class FlashcatCore implements SdkCore {
     } else {
       // → PENDING: stop uploading; new events buffer separately until a decision.
       // The persisted background job is cancelled too — an extension wake-up has
-      // nothing uploadable until the user decides.
-      this.features.forEach((r: RegisteredFeature) => r.scheduler.stop());
+      // nothing uploadable until the user decides. Events collected under the
+      // previous consent are written out now, under it.
+      this.features.forEach((r: RegisteredFeature) => {
+        r.persistence.flushBuffered();
+        r.scheduler.stop();
+      });
       this.deferredUploadRegistrar.deregister(this.deferredWorkOptions());
     }
   }
@@ -528,7 +567,7 @@ export class FlashcatCore implements SdkCore {
       // Each step on its own: a failing one must not skip the next (onStop
       // releases the feature's own timers and subscriptions).
       try {
-        r.persistence.rollActive(); // close buffered events so they're recovered next launch
+        r.persistence.stop(); // close buffered events so they're recovered next launch
       } catch (error) {
         FlashcatLog.e(`stop: ${r.feature.name} roll failed: ${error instanceof Error ? error.message : 'error'}`);
       }
@@ -827,8 +866,13 @@ class PersistenceEventWriter implements EventWriter {
       // none can happen, so the event joins the active batch (which still rolls
       // on age) instead of closing it: offline, every failed request would
       // otherwise open a new batch file and trigger a doomed upload.
+      // It is still written to disk at once: a force-flushed event (an error,
+      // a crash) may be the last thing the process does.
       const force: boolean = forceFlush === true && !this.backingOff();
-      const ok: boolean = this.persistence.write(line, force);
+      let ok: boolean = this.persistence.write(line, force);
+      if (ok && forceFlush === true && !force) {
+        ok = this.persistence.flushBuffered();
+      }
       if (ok && force) {
         this.flushTrigger();
       }

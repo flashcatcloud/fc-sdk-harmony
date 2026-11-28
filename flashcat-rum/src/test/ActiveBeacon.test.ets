@@ -81,6 +81,7 @@ class FakeCore implements SdkCore {
   setUserInfo(user: UserInfo): void {
     this.user = user;
   }
+  addUserProperties(_extraInfo: Record<string, Object>): void {}
   clearUserInfo(): void {
     this.user = {};
   }
