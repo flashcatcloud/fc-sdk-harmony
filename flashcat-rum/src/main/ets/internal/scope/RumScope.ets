@@ -13,7 +13,7 @@ export interface RumRawEvent {
                                 // | 'startResource' | 'stopResource' | 'stopResourceWithError'
                                 // | 'keepAlive' | 'markCrash' | 'appLaunch' | 'addViewLoadingTime'
                                 // | 'openLaunchView' | 'operationStep' | 'addLongTask'
-                                // | 'addViewAttributes' | 'removeViewAttributes'
+                                // | 'addViewAttributes' | 'removeViewAttributes' | 'addTiming'
                                 // markCrash: bump the active view's error+crash counts without
                                 // writing an error event (the error itself is delivered by the
                                 // durable pending-incident replay at next launch).

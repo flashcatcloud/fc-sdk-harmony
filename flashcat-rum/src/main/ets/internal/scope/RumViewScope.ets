@@ -9,6 +9,8 @@ import { VitalsCollector } from '../vitals/VitalsCollector';
 
 const MS_TO_NS: number = 1e6;
 const MAX_PENDING_RESOURCES: number = 100;
+// Android's DatadogDataConstraints.validateTimings: what a custom timing name may hold.
+const TIMING_NAME_INVALID: RegExp = /[^a-zA-Z0-9\-_.@$]/g;
 
 /**
  * Tracks the lifetime of a single view (page): its action/error/resource counts
@@ -84,6 +86,8 @@ export class RumViewScope implements RumScope {
   // value the host set wins over the SDK's own measurement of a router page.
   private loadingTimeNs: number | null = null;
   private loadingTimeManual: boolean = false;
+  // view.custom_timings: name → ns from the view's start, in the order first added.
+  private readonly customTimings: Map<string, number> = new Map<string, number>();
 
   constructor(
     featureScope: FeatureScope,
@@ -174,6 +178,14 @@ export class RumViewScope implements RumScope {
           this.clearViewContext();
           return null;
         }
+        return this;
+      case 'addTiming':
+        // Only the open view gets here (the session routes nothing else to a
+        // closed one): a stopped view takes no timing, as on Android.
+        // At least 1 ns, as on Android: a timing at the view's start is still sent.
+        this.customTimings.set(RumViewScope.timingName(event.name ?? ''),
+          Math.max(1, Math.max(0, event.timestampMs - this.startedAtMs) * MS_TO_NS));
+        this.writeViewUpdate(event.timestampMs);
         return this;
       // Only the open view gets these (the session routes nothing else to a
       // closed one). Android parity: no document of their own; the next one
@@ -313,6 +325,15 @@ export class RumViewScope implements RumScope {
     return true;
   }
 
+  /** A custom timing's name as Android sends it: invalid characters become `_`. */
+  private static timingName(name: string): string {
+    const sanitized: string = name.replace(TIMING_NAME_INVALID, '_');
+    if (sanitized !== name) {
+      FlashcatLog.usage(`addTiming: name "${name}" was modified to "${sanitized}" to match the constraints`);
+    }
+    return sanitized;
+  }
+
   /** The view is closed: later samples belong to the next view. What it holds
    * stays, so late writes (draining resources) still carry it. */
   private stopSampling(): void {
@@ -391,6 +412,13 @@ export class RumViewScope implements RumScope {
     const vitalFields: Record<string, Object> = this.vitals.toFields(timeSpentNs);
     if (this.loadingTimeNs !== null) {
       vitalFields['loading_time'] = this.loadingTimeNs;
+    }
+    if (this.customTimings.size > 0) {
+      const timings: Record<string, Object> = {};
+      this.customTimings.forEach((ns: number, timing: string) => {
+        timings[timing] = ns;
+      });
+      vitalFields['custom_timings'] = timings;
     }
     const longTask: Record<string, Object> = {};
     longTask['count'] = this.longTaskCount;

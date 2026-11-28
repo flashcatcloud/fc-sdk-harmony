@@ -158,7 +158,7 @@ export class RumApplicationScope implements RumScope {
       && event.kind !== 'stopView' && event.kind !== 'stopResource'
       && event.kind !== 'stopResourceWithError' && event.kind !== 'addViewLoadingTime'
       && event.kind !== 'addLongTask' && event.kind !== 'addViewAttributes'
-      && event.kind !== 'removeViewAttributes';
+      && event.kind !== 'removeViewAttributes' && event.kind !== 'addTiming';
   }
 
   private rememberExpiredView(session: RumSessionScope): void {

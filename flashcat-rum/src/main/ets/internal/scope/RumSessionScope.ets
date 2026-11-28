@@ -266,6 +266,8 @@ export class RumSessionScope implements RumScope {
       FlashcatLog.usage('addViewLoadingTime ignored: no view is open');
     } else if (event.kind === 'addViewAttributes' || event.kind === 'removeViewAttributes') {
       FlashcatLog.usage(`${event.kind} ignored: no view is open`);
+    } else if (event.kind === 'addTiming') {
+      FlashcatLog.usage('addTiming ignored: no view is open');
     } else if (event.kind === 'addAction' || event.kind === 'startResource' || event.kind === 'operationStep') {
       // Surfaced so integrators can see why their data is missing — previously
       // these were dropped with no trace at any log level.

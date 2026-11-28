@@ -9,6 +9,7 @@
   stopView
   addViewAttributes
   removeViewAttributes
+  addTiming
   addAction
   startAction
   stopAction
