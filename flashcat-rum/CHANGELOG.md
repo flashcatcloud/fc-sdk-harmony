@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- Every event carries `device.locale`, `device.locales` and
+  `device.time_zone`; views, errors and app launches also carry
+  `device.battery_level` and `device.power_saving_mode`, as on Android. A
+  crash reported at the next launch carries the device state of the run that
+  crashed.
+
 ## 0.8.2
 
 - Frame rate, slow and frozen frames, and app launch timing no longer need

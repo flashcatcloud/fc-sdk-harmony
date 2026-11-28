@@ -40,7 +40,7 @@ const CRASH_STORAGE_TARGET: string = '__flashcat_crash_storage';
 // backend and its view document must not be revived.
 const LAST_VIEW_MAX_AGE_MS: number = 4 * 60 * 60 * 1000;
 // Event fields that belong to the run a replayed crash happened in, not the launch replaying it.
-const CRASHED_RUN_FIELDS: string[] = ['version', 'os', 'usr', 'connectivity'];
+const CRASHED_RUN_FIELDS: string[] = ['version', 'os', 'device', 'usr', 'connectivity'];
 // OpenHarmony runtime banners written before the stack when the module's
 // sourcemap cannot be loaded, or is not loaded yet (a fault during launch).
 // Neither is a frame nor a meaningful error message.
