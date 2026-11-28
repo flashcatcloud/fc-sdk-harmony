@@ -28,7 +28,7 @@ function flagsFor(mode) {
 }
 
 // Call counters, so tests can pin how much file-system work a path does.
-const calls = { openSync: 0, readSync: 0, accessSync: 0, listFileSync: 0, statSync: 0, readTextSync: 0, stat: 0, readText: 0 };
+const calls = { openSync: 0, writeSync: 0, readSync: 0, accessSync: 0, listFileSync: 0, statSync: 0, readTextSync: 0, stat: 0, readText: 0, open: 0, write: 0 };
 
 // Kernel pseudo files (/proc/...): content on read, but a size of 0 — and the
 // device's readTextSync reads only as many bytes as the size says. Tests put
@@ -82,7 +82,23 @@ const fileIo = {
     }
     return nodeFs.readSync(fd, new Uint8Array(buf), 0, o.length ?? buf.byteLength, o.offset ?? null);
   },
-  writeSync: (fd, content) => nodeFs.writeSync(fd, content),
+  writeSync: (fd, content) => { calls.writeSync += 1; return nodeFs.writeSync(fd, content); },
+  // Promise API: settles on a later turn, as the device's does.
+  open: (p, mode) => {
+    calls.open += 1;
+    return new Promise((resolve, reject) => setImmediate(() => {
+      try { resolve({ fd: nodeFs.openSync(p, flagsFor(mode)) }); } catch (e) { reject(e); }
+    }));
+  },
+  write: (fd, content) => {
+    calls.write += 1;
+    return new Promise((resolve, reject) => setImmediate(() => {
+      try { resolve(nodeFs.writeSync(fd, content)); } catch (e) { reject(e); }
+    }));
+  },
+  close: (file) => new Promise((resolve, reject) => setImmediate(() => {
+    try { nodeFs.closeSync(typeof file === 'object' ? file.fd : file); resolve(); } catch (e) { reject(e); }
+  })),
   fsyncSync: (fd) => nodeFs.fsyncSync(fd),
   closeSync: (file) => {
     const fd = typeof file === 'object' ? file.fd : file;

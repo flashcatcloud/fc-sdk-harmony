@@ -14,9 +14,16 @@ const MAX_TOTAL_BYTES: number = 4 * 1024 * 1024;  // disk quota per feature (old
 // that binds — at 200 a device offline for half an hour hit the count with
 // <1 MB on disk and started discarding its oldest events.
 const MAX_BATCH_COUNT: number = 1000;
-// How long the in-memory quota accounting goes without re-listing the
-// directory (the deferred-upload process also deletes and claims batches).
-const QUOTA_RESCAN_MS: number = 60 * 1000;
+// Writes are buffered in memory and appended to the batch file together: a file
+// open/write/close per event cost the main thread more than the rest of the
+// write. A buffered line reaches disk at most FLUSH_DELAY_MS after it was
+// written, or as soon as FLUSH_BYTES are waiting. Backgrounding, stop, crash
+// records and force rolls write the buffer synchronously.
+const FLUSH_DELAY_MS: number = 250;
+const FLUSH_BYTES: number = 64 * 1024;
+// Bound on memory when appends cannot keep up (a burst that never yields to the
+// event loop): past it a write flushes synchronously.
+const MAX_BUFFERED_BYTES: number = MAX_BATCH_BYTES;
 // How often an idle drain looks for orphaned claims (they are recoverable only
 // after UPLOADING_RECOVERY_AGE_MS anyway).
 const CLAIM_RECOVERY_INTERVAL_MS: number = 60 * 1000;
@@ -60,6 +67,21 @@ export interface Batch {
   eventCount: number;
 }
 
+/** How an append ended. */
+enum AppendResult {
+  WRITTEN,
+  NOT_OPENED,   // nothing written
+  WRITE_FAILED  // some of the content may have been written
+}
+
+/** Lines written to a batch that are not on disk yet. */
+interface BufferedAppend {
+  name: string;
+  createdMs: number;
+  lines: string[];
+  bytes: number;
+}
+
 export interface UploadPersistence {
   readNextBatch(): Batch | null;
   deleteBatch(batchId: string): void;
@@ -79,17 +101,30 @@ export class FilePersistenceStrategy implements UploadPersistence {
   private activeName: string | null = null;   // basename of the active main batch file
   private activeCreatedMs: number = 0;
   private activeBytes: number = 0;
-  // Batch files THIS instance created: always safe to claim regardless of age
+  // Batch files THIS instance wrote: always safe to claim regardless of age
   // (their roll state is known locally). Bounded by the file-count quota.
+  // Insertion order is the order their lines were handed to the file system,
+  // which is the order the drain uploads them in (see readNextBatch).
   private readonly ownNames: Set<string> = new Set<string>();
   private pendingBytes: number = -1;          // -1 = not yet read from disk
   // Quota accounting without a directory scan per batch: bytes per batch file
-  // (plain or claimed), kept from this instance's own writes and reconciled
-  // with the directory at most every QUOTA_RESCAN_MS. It can only over-count
-  // between rescans (another process deleted something), which evicts early —
-  // the safe direction.
+  // (plain or claimed, buffered bytes included), scanned at construction, kept
+  // from this instance's own writes and reconciled with the directory listing
+  // of every drain. It can only over-count between drains (another process
+  // deleted something), which evicts early — the safe direction.
   private sizes: Map<string, number> = new Map<string, number>();
-  private quotaScannedMs: number = 0;
+  // Buffered lines in write order, one entry per batch file; the last one is
+  // usually the active batch.
+  private buffered: BufferedAppend[] = [];
+  private bufferedBytes: number = 0;
+  private flushTimer: number = -1;
+  // The batch an asynchronous append is writing to; one at a time.
+  private appendingName: string | null = null;
+  // Set by stop: nothing is scheduled any more, later writes go to disk at once.
+  private stopped: boolean = false;
+  // Bumped by wipeAll: an append in flight across it writes refused data,
+  // which is deleted when it completes.
+  private generation: number = 0;
   private claimsRecoveredMs: number = 0;
   private seq: number = 0;
   /** Roll window for the active batch; see Configuration.batchSize. */
@@ -103,6 +138,7 @@ export class FilePersistenceStrategy implements UploadPersistence {
     FlashcatLog.d(`persistence[${featureName}]: filesDir=${filesDir} rootDir=${this.rootDir}`);
     this.ensureDir(this.rootDir);
     this.restoreUploadingBatches();
+    this.rescanSizes();
   }
 
   private ensureDir(dir: string): void {
@@ -136,8 +172,13 @@ export class FilePersistenceStrategy implements UploadPersistence {
 
   // ---- main (granted) writes ----
 
-  /** Append one serialized event. When forceRoll, close the file immediately so it
-   *  becomes drainable on the next scheduler tick (used for error/crash events). */
+  /**
+   * Append one serialized event. The line is buffered in memory and reaches the
+   * batch file with the next flush (FLUSH_DELAY_MS / FLUSH_BYTES), so true means
+   * accepted, not yet on disk. When forceRoll, everything buffered is written
+   * now and the file closed, so the event is drainable on the next scheduler
+   * tick (used for error/crash events); the result then says whether it landed.
+   */
   write(serializedEvent: string, forceRoll: boolean = false): boolean {
     const line: string = serializedEvent + '\n';
     // Account in UTF-8 bytes (what actually lands on disk / on the wire), not
@@ -153,50 +194,273 @@ export class FilePersistenceStrategy implements UploadPersistence {
       this.openNewActive(now);
     }
     const name: string = this.activeName as string;
-    let ok: boolean = FilePersistenceStrategy.append(`${this.rootDir}/${name}`, line);
-    if (!ok) {
-      // Self-heal a directory removed underneath us, then try once more —
-      // checking for it before every write cost a syscall per event.
-      this.ensureDir(this.rootDir);
-      ok = FilePersistenceStrategy.append(`${this.rootDir}/${name}`, line);
-    }
-    if (ok) {
-      this.activeBytes += lineBytes;
-      this.sizes.set(name, (this.sizes.get(name) ?? 0) + lineBytes);
-    } else {
-      this.ownNames.delete(name); // the file may not exist — don't track it
-      if (this.activeBytes === 0) {
-        this.sizes.delete(name); // nothing landed: no batch to account for
-      }
-      this.activeName = null;
-      this.activeBytes = 0;
-    }
-    FlashcatLog.d(`persist.write: ok=${ok} forceRoll=${forceRoll} batch=${name} dir=${this.rootDir}`);
+    this.buffer(name, line, lineBytes);
     if (forceRoll) {
+      const ok: boolean = this.flushBuffered();
       this.activeName = null; // close so the just-written event is immediately drainable
+      return ok;
+    }
+    if (this.bufferedBytes >= MAX_BUFFERED_BYTES) {
+      this.flushBuffered();
+    } else {
+      this.scheduleFlush();
+    }
+    return true;
+  }
+
+  /** Write everything buffered and close the active file so its events become drainable (background/stop/flush). */
+  rollActive(): void {
+    this.flushBuffered();
+    this.activeName = null;
+  }
+
+  /**
+   * SDK stop: rollActive, and nothing is scheduled from now on — no flush
+   * timer, and an append in flight schedules nothing when it completes. A
+   * write after it goes to disk at once.
+   */
+  stop(): void {
+    this.stopped = true;
+    this.rollActive();
+  }
+
+  /**
+   * An owner never appends to a batch past its roll window: another process may
+   * claim a batch that old. Buffered lines reach disk up to FLUSH_DELAY_MS after
+   * they were written, so the active batch rolls that much early.
+   */
+  private shouldRoll(now: number, incomingBytes: number): boolean {
+    return (this.activeBytes + incomingBytes) > MAX_BATCH_BYTES || this.activeExpired(now);
+  }
+
+  private activeExpired(now: number): boolean {
+    return (now - this.activeCreatedMs) > this.batchAgeMs - FLUSH_DELAY_MS;
+  }
+
+  private openNewActive(now: number): void {
+    this.activeName = this.newBatchName(now);
+    this.activeCreatedMs = now;
+    this.activeBytes = 0;
+    this.sizes.set(this.activeName, 0);
+  }
+
+  /**
+   * A fresh batch name; names sort in creation order (seq is padded). It joins
+   * ownNames when lines are first handed to it, not here: that is what keeps
+   * ownNames in write order.
+   */
+  private newBatchName(now: number): string {
+    this.seq += 1;
+    const rand: number = Math.floor(Math.random() * 1e6);
+    return `${BATCH_PREFIX}${now}-${this.seq.toString().padStart(8, '0')}-${rand}${BATCH_SUFFIX}`;
+  }
+
+  // ---- buffered appends ----
+
+  private buffer(name: string, line: string, bytes: number): void {
+    const last: BufferedAppend | undefined = this.buffered.length > 0
+      ? this.buffered[this.buffered.length - 1] : undefined;
+    if (last !== undefined && last.name === name) {
+      last.lines.push(line);
+      last.bytes += bytes;
+    } else {
+      this.buffered.push({ name: name, createdMs: this.activeCreatedMs, lines: [line], bytes: bytes });
+    }
+    this.bufferedBytes += bytes;
+    this.activeBytes += bytes;
+    this.sizes.set(name, (this.sizes.get(name) ?? 0) + bytes);
+  }
+
+  /** Starts a flush when enough is waiting, else makes sure one is due within FLUSH_DELAY_MS. */
+  private scheduleFlush(): void {
+    if (this.buffered.length === 0) {
+      return;
+    }
+    if (this.stopped) {
+      this.flushBuffered();
+      return;
+    }
+    if (this.bufferedBytes >= FLUSH_BYTES && this.appendingName === null) {
+      this.flushAsync();
+      return;
+    }
+    if (this.flushTimer === -1) {
+      this.flushTimer = setTimeout(() => {
+        this.flushTimer = -1;
+        this.flushAsync();
+      }, FLUSH_DELAY_MS);
+    }
+  }
+
+  private cancelFlushTimer(): void {
+    if (this.flushTimer !== -1) {
+      clearTimeout(this.flushTimer);
+      this.flushTimer = -1;
+    }
+  }
+
+  /**
+   * Appends the oldest buffered batch with the asynchronous file API: one open,
+   * one write of all its lines, one close. One append is in flight at a time;
+   * its completion schedules the next.
+   */
+  private flushAsync(): void {
+    if (this.appendingName !== null || this.buffered.length === 0) {
+      return;
+    }
+    this.cancelFlushTimer();
+    this.enforceQuota();
+    const pending: BufferedAppend = this.buffered.shift() as BufferedAppend;
+    this.bufferedBytes -= pending.bytes;
+    const name: string = this.appendTarget(pending, Date.now());
+    const path: string = `${this.rootDir}/${name}`;
+    const content: string = pending.lines.join('');
+    const generation: number = this.generation;
+    this.appendingName = name;
+    FilePersistenceStrategy.appendAsync(path, content).then((result: AppendResult) => {
+      this.appendingName = null;
+      // Whatever happens here, the next flush is scheduled: a throw would
+      // otherwise leave the buffer waiting for the next write.
+      try {
+        if (generation !== this.generation) {
+          FilePersistenceStrategy.unlinkQuietly(path); // wiped meanwhile: refused data
+        } else {
+          this.settleAppend(result, name, content, pending);
+        }
+      } catch (e) {
+        FlashcatLog.e(`append completion failed: ${FilePersistenceStrategy.errorText(e)}`);
+      } finally {
+        this.scheduleFlush();
+      }
+    });
+  }
+
+  /**
+   * Writes everything buffered now, synchronously — for backgrounding (the
+   * process may be frozen or killed next), stop, consent changes, crash
+   * records and force rolls. False when some line could not be written.
+   * Lines already handed to an asynchronous append are not waited for: that
+   * write is with the system already.
+   */
+  flushBuffered(): boolean {
+    this.cancelFlushTimer();
+    if (this.buffered.length === 0) {
+      return true;
+    }
+    this.enforceQuota();
+    const pendings: BufferedAppend[] = this.buffered;
+    this.buffered = [];
+    this.bufferedBytes = 0;
+    const now: number = Date.now();
+    let ok: boolean = true;
+    for (const pending of pendings) {
+      const name: string = this.appendTarget(pending, now);
+      const content: string = pending.lines.join('');
+      const result: AppendResult = FilePersistenceStrategy.append(`${this.rootDir}/${name}`, content);
+      if (!this.settleAppend(result, name, content, pending)) {
+        ok = false;
+      }
     }
     return ok;
   }
 
-  /** Close the active file so buffered events become drainable (flush on background/stop). */
-  rollActive(): void {
-    this.activeName = null;
+  /**
+   * What a finished append of `pending`'s lines to `name` leaves to do, for
+   * both the synchronous and the asynchronous path. True when the lines are
+   * on disk. NOT_OPENED wrote nothing, so the append is retried once; after
+   * WRITE_FAILED part of the content may be in the file already and a retry
+   * would duplicate it, so it is not retried: a torn last line is dropped on
+   * read (completeLines), the rest of these lines is lost.
+   */
+  private settleAppend(result: AppendResult, name: string, content: string, pending: BufferedAppend): boolean {
+    if (result === AppendResult.WRITTEN) {
+      return true;
+    }
+    if (result === AppendResult.NOT_OPENED) {
+      return this.healAndAppend(name, content, pending.bytes);
+    }
+    FlashcatLog.e(`append: ${pending.lines.length} events may be incomplete in ${name}`);
+    return false;
   }
 
-  private shouldRoll(now: number, incomingBytes: number): boolean {
-    return (this.activeBytes + incomingBytes) > MAX_BATCH_BYTES
-      || (now - this.activeCreatedMs) > this.batchAgeMs;
+  /**
+   * The file a buffered batch's lines go to: its own, unless an append to it is
+   * still in flight (it would land after these lines) or it is past its roll
+   * window (another process may claim it). Then the lines open a new batch. In
+   * the first case it is named after the batch it continues, so it sorts right
+   * after it and before every batch opened since; in the second only a new
+   * date keeps it from being claimed while it is written. These names order
+   * the batches for a later process, which drains this one's leftovers by
+   * name; this process drains its own in ownNames order, which the target
+   * joins here, as its lines are handed to the file system.
+   */
+  private appendTarget(pending: BufferedAppend, now: number): string {
+    const expired: boolean = (now - pending.createdMs) > this.batchAgeMs;
+    if (pending.name !== this.appendingName && !expired) {
+      this.ownNames.add(pending.name); // a name seen before keeps its place
+      return pending.name;
+    }
+    let name: string;
+    if (expired) {
+      name = this.newBatchName(now);
+    } else {
+      // A letter sorts after the '.' of the suffix: `…-<rand>c<seq>.ndjson` follows `…-<rand>.ndjson`.
+      this.seq += 1;
+      name = `${pending.name.slice(0, pending.name.length - BATCH_SUFFIX.length)}c${this.seq}${BATCH_SUFFIX}`;
+    }
+    this.ownNames.add(name);
+    this.sizes.set(name, pending.bytes);
+    this.releaseBytes(pending.name, pending.bytes);
+    if (pending.name === this.activeName) {
+      this.activeName = null;
+    }
+    return name;
   }
 
-  private openNewActive(now: number): void {
-    this.enforceQuota();
-    this.seq += 1;
-    const rand: number = Math.floor(Math.random() * 1e6);
-    this.activeName = `${BATCH_PREFIX}${now}-${this.seq}-${rand}${BATCH_SUFFIX}`;
-    this.activeCreatedMs = now;
-    this.activeBytes = 0;
-    this.ownNames.add(this.activeName);
-    this.sizes.set(this.activeName, 0);
+  /**
+   * Self-heal a directory removed underneath us, then try the append once
+   * more; on failure the lines are lost. Called only when nothing was written.
+   */
+  private healAndAppend(name: string, content: string, bytes: number): boolean {
+    this.ensureDir(this.rootDir);
+    const result: AppendResult = FilePersistenceStrategy.append(`${this.rootDir}/${name}`, content);
+    if (result === AppendResult.WRITTEN) {
+      return true;
+    }
+    if (result === AppendResult.WRITE_FAILED) {
+      return false; // part of it may be on disk: the batch stays accounted
+    }
+    this.releaseBytes(name, bytes);
+    if (name === this.activeName) {
+      this.activeName = null;
+      this.activeBytes = 0;
+    }
+    return false;
+  }
+
+  /** Bytes accounted to `name` that will not be on disk under it. */
+  private releaseBytes(name: string, bytes: number): void {
+    const left: number = (this.sizes.get(name) ?? 0) - bytes;
+    if (left > 0 || name === this.appendingName) {
+      this.sizes.set(name, left > 0 ? left : 0);
+      return;
+    }
+    // Nothing of it landed: no batch to account for or to claim.
+    this.sizes.delete(name);
+    this.ownNames.delete(name);
+  }
+
+  /** Lines for `name` are buffered or being appended: it is not complete on disk. */
+  private hasUnwritten(name: string): boolean {
+    if (name === this.appendingName) {
+      return true;
+    }
+    for (const pending of this.buffered) {
+      if (pending.name === name) {
+        return true;
+      }
+    }
+    return false;
   }
 
   // ---- pending (pre-consent) buffer ----
@@ -221,7 +485,7 @@ export class FilePersistenceStrategy implements UploadPersistence {
         return false; // single line larger than half the cap — give up
       }
     }
-    const ok: boolean = FilePersistenceStrategy.append(path, line);
+    const ok: boolean = FilePersistenceStrategy.append(path, line) === AppendResult.WRITTEN;
     if (ok) {
       this.pendingBytes += lineBytes;
     }
@@ -240,6 +504,14 @@ export class FilePersistenceStrategy implements UploadPersistence {
       if (!fs.accessSync(path)) {
         return;
       }
+      // Upload order follows ownNames, and the pending events are older than
+      // anything written after the grant. Every batch this instance already
+      // holds was written before the pending events (granted writes stop while
+      // consent is PENDING), so the migrated batches join ownNames after them —
+      // but the active one would take the post-grant events too and upload them
+      // ahead of the older pending ones. Close it: later writes open a batch
+      // that follows the migrated ones.
+      this.rollActive();
       const data: string = fs.readTextSync(path);
       if (data.length > 0) {
         // Age-filter: migrated batches are named with TODAY's timestamp, so the
@@ -298,15 +570,12 @@ export class FilePersistenceStrategy implements UploadPersistence {
 
   private writeMigratedBatch(lines: string[]): void {
     this.enforceQuota(); // migration must not bypass the per-feature disk cap
-    const now: number = Date.now();
-    this.seq += 1;
-    const rand: number = Math.floor(Math.random() * 1e6);
-    const name: string = `${BATCH_PREFIX}${now}-${this.seq}-${rand}${BATCH_SUFFIX}`;
     // Own batch: without this the foreign-claim age gate blocks the migrated
     // batch from our own drain for the roll-age window.
-    this.ownNames.add(name);
+    const name: string = this.newBatchName(Date.now());
     const content: string = lines.join('\n') + '\n';
-    if (FilePersistenceStrategy.append(`${this.rootDir}/${name}`, content)) {
+    if (FilePersistenceStrategy.append(`${this.rootDir}/${name}`, content) !== AppendResult.NOT_OPENED) {
+      this.ownNames.add(name);
       this.sizes.set(name, FilePersistenceStrategy.utf8Length(content));
     }
   }
@@ -378,6 +647,12 @@ export class FilePersistenceStrategy implements UploadPersistence {
    */
   wipeAll(): void {
     this.wipePending();
+    // The one place collected data is wiped: whatever wipes it has to come
+    // through here, or buffered lines would reappear on disk after the wipe.
+    this.cancelFlushTimer();
+    this.buffered = [];
+    this.bufferedBytes = 0;
+    this.generation += 1;
     this.activeName = null;
     this.activeBytes = 0;
     this.ownNames.clear();
@@ -403,8 +678,8 @@ export class FilePersistenceStrategy implements UploadPersistence {
   /** Oldest closed batch ready to upload; ages out the active file first if stale. */
   readNextBatch(): Batch | null {
     const now: number = Date.now();
-    if (this.activeName !== null && (now - this.activeCreatedMs) > this.batchAgeMs) {
-      this.activeName = null; // close so it's eligible in this same pass
+    if (this.activeName !== null && this.activeExpired(now)) {
+      this.activeName = null; // close so it's eligible once its buffered lines are written
     }
     // Recover stale claims during the process's lifetime, not only at
     // construction — an orphaned .uploading file (process killed mid-upload)
@@ -414,9 +689,12 @@ export class FilePersistenceStrategy implements UploadPersistence {
       this.claimsRecoveredMs = now;
       this.restoreUploadingBatches();
     }
-    const all: string[] = this.listBatches();
-    const ready: string[] = all.filter((n: string) => n !== this.activeName);
-    for (const originalName of ready) {
+    const listed: string[] | null = this.listBatchFiles();
+    if (listed === null) {
+      return null;
+    }
+    this.reconcileSizes(listed);
+    for (const originalName of this.drainOrder(listed)) {
       // Age out batches the intake would silently discard per-event anyway.
       const createdMs: number = FilePersistenceStrategy.batchCreatedMs(originalName);
       if (createdMs > 0 && (now - createdMs) > MAX_BATCH_RETENTION_MS) {
@@ -456,6 +734,33 @@ export class FilePersistenceStrategy implements UploadPersistence {
       }
     }
     return null; // idle — silent to avoid per-tick spam
+  }
+
+  /**
+   * Batches to try, in upload order. The intake keeps the last view update to
+   * ARRIVE, so batches must arrive in the order their events were written: a
+   * view update in a later batch overtaken by an earlier one is overwritten
+   * by the stale one. Hence the rule: this instance's own batches go in the
+   * order their lines were handed to the file system (ownNames), and none
+   * goes while one handed over before it is still incomplete — the active
+   * batch, or one with lines buffered or in an asynchronous append. Before
+   * them, batches left by earlier processes or written by another one, by
+   * name (creation time).
+   */
+  private drainOrder(listed: string[]): string[] {
+    const order: string[] = listed
+      .filter((n: string) => n.endsWith(BATCH_SUFFIX) && !this.ownNames.has(n))
+      .sort();
+    const onDisk: Set<string> = new Set<string>(listed);
+    for (const name of Array.from(this.ownNames)) {
+      if (name === this.activeName || this.hasUnwritten(name)) {
+        break;
+      }
+      if (onDisk.has(name)) {
+        order.push(name);
+      }
+    }
+    return order;
   }
 
   /**
@@ -530,13 +835,13 @@ export class FilePersistenceStrategy implements UploadPersistence {
 
   // ---- helpers ----
 
-  private listBatches(): string[] {
+  /** Batch files on disk, plain and claimed; null when the directory cannot be listed. */
+  private listBatchFiles(): string[] | null {
     try {
-      return fs.listFileSync(this.rootDir)
-        .filter((n: string) => n.startsWith(BATCH_PREFIX) && n.endsWith(BATCH_SUFFIX))
-        .sort();
+      return fs.listFileSync(this.rootDir).filter((n: string) => n.startsWith(BATCH_PREFIX)
+        && (n.endsWith(BATCH_SUFFIX) || n.endsWith(UPLOADING_SUFFIX)));
     } catch (_e) {
-      return [];
+      return null;
     }
   }
 
@@ -641,30 +946,23 @@ export class FilePersistenceStrategy implements UploadPersistence {
    * restoreUploadingBatches and evicted on a later pass).
    */
   private enforceQuota(): void {
-    const now: number = Date.now();
-    let rescanned: boolean = false;
-    if (now - this.quotaScannedMs >= QUOTA_RESCAN_MS) {
-      this.rescanSizes(now);
-      rescanned = true;
-    }
     if (!this.overQuota()) {
       return;
     }
-    if (!rescanned) {
-      // About to delete undelivered data: count from the directory, not from
-      // accounting another process may have made stale (it uploads and deletes
-      // batches too).
-      this.rescanSizes(now);
-      if (!this.overQuota()) {
-        return;
-      }
+    // About to delete undelivered data: count from the directory, not from
+    // accounting another process may have made stale (it uploads and deletes
+    // batches too).
+    this.rescanSizes();
+    if (!this.overQuota()) {
+      return;
     }
     let total: number = 0;
     const batches: string[] = [];
     this.sizes.forEach((bytes: number, name: string) => {
       total += bytes;
-      // The active batch is never a victim: it holds the newest events.
-      if (name.endsWith(BATCH_SUFFIX) && name !== this.activeName) {
+      // The active batch is never a victim: it holds the newest events. Nor is
+      // one with lines still to be written: they would recreate it.
+      if (name.endsWith(BATCH_SUFFIX) && name !== this.activeName && !this.hasUnwritten(name)) {
         batches.push(name);
       }
     });
@@ -693,22 +991,23 @@ export class FilePersistenceStrategy implements UploadPersistence {
     return count > MAX_BATCH_COUNT || total > MAX_TOTAL_BYTES;
   }
 
-  /**
-   * Rebuild the per-batch byte map from the directory. Sizes this instance
-   * already knows (its own writes) are kept; only files it has not seen — the
-   * other process's, or claims — are stat'ed. Claimed (.uploading) files count
-   * toward the byte total but are never eviction victims (they may be
-   * mid-upload).
-   */
-  private rescanSizes(now: number): void {
-    this.quotaScannedMs = now;
-    let names: string[] = [];
-    try {
-      names = fs.listFileSync(this.rootDir).filter((n: string) => n.startsWith(BATCH_PREFIX)
-        && (n.endsWith(BATCH_SUFFIX) || n.endsWith(UPLOADING_SUFFIX)));
-    } catch (_e) {
-      return; // quota check is best-effort: keep what we had
+  /** Rebuild the per-batch byte map from the directory. */
+  private rescanSizes(): void {
+    const names: string[] | null = this.listBatchFiles();
+    if (names !== null) {
+      this.reconcileSizes(names); // a directory that cannot be listed keeps what we had
     }
+  }
+
+  /**
+   * Rebuild the per-batch byte map from a directory listing. Sizes this
+   * instance already knows (its own writes) are kept; only files it has not
+   * seen — the other process's, or claims — are stat'ed. Batches with lines
+   * not written yet stay accounted though they may not exist yet. Claimed
+   * (.uploading) files count toward the byte total but are never eviction
+   * victims (they may be mid-upload).
+   */
+  private reconcileSizes(names: string[]): void {
     const next: Map<string, number> = new Map<string, number>();
     for (const n of names) {
       // A claim keeps the size its batch had under the original name.
@@ -716,6 +1015,11 @@ export class FilePersistenceStrategy implements UploadPersistence {
         (n.endsWith(UPLOADING_SUFFIX) ? this.sizes.get(FilePersistenceStrategy.originalName(n)) : undefined);
       next.set(n, known !== undefined ? known : FilePersistenceStrategy.sizeOf(`${this.rootDir}/${n}`));
     }
+    this.sizes.forEach((bytes: number, name: string) => {
+      if (!next.has(name) && (name === this.activeName || this.hasUnwritten(name))) {
+        next.set(name, bytes);
+      }
+    });
     this.sizes = next;
   }
 
@@ -729,18 +1033,59 @@ export class FilePersistenceStrategy implements UploadPersistence {
     return buffer.byteLength(s, 'utf-8');
   }
 
-  private static append(path: string, content: string): boolean {
+  /** One open, write and close. A failed close does not fail it: the content was written. */
+  private static append(path: string, content: string): AppendResult {
+    let file: fs.File;
     try {
-      const file = fs.openSync(path, fs.OpenMode.READ_WRITE | fs.OpenMode.CREATE | fs.OpenMode.APPEND);
-      try {
-        fs.writeSync(file.fd, content);
-        return true;
-      } finally {
-        fs.closeSync(file);
-      }
+      file = fs.openSync(path, fs.OpenMode.READ_WRITE | fs.OpenMode.CREATE | fs.OpenMode.APPEND);
     } catch (e) {
       FlashcatLog.e(`append failed path=${path}: ${FilePersistenceStrategy.errorText(e)}`);
-      return false;
+      return AppendResult.NOT_OPENED;
+    }
+    let result: AppendResult = AppendResult.WRITE_FAILED;
+    try {
+      fs.writeSync(file.fd, content);
+      result = AppendResult.WRITTEN;
+    } catch (e) {
+      FlashcatLog.e(`append failed path=${path}: ${FilePersistenceStrategy.errorText(e)}`);
+    }
+    try {
+      fs.closeSync(file);
+    } catch (_e) {
+      // The descriptor is gone either way.
+    }
+    return result;
+  }
+
+  /** Like append, with the Promise API. */
+  private static async appendAsync(path: string, content: string): Promise<AppendResult> {
+    let file: fs.File;
+    try {
+      file = await fs.open(path, fs.OpenMode.READ_WRITE | fs.OpenMode.CREATE | fs.OpenMode.APPEND);
+    } catch (e) {
+      FlashcatLog.e(`append failed path=${path}: ${FilePersistenceStrategy.errorText(e)}`);
+      return AppendResult.NOT_OPENED;
+    }
+    let result: AppendResult = AppendResult.WRITE_FAILED;
+    try {
+      await fs.write(file.fd, content);
+      result = AppendResult.WRITTEN;
+    } catch (e) {
+      FlashcatLog.e(`append failed path=${path}: ${FilePersistenceStrategy.errorText(e)}`);
+    }
+    try {
+      await fs.close(file);
+    } catch (_e) {
+      // The descriptor is gone either way.
+    }
+    return result;
+  }
+
+  private static unlinkQuietly(path: string): void {
+    try {
+      fs.unlinkSync(path);
+    } catch (_e) {
+      // Already gone.
     }
   }
 
