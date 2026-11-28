@@ -477,8 +477,7 @@ export class FlashcatCore implements SdkCore {
       // The RUM view snapshot and pending crash incidents live outside the
       // feature batches but are just as personal — a whole ViewEvent, and a
       // crash's stack plus session/view ids. Revocation has to take them too.
-      this.bus.send(CRASH_STORAGE_TARGET,
-        { 'type': 'crash_storage_consent_revoked' } as Record<string, Object>);
+      this.bus.send(CRASH_STORAGE_TARGET, { 'type': 'crash_storage_wipe' } as Record<string, Object>);
       // RUM may still hold events in memory that have not reached a batch;
       // those are the refused user's data as much as the batches are.
       this.bus.send(RUM_FEATURE_NAME, { 'type': 'consent_revoked' } as Record<string, Object>);
@@ -494,6 +493,26 @@ export class FlashcatCore implements SdkCore {
       });
       this.deferredUploadRegistrar.deregister(this.deferredWorkOptions());
     }
+  }
+
+  /**
+   * Android's `clearAllData`: delete every event collected and not uploaded yet
+   * — each feature's batches and pre-consent buffer, the pending crash
+   * incidents and the RUM view snapshot — and the stored anonymous id (the next
+   * launch is a new device) without stopping anything. Uploads,
+   * consent and the running session carry on; what is recorded next is kept.
+   */
+  clearAllData(): void {
+    if (this.backgroundProcess) {
+      FlashcatLog.e('clearAllData ignored in the deferred-upload process');
+      return;
+    }
+    // Events the host called before this one are written first, so they go too.
+    this.drainPendingRum();
+    this.features.forEach((r: RegisteredFeature) => r.persistence.wipeAll());
+    this.bus.send(CRASH_STORAGE_TARGET, { 'type': 'crash_storage_wipe' } as Record<string, Object>);
+    this.contextProvider.forgetPersistedIdentity();
+    this.bus.send(RUM_FEATURE_NAME, { 'type': 'data_cleared' } as Record<string, Object>);
   }
 
   getIntakeTarget(): IntakeTarget {

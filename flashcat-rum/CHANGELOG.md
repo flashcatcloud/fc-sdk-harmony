@@ -7,6 +7,14 @@
   `device.battery_level` and `device.power_saving_mode`, as on Android. A
   crash reported at the next launch carries the device state of the run that
   crashed.
+- Released with `Flashcat.clearAllData()` (`@flashcatcloud/core`). When the
+  data is cleared, RUM writes the running session's record back to the view
+  snapshot at once, without its view, so a native crash or freeze from then on
+  is still reported in that session; the session's next view document goes on
+  file as soon as it is written. The stored active-device beacon and today's
+  sent marker are dropped, as Android does, so the beacon is sent again on the
+  next trigger. A session kept only on error keeps the events it holds in
+  memory, as on Android.
 
 ## 0.8.2
 

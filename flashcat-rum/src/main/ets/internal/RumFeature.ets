@@ -502,6 +502,13 @@ export class RumFeature implements Feature, FeatureEventReceiver {
       // The process may be about to go away: the latest view goes on file now,
       // not after the snapshot's write delay.
       LastViewSnapshot.flush();
+    } else if (type === 'data_cleared') {
+      // The core deleted the snapshot with the batches: the running session goes
+      // back on file without its view, so a fault from now on is still its own.
+      LastViewSnapshot.cleared();
+      if (this.activeBeacon !== null) {
+        this.activeBeacon.forget(); // as Android's clearData: today's beacon is sent again
+      }
     } else if (type === 'consent_revoked') {
       // The core has wiped its batches; what a session still holds in memory
       // goes the same way.

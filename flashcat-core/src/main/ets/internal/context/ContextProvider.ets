@@ -31,6 +31,9 @@ export class ContextProvider {
   private readonly configuration: Configuration;
   private readonly device: DeviceInfo;
   private readonly anonymousId: string;
+  // clearAllData deleted the stored id: this process keeps its id in memory but
+  // must never store it again, or the next launch would not get a new one.
+  private identityForgotten: boolean = false;
   private user: UserInfo = {};
   private network: NetworkInfo = { status: 'maybe', interfaces: [] };
   private netConnection: connection.NetConnection | null = null;
@@ -72,6 +75,9 @@ export class ContextProvider {
    * keeps a single identity across launches instead of splitting on the grant.
    */
   persistIdentityNow(): void {
+    if (this.identityForgotten) {
+      return;
+    }
     try {
       const prefs: preferences.Preferences =
         preferences.getPreferencesSync(this.appContext, { name: PREFERENCES_NAME });
@@ -85,6 +91,25 @@ export class ContextProvider {
       });
     } catch (_e) {
       // Preferences unavailable — the per-process id stands.
+    }
+  }
+
+  /**
+   * clearAllData: delete the stored anonymous id, as Android's clearAllData
+   * deletes the one in the RUM data store. The running process keeps its id, so
+   * the session in flight stays one device; the next launch generates a new one.
+   */
+  forgetPersistedIdentity(): void {
+    this.identityForgotten = true;
+    try {
+      const prefs: preferences.Preferences =
+        preferences.getPreferencesSync(this.appContext, { name: PREFERENCES_NAME });
+      prefs.deleteSync(ANONYMOUS_ID_KEY);
+      prefs.flush((_err) => {
+        // Best-effort durability, same as loadOrCreateAnonymousId.
+      });
+    } catch (_e) {
+      // Preferences unavailable — nothing stored to delete.
     }
   }
 

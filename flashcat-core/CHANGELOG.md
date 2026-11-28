@@ -51,6 +51,21 @@
   carry the result. RUM first writes the events it still holds queued, with the
   user of their call. An `extraInfo` that is not an object is ignored with a
   warning.
+- `Flashcat.clearAllData(instanceName?)`, as Android's `Datadog.clearAllData`:
+  deletes all data collected and not uploaded yet — every feature's batches
+  (including one being uploaded), the events buffered while consent is pending,
+  the crashes waiting to be reported on the next launch, and the RUM view
+  snapshot. The SDK is not stopped: uploads, the tracking consent and the
+  current RUM session carry on, and events recorded afterwards are kept and
+  uploaded as usual. Events RUM still holds queued are written first, so they
+  are deleted too. Ignored in the deferred-upload process.
+- `clearAllData` also deletes the stored anonymous device id (`usr.anonymous_id`),
+  as Android does: devices are counted as new after `clearAllData`. As on
+  Android, the running process keeps its id until it ends, so the session in
+  flight stays one device; the next launch generates and stores a new id. A
+  consent granted later in the same process does not store the cleared id again.
+- Kept: the consent record, the remote configuration cache and the crash
+  de-duplication and crash-loop records (hashes and timestamps only).
 
 ## 0.8.2
 
