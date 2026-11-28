@@ -42,5 +42,22 @@ export default function crashPendingStoreTests(): void {
         expect(readLastView(store)).assertEqual('{"pid":1,"session":{"id":"b","sampled":true}}');
         expect(fs.accessSync(tmp)).assertFalse();
       });
+
+    it('anIncidentIsWrittenEvenWhenTheFlushBeforeItThrows',
+      TestType.FUNCTION | Size.SMALLTEST | Level.LEVEL0, (): void => {
+        const filesDir: string = `/tmp/flashcat-crash-store-test-${Date.now()}-${seq++}`;
+        let flushes: number = 0;
+        const store: CrashPendingStore = new CrashPendingStore(
+          { 'filesDir': filesDir } as Object as common.Context, false, (): void => {
+            flushes += 1;
+            throw new Error('flush failed');
+          });
+        const result: Record<string, Object> = command(store,
+          { 'type': 'crash_storage_write', 'incident_id': 'i-1', 'serialized': '{"incident":1}' });
+        expect(flushes).assertEqual(1);
+        expect(result['success'] === true).assertTrue();
+        expect(fs.readTextSync(`${filesDir}/flashcat/crash-pending/${result['file_name'] as string}`))
+          .assertEqual('{"incident":1}');
+      });
   });
 }

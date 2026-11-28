@@ -1,5 +1,72 @@
 # Changelog
 
+## Unreleased
+
+- Storage counts an event's UTF-8 bytes with the runtime's native
+  `buffer.byteLength` instead of a per-character loop in ArkTS, the largest
+  single main-thread cost of writing an event. The counts are unchanged,
+  including a lone surrogate (3 bytes, the replacement character).
+- Events are buffered in memory and appended to their batch file together,
+  with the asynchronous file API, normally within 250 ms of being written or
+  as soon as 64 KB are waiting. A write no longer opens, writes and closes the file on
+  the main thread. Backgrounding, `stop`, a consent change, a crash record and
+  a force-flushed event (errors) write the buffer synchronously. They do not
+  wait for an asynchronous append already started, so a process that dies
+  right after one of them can still lose that append's events (usually up
+  to 64 KB, more when appends fall behind). A native crash, a freeze or a
+  process killed outright in the foreground loses what is not on disk yet:
+  normally the last 250 ms of events; when appends fall behind, as in a long
+  burst, the buffer can hold more, up to 512 KB, past which writes flush
+  synchronously. Revoking consent discards the buffer.
+- A process still uploads its batches in the order their events were
+  written: a batch waits while one written before it has events not yet on
+  disk. The intake keeps the view update that arrives last, so a batch
+  overtaken by a later one would overwrite the newer view state.
+- Events collected while consent was pending upload before the events written
+  after the grant. The batch that was active when consent became pending
+  used to take the later events too and upload them first.
+- A synchronous write is retried only when the file could not be opened. A
+  write that failed part-way is no longer repeated (it duplicated the events
+  already written), and a failure to close the file after a complete write no
+  longer counts as a failed write.
+- The active batch rolls 250 ms before its window ends, so it is complete on
+  disk before another process may claim it, and the disk quota is enforced
+  at every append.
+- The network context follows a network coming back after a loss right away:
+  events stop reporting `not_connected` as soon as the system says a network
+  is available, instead of at its next capability change.
+- The context's device carries the preferred languages (`locale`, `locales`),
+  the time zone, the battery level (0–1, read at most once a minute) and
+  whether a power saving mode is on (power save, extreme power save or custom
+  power save). Languages, time zone and power saving are read at
+  initialization and again when the system announces a change
+  (`usual.event.LOCALE_CHANGED`, `TIMEZONE_CHANGED`,
+  `POWER_SAVE_MODE_CHANGED`); the subscription ends when the SDK stops. A value
+  the system cannot give is left out. No permission is needed.
+- `SdkCore.addUserProperties(extraInfo)`, as Android's
+  `Datadog.addUserProperties` (iOS: `addUserExtraInfo`): merges `extraInfo`
+  into the current user's extra info. A key already set is replaced, the others
+  are kept, and the user's id, name and email are left as they are; with no
+  user set, the user gets the extra info only. Events recorded from then on
+  carry the result. RUM first writes the events it still holds queued, with the
+  user of their call. An `extraInfo` that is not an object is ignored with a
+  warning.
+- `Flashcat.clearAllData(instanceName?)`, as Android's `Datadog.clearAllData`:
+  deletes all data collected and not uploaded yet — every feature's batches
+  (including one being uploaded), the events buffered while consent is pending,
+  the crashes waiting to be reported on the next launch, and the RUM view
+  snapshot. The SDK is not stopped: uploads, the tracking consent and the
+  current RUM session carry on, and events recorded afterwards are kept and
+  uploaded as usual. Events RUM still holds queued are written first, so they
+  are deleted too. Ignored in the deferred-upload process.
+- `clearAllData` also deletes the stored anonymous device id (`usr.anonymous_id`),
+  as Android does: devices are counted as new after `clearAllData`. As on
+  Android, the running process keeps its id until it ends, so the session in
+  flight stays one device; the next launch generates and stores a new id. A
+  consent granted later in the same process does not store the cleared id again.
+- Kept: the consent record, the remote configuration cache and the crash
+  de-duplication and crash-loop records (hashes and timestamps only).
+
 ## 0.8.2
 
 - `SdkCore.liveWindowContexts()`: the context of every ability whose window
