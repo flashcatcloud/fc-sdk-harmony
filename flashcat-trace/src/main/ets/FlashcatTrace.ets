@@ -1,4 +1,5 @@
 import { rcp } from '@kit.RemoteCommunicationKit';
+import { http } from '@kit.NetworkKit';
 import { util } from '@kit.ArkTS';
 import { Flashcat, FlashcatLog, SdkCore } from '@flashcatcloud/core';
 import { TraceConfiguration } from './TraceConfiguration';
@@ -8,6 +9,7 @@ import {
   TraceInterceptor, publishTraceId, isInjectionAllowed, hostOfUrl,
   publishResourceStarted, publishResourceCompleted, publishResourceFailed
 } from './internal/TraceInterceptor';
+import { transferTimingOfHttp } from './internal/TransferTiming';
 
 /**
  * Distributed-tracing context propagation for HarmonyOS.
@@ -46,11 +48,6 @@ export class FlashcatTrace {
   /** rcp interceptor for automatic injection on a session. */
   static interceptor(): rcp.Interceptor {
     return new TraceInterceptor(FlashcatTrace.core, FlashcatTrace.configuration);
-  }
-
-  /** @internal — active core for the FlashcatHttp wrapper (null before enable). */
-  static currentCore(): SdkCore | null {
-    return FlashcatTrace.core;
   }
 
   /** @internal — active trace configuration for the FlashcatHttp wrapper. */
@@ -126,14 +123,23 @@ export class FlashcatTrace {
     }
   }
 
-  /** Closes a traced resource that got a response, whatever its status. */
-  static stopTracedResource(key: string, statusCode: number, size: number, mimeType: string = ''): void {
+  /**
+   * Closes a traced resource that got a response, whatever its status.
+   *
+   * @param timing the `performanceTiming` of an `@ohos.net.http` response, when
+   *        the stack exposes it (`@ohos/axios` puts it on `response.performanceTiming`).
+   *        The resource then carries its DNS, connect, TLS, first-byte, download
+   *        and redirect phases. Omit it when there is none; the resource is
+   *        reported without phases.
+   */
+  static stopTracedResource(key: string, statusCode: number, size: number, mimeType: string = '',
+    timing?: http.PerformanceTiming): void {
     // Untyped callers can pass null or undefined for a request never traced.
     if (typeof key !== 'string' || key.length === 0) {
       return;
     }
     try {
-      publishResourceCompleted(FlashcatTrace.core, key, statusCode, size, mimeType);
+      publishResourceCompleted(FlashcatTrace.core, key, statusCode, size, mimeType, transferTimingOfHttp(timing));
     } catch (error) {
       FlashcatTrace.logFailure('stopTracedResource', error);
     }

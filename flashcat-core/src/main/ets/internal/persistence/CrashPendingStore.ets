@@ -32,9 +32,12 @@ const MAX_PENDING_INCIDENTS: number = 32;
  */
 export class CrashPendingStore implements FeatureEventReceiver {
   private readonly rootDir: string;
+  private readonly beforeIncidentWrite: () => void;
 
-  constructor(context: common.Context, sweepOrphans: boolean = true) {
+  /** @param beforeIncidentWrite runs synchronously before every incident write (flushes buffered events). */
+  constructor(context: common.Context, sweepOrphans: boolean = true, beforeIncidentWrite: () => void = () => {}) {
     this.rootDir = `${context.filesDir}/flashcat/crash-pending`;
+    this.beforeIncidentWrite = beforeIncidentWrite;
     // Only the MAIN process sweeps: the extension process shares this dir, and
     // its sweep could unlink a tmp file the main process is writing at crash
     // time (the "no write in flight" invariant is process-local).
@@ -69,6 +72,13 @@ export class CrashPendingStore implements FeatureEventReceiver {
   onReceive(event: Record<string, Object>): void {
     const type: string = CrashPendingStore.stringValue(event['type']);
     if (type === 'crash_storage_write') {
+      // The incident is what matters here: a flush that throws must not keep
+      // it from being written.
+      try {
+        this.beforeIncidentWrite();
+      } catch (e) {
+        FlashcatLog.e(`crash storage: flush before incident failed: ${e instanceof Error ? e.message : 'error'}`);
+      }
       const incidentId: string = CrashPendingStore.safeId(
         CrashPendingStore.stringValue(event['incident_id']));
       const serialized: string = CrashPendingStore.stringValue(event['serialized']);

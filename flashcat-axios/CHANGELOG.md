@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- A request made through a tracked axios instance reports its phases (DNS,
+  connect, TLS, first byte, download, redirect) on the RUM resource, from the
+  network kit's timing that `@ohos/axios` puts on the response — for an HTTP
+  error status as well as a success. A streamed response and a request that
+  never got a response carry no phases.
+
 ## 0.8.2
 
 - No changes; released together with `@flashcatcloud/core`, `crash`, `rum` and `trace` 0.8.2.
